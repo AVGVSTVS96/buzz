@@ -164,7 +164,6 @@ export function useCommunityInit(
   const enterpriseLoginDecisionRef = useRef<
     ((allowed: boolean) => void) | null
   >(null);
-  const enterpriseProfileRef = useRef<EnterpriseProfileSeed | null>(null);
 
   const continueEnterpriseLogin = useCallback(() => {
     const resolve = enterpriseLoginDecisionRef.current;
@@ -224,7 +223,6 @@ export function useCommunityInit(
 
     async function init() {
       if (!activeCommunity) {
-        enterpriseProfileRef.current = null;
         if (hasInitializedRef.current) {
           if (prevCommunityIdRef.current) {
             saveActiveAgentTurnsForCommunity(prevCommunityIdRef.current);
@@ -373,7 +371,7 @@ export function useCommunityInit(
           return;
         }
       }
-      enterpriseProfileRef.current = null;
+      let enterpriseProfileForResult: EnterpriseProfileSeed | null = null;
       const enterpriseLoginAttemptId = `enterprise-auth-${
         globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
       }`;
@@ -397,7 +395,7 @@ export function useCommunityInit(
             },
           },
         );
-        enterpriseProfileRef.current =
+        enterpriseProfileForResult =
           authoritativeEnterpriseProfile(enterpriseAuth);
         ownedEnterpriseLoginAttemptId = null;
       } catch (error) {
@@ -406,11 +404,11 @@ export function useCommunityInit(
           error instanceof Error
             ? error.message
             : "Enterprise login is required for this community";
-        setEnterpriseLoginPrompt((prompt) =>
-          prompt ? { ...prompt, error: errorMessage } : prompt,
-        );
         console.error("Enterprise login gate failed:", error);
         if (!cancelled) {
+          setEnterpriseLoginPrompt((prompt) =>
+            prompt ? { ...prompt, error: errorMessage } : prompt,
+          );
           setResult({
             isReady: false,
             needsSetup: false,
@@ -504,7 +502,7 @@ export function useCommunityInit(
           needsSetup: false,
           appliedKey: communityKey,
           identityPubkey,
-          enterpriseProfile: enterpriseProfileRef.current,
+          enterpriseProfile: enterpriseProfileForResult,
         });
       }
     }

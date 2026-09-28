@@ -209,6 +209,10 @@ CREATE TABLE personal_read_frontiers (
     channel_id UUID NOT NULL,
     root_id BYTEA NOT NULL DEFAULT ''::bytea CHECK (octet_length(root_id) IN (0, 32)),
     through_timestamp BIGINT NOT NULL CHECK (through_timestamp >= 0),
+    -- Whole-channel cut covering every thread; channel rows only.
+    threads_through_timestamp BIGINT
+        CHECK (threads_through_timestamp IS NULL
+            OR (threads_through_timestamp >= 0 AND root_id = ''::bytea)),
     PRIMARY KEY (community_id, actor, channel_id, root_id),
     FOREIGN KEY (community_id, actor)
         REFERENCES personal_read_accounts (community_id, actor) ON DELETE CASCADE,

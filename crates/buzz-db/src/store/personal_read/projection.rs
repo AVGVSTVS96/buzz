@@ -26,6 +26,43 @@ impl Db {
         if !(1..=MAX_CHANNELS).contains(&limit) {
             return Err(DbError::InvalidData("invalid sidebar limit".into()));
         }
+        self.sidebar(community, actor, retention_seconds, limit, after, None)
+            .await
+    }
+
+    /// Refresh specific joined channels in one snapshot. A requested channel
+    /// absent from the result was not a joined, nondeleted channel at that cut.
+    pub async fn personal_read_sidebar_channels(
+        &self,
+        community: CommunityId,
+        actor: &nostr::PublicKey,
+        retention_seconds: u32,
+        channels: &[Uuid],
+    ) -> Result<SidebarPage> {
+        let unique: std::collections::HashSet<_> = channels.iter().collect();
+        if !(1..=MAX_CHANNELS).contains(&channels.len()) || unique.len() != channels.len() {
+            return Err(DbError::InvalidData("invalid sidebar channels".into()));
+        }
+        self.sidebar(
+            community,
+            actor,
+            retention_seconds,
+            channels.len(),
+            None,
+            Some(channels),
+        )
+        .await
+    }
+
+    async fn sidebar(
+        &self,
+        community: CommunityId,
+        actor: &nostr::PublicKey,
+        retention_seconds: u32,
+        limit: usize,
+        after: Option<Uuid>,
+        only: Option<&[Uuid]>,
+    ) -> Result<SidebarPage> {
         let mut conn = observability::acquire_writer(
             &self.pool,
             observability::WriterOperation::SubscriptionHistory,
@@ -59,9 +96,10 @@ impl Db {
                     ON c.community_id=cm.community_id AND c.id=cm.channel_id
                 WHERE cm.community_id=$1 AND cm.pubkey=$2 AND cm.removed_at IS NULL
                     AND c.deleted_at IS NULL AND ($3::uuid IS NULL OR c.id>$3)
+                    AND ($9::uuid[] IS NULL OR c.id=ANY($9))
                 ORDER BY c.id LIMIT $4
              )
-             SELECT r.*, latest.latest_message_id,
+             SELECT r.*, latest.latest_message_id, latest.latest_message_at,
                 (latest.latest_message_id IS NOT NULL OR latest.candidates <= $5-1) AS latest_message_complete,
                 e.scanned,COALESCE(e.evidence,'[]'::jsonb) AS evidence FROM roster r
              LEFT JOIN LATERAL (
@@ -72,7 +110,9 @@ impl Db {
                 )
                 SELECT count(*) AS candidates,
                     (array_agg(encode(id,'hex') ORDER BY created_at DESC,id)
-                        FILTER (WHERE kind=ANY($6) AND deleted_at IS NULL))[1] AS latest_message_id
+                        FILTER (WHERE kind=ANY($6) AND deleted_at IS NULL))[1] AS latest_message_id,
+                    (array_agg(extract(epoch FROM created_at)::bigint ORDER BY created_at DESC,id)
+                        FILTER (WHERE kind=ANY($6) AND deleted_at IS NULL))[1] AS latest_message_at
                 FROM candidates
              ) latest ON true
              LEFT JOIN personal_read_frontiers cf ON cf.community_id=$1 AND cf.actor=$2
@@ -87,7 +127,8 @@ impl Db {
                         COALESCE(tm.root_event_id<>e.id,false) AS is_reply,
                         COALESCE(extract(epoch FROM e.created_at)::bigint <=
                             CASE WHEN tm.root_event_id IS NOT NULL AND tm.root_event_id<>e.id
-                                THEN tf.through_timestamp ELSE cf.through_timestamp END,false) AS covered
+                                THEN GREATEST(tf.through_timestamp, cf.threads_through_timestamp)
+                                ELSE cf.through_timestamp END,false) AS covered
                     FROM (SELECT * FROM candidates ORDER BY received_at DESC,id,created_at LIMIT $8-1) e
                     LEFT JOIN thread_metadata tm ON tm.community_id=$1 AND tm.channel_id=r.id
                         AND tm.event_created_at=e.created_at AND tm.event_id=e.id
@@ -115,7 +156,9 @@ impl Db {
                                         AND (tag->>1) COLLATE "C" ~ '^[0123456789abcdefABCDEF]{64}$'),false)) END
                              FROM jsonb_array_elements(tags) t(tag)
                              WHERE tag->>0 IN ('p','broadcast','e')) ELSE NULL END AS facts,
-                        count(*) AS n
+                        count(*) AS n,
+                        extract(epoch FROM max(created_at))::bigint AS newest_at,
+                        (array_agg(encode(id,'hex') ORDER BY created_at DESC,id))[1] AS newest_id
                     FROM classified
                     WHERE NOT covered OR root IS NULL
                     GROUP BY 1,2,3,4
@@ -129,6 +172,7 @@ impl Db {
             .bind(DateTime::from_timestamp_millis(account.cutoff_ms)
                 .ok_or_else(|| DbError::InvalidData("invalid receipt cutoff".into()))?)
             .bind((MAX_RECEIPT_SCAN+1) as i64)
+            .bind(only)
             .fetch_all(&mut *tx).await?;
         let has_more = rows.len() > limit;
         let mut channels = Vec::new();
@@ -144,7 +188,7 @@ impl Db {
             let mut attention = 0;
             let mut unread_complete = complete;
             let mut attention_complete = complete;
-            let mut replies: HashMap<Vec<u8>, u32> = HashMap::new();
+            let mut threads: HashMap<Vec<u8>, ThreadEvidence> = HashMap::new();
             for e in evidence {
                 let n = e["n"]
                     .as_u64()
@@ -174,15 +218,41 @@ impl Db {
                     channel_type == "dm" || facts.get("directed") == Some(&Value::Bool(true));
                 if directed {
                     attention += n;
-                } else if is_reply {
-                    if let Some(root) = e["root"].as_str().and_then(writes::event_id) {
-                        *replies.entry(root).or_default() += n;
-                    } else {
+                }
+                if is_reply {
+                    let Some(root) = e["root"].as_str().and_then(writes::event_id) else {
+                        unread_complete = false;
                         attention_complete = false;
+                        continue;
+                    };
+                    let newest = (
+                        e["newest_at"].as_i64().ok_or_else(invalid_newest)?,
+                        e["newest_id"]
+                            .as_str()
+                            .ok_or_else(invalid_newest)?
+                            .to_owned(),
+                    );
+                    let thread = threads.entry(root).or_insert_with(|| ThreadEvidence {
+                        unread: 0,
+                        directed: 0,
+                        undirected: 0,
+                        newest: newest.clone(),
+                    });
+                    thread.unread += n;
+                    if directed {
+                        thread.directed += n;
+                    } else {
+                        thread.undirected += n;
+                    }
+                    // Newest first; equal author times break toward the smaller ID.
+                    if (newest.0, std::cmp::Reverse(&newest.1))
+                        > (thread.newest.0, std::cmp::Reverse(&thread.newest.1))
+                    {
+                        thread.newest = newest;
                     }
                 }
             }
-            pending.push((replies, attention, attention_complete));
+            pending.push((threads, attention, unread_complete, attention_complete));
             channels.push(ChannelReadSummary {
                 channel_id: row.try_get("id")?,
                 name: row.try_get("name")?,
@@ -192,33 +262,62 @@ impl Db {
                 unread: ReadCount::from_evidence(unread, unread_complete),
                 attention: ReadCount::from_evidence(attention, attention_complete),
                 latest_message_id: row.try_get("latest_message_id")?,
+                latest_message_at: row.try_get("latest_message_at")?,
                 latest_message_complete: row.try_get("latest_message_complete")?,
+                threads: ThreadSummaries {
+                    items: Vec::new(),
+                    complete: false,
+                },
             });
         }
         let targets: Vec<_> = channels
             .iter()
             .zip(&pending)
-            .flat_map(|(channel, (replies, _, _))| {
-                replies
-                    .keys()
-                    .map(|root| (channel.channel_id, root.clone()))
+            .flat_map(|(channel, (threads, ..))| {
+                threads
+                    .iter()
+                    .filter(|(_, t)| t.undirected > 0)
+                    .map(|(root, _)| (channel.channel_id, root.clone()))
             })
             .collect();
         let participation =
             participation::resolve(&mut tx, community, &actor_bytes, &targets).await?;
-        for (channel, (replies, mut attention, mut complete)) in channels.iter_mut().zip(pending) {
-            for (root, count) in replies {
-                match participation
-                    .get(&(channel.channel_id, root))
-                    .copied()
-                    .flatten()
-                {
-                    Some(true) => attention += count,
+        for (channel, (threads, mut attention, unread_complete, evidence_complete)) in
+            channels.iter_mut().zip(pending)
+        {
+            let mut complete = evidence_complete;
+            let mut items = Vec::with_capacity(threads.len());
+            for (root, thread) in threads {
+                let participating = if thread.undirected == 0 {
+                    Some(false)
+                } else {
+                    participation
+                        .get(&(channel.channel_id, root.clone()))
+                        .copied()
+                        .flatten()
+                };
+                let thread_attention = match participating {
+                    Some(true) => thread.directed + thread.undirected,
+                    _ => thread.directed,
+                };
+                match participating {
+                    Some(true) => attention += thread.undirected,
                     Some(false) => {}
                     None => complete = false,
                 }
+                items.push(ThreadReadSummary {
+                    root_id: hex::encode(root),
+                    unread: ReadCount::from_evidence(thread.unread, unread_complete),
+                    attention: ReadCount::from_evidence(
+                        thread_attention,
+                        evidence_complete && participating.is_some(),
+                    ),
+                    latest_reply_id: thread.newest.1,
+                    latest_reply_at: thread.newest.0,
+                });
             }
             channel.attention = ReadCount::from_evidence(attention, complete);
+            channel.threads = summarize(items, unread_complete);
         }
         let next_cursor = if has_more {
             channels.last().map(|c| c.channel_id)
@@ -232,6 +331,35 @@ impl Db {
             next_cursor,
         })
     }
+}
+
+/// Uncovered reply evidence for one canonical thread within a channel scan.
+struct ThreadEvidence {
+    unread: u32,
+    directed: u32,
+    undirected: u32,
+    /// Newest observed unread reply: (author seconds, lowercase hex ID).
+    newest: (i64, String),
+}
+
+fn invalid_newest() -> DbError {
+    DbError::InvalidData("invalid thread evidence".into())
+}
+
+/// Order newest unread reply first (root ID breaks ties) and cap the list. The
+/// list is complete only when evidence was exhausted and nothing was omitted.
+pub(super) fn summarize(
+    mut items: Vec<ThreadReadSummary>,
+    evidence_complete: bool,
+) -> ThreadSummaries {
+    items.sort_unstable_by(|a, b| {
+        b.latest_reply_at
+            .cmp(&a.latest_reply_at)
+            .then_with(|| a.root_id.cmp(&b.root_id))
+    });
+    let complete = evidence_complete && items.len() <= MAX_THREAD_SUMMARIES;
+    items.truncate(MAX_THREAD_SUMMARIES);
+    ThreadSummaries { items, complete }
 }
 
 /// Read-time horizon only: frontier state is not discarded on expiry.
@@ -253,4 +381,49 @@ pub(super) async fn read_account(
         cutoff_ms: cutoff.timestamp_millis(),
         imported_at_ms: imported.map(|t| t.timestamp_millis()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(root: u8, at: i64) -> ThreadReadSummary {
+        ThreadReadSummary {
+            root_id: hex::encode([root; 32]),
+            unread: ReadCount::Exact { value: 1 },
+            attention: ReadCount::Exact { value: 0 },
+            latest_reply_id: hex::encode([root; 32]),
+            latest_reply_at: at,
+        }
+    }
+
+    #[test]
+    fn thread_summaries_order_newest_first_break_ties_by_root_and_cap_at_five() {
+        // Literal contract boundaries deliberately do not derive from the constant.
+        for count in [0_u8, 1, 4, 5, 6, 7] {
+            // Descending roots with pairwise-equal times exercise the tie-break.
+            let items: Vec<_> = (0..count)
+                .rev()
+                .map(|i| item(i, i64::from(i / 2)))
+                .collect();
+            let summaries = summarize(items, true);
+            let roots: Vec<_> = summaries.items.iter().map(|t| t.root_id.clone()).collect();
+            let mut expected: Vec<_> = (0..count).map(|i| (i64::from(i / 2), i)).collect();
+            expected.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            let expected: Vec<_> = expected
+                .into_iter()
+                .take(5)
+                .map(|(_, i)| hex::encode([i; 32]))
+                .collect();
+            assert_eq!(roots, expected, "count {count}");
+            assert_eq!(summaries.complete, count <= 5, "count {count}");
+        }
+    }
+
+    #[test]
+    fn thread_summaries_are_incomplete_when_evidence_is() {
+        let summaries = summarize(vec![item(1, 1)], false);
+        assert_eq!(summaries.items.len(), 1);
+        assert!(!summaries.complete);
+    }
 }

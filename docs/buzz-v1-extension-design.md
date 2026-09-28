@@ -3,9 +3,8 @@
 Design guidance for follow-up work, not implemented wire capabilities.
 The current [API contract](buzz-v1-read-state.md) remains authoritative.
 
-Future thread previews can add an optional bounded summary to each channel row,
-with independent list completeness and count evidence. Expensive signed-event
-expansions should be opt-in and preserve the base sidebar's work/byte budgets;
+Thread summaries are implemented (see `threads` in the API contract). Richer
+previews that carry signed-event content should be opt-in and preserve the base sidebar's work/byte budgets;
 fetching detail separately remains valid. Reuse canonical classification and
 read frontiers, not a second definition of unread. Historical-mention eligibility
 or mute-aware attention requires an explicit policy contract, not an unnoticed
@@ -19,4 +18,4 @@ receipt horizon moves without writes. Mutes and manual-unread overrides must not
 be encoded by advancing or rewinding a read frontier.
 
 These are extension constraints, not implemented capabilities: this version does
-not advertise thread previews, revision-based reuse or synchronized overrides.
+not advertise revision-based reuse or synchronized overrides.

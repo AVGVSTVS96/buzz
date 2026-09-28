@@ -124,6 +124,33 @@ async fn accessory_router_signed_url_body_replay_and_actor_boundary() {
             .0,
         StatusCode::UNAUTHORIZED
     );
+    // Targeted refresh is exclusive with paging and bounded to unique IDs.
+    let id = uuid::Uuid::new_v4();
+    let many = (0..21)
+        .map(|_| uuid::Uuid::new_v4().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    for (query, status) in [
+        (format!("channel_ids={id}"), StatusCode::OK),
+        (format!("channel_ids={id},{id}"), StatusCode::BAD_REQUEST),
+        (format!("channel_ids={id}&limit=1"), StatusCode::BAD_REQUEST),
+        (
+            format!("channel_ids={id}&cursor={id}"),
+            StatusCode::BAD_REQUEST,
+        ),
+        ("channel_ids=".into(), StatusCode::BAD_REQUEST),
+        ("channel_ids=not-a-uuid".into(), StatusCode::BAD_REQUEST),
+        (format!("channel_ids={many}"), StatusCode::BAD_REQUEST),
+    ] {
+        let path = format!("/buzz/v1/me/sidebar?{query}");
+        let auth = proof(&actor, &host, &path, "GET", None);
+        let (got, body) = request(state.clone(), &host, &path, "GET", Some(&auth), b"").await;
+        assert_eq!(got, status, "{query}: {body}");
+        if status == StatusCode::OK {
+            assert_eq!(body["channels"], json!([]), "unjoined ID is simply absent");
+            assert!(body["next_cursor"].is_null());
+        }
+    }
     let write_path = "/buzz/v1/me/read-state";
     let body = serde_json::to_vec(&json!({"intents":[{"type":"complete_import"}]})).unwrap();
     let missing_hash = proof(&actor, &host, write_path, "POST", None);
@@ -370,6 +397,7 @@ async fn accessory_discovery_is_host_bound_and_opt_in() {
                         d["max_context_messages"],
                         buzz_db::personal_read::MAX_CONTEXT_MESSAGES
                     );
+                    assert_eq!(d["max_thread_summaries"], 5);
                 }
             }
         }

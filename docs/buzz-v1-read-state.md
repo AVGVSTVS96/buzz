@@ -12,7 +12,8 @@ application/nostr+json`, or `GET /info`) includes `buzz_v1` only when enabled:
 
 ```json
 {"buzz_v1":{"version":1,"base_path":"/buzz/v1","retention_seconds":2592000,
-"max_channels":20,"max_intents":100,"max_contexts":20,"max_context_messages":100}}
+"max_channels":20,"max_intents":100,"max_contexts":20,"max_context_messages":100,
+"max_thread_summaries":5}}
 ```
 
 Use the requesting origin plus this relative prefix. Discovery is a configured
@@ -39,10 +40,36 @@ Unknown request fields are rejected. Never turn a transport failure into read.
 `GET /buzz/v1/me/sidebar?limit=20&cursor=<exclusive-channel-uuid>` returns
 `account`, `channels`, and `next_cursor`. Omit the cursor on the first request.
 Each channel includes identity/name/type, archived and hidden flags, `unread`,
-`attention`, `latest_message_id`, and `latest_message_complete`.
-Only joined, nondeleted channels are listed. Hidden/archived presentation remains
-client-owned. Each page has a writer-consistent snapshot; separate pages do not
-share a snapshot, and an unfinished traversal cannot prove channel removal.
+`attention`, `latest_message_id`, `latest_message_at` (its author time in
+seconds; null exactly when the ID is null), `latest_message_complete`, and
+`threads`. Only joined, nondeleted channels are listed. Hidden/archived
+presentation remains client-owned. Each page has a writer-consistent snapshot;
+separate pages do not share a snapshot, and an unfinished traversal cannot prove
+channel removal.
+
+`GET /buzz/v1/me/sidebar?channel_ids=<uuid>,<uuid>` refreshes 1–20 unique
+channels in one snapshot, ordered by ID with `next_cursor: null`. It cannot be
+combined with `limit` or `cursor`. A requested ID absent from the result was not
+a joined, nondeleted, accessible sidebar row at that snapshot: remove its row.
+Absence says nothing else about access to an open channel.
+
+`threads` lists unread threads in the row, newest unread reply first:
+
+```json
+{"items":[{"root_id":"<64-hex>","unread":{"status":"exact","value":2},
+  "attention":{"status":"exact","value":0},"latest_reply_id":"<64-hex>",
+  "latest_reply_at":1700000000}],"complete":true}
+```
+
+Items are canonical roots with unread eligible replies, ordered by
+`latest_reply_at` descending, then `root_id`; at most 5. `latest_reply_id` is the
+newest observed unread reply (equal times prefer the smaller ID) and a valid
+thread `mark_through` anchor. `unread` and `attention` use the row's
+definitions. `complete=true` means the receipt scan was exhausted, no evidence
+had unresolved ancestry or unusable tags, and no thread was omitted; then item
+unread counts sum to the row's unread replies. Otherwise the list is a cut of
+observed evidence and counts may be lower bounds or unknown. Participation
+budget exhaustion affects only `attention`. No message bytes are included.
 
 Counts have exactly three representations:
 
@@ -78,7 +105,8 @@ global export of frontiers. Example decoded `targets`:
 Omitting `root_id` selects the channel timeline. The result contains `account`
 and one `contexts` entry per request entry, in order. Context status is
 `available` (with nullable `through_timestamp` and `messages`), `unknown`, or
-`unavailable`. Message status is `read`, `not_counted`, `unread` (with nullable
+`unavailable`. A thread context's `through_timestamp` is its effective prefix,
+including any whole-channel cut. Message status is `read`, `not_counted`, `unread` (with nullable
 `attention`), `unknown`, or `unavailable`. Wrong-context, missing and forbidden
 selectors share unavailable. Null attention means participation is unproved.
 Conversation bytes must still come from the existing Nostr path.
@@ -90,6 +118,7 @@ Conversation bytes must still come from the existing Nostr path.
 ```json
 {"intents":[
  {"type":"mark_through","target":{"channel_id":"<uuid>"},"message_id":"<64-hex-event>"},
+ {"type":"mark_channel_read","channel_id":"<uuid>","message_id":"<64-hex-event>"},
  {"type":"legacy_prefix","target":{"channel_id":"<uuid>","root_id":"<64-hex-root>"},"through_timestamp":1700000000},
  {"type":"complete_import"}
 ]}
@@ -109,7 +138,17 @@ inherit in either direction. Opening a view is not itself a reading action;
 client dwell/focus policy determines when to send an actual observed anchor.
 Old or deleted valid anchors may advance a frontier. Legacy prefixes preserve
 the original nonnegative timestamp; more than DB-now + 900 seconds is invalid,
-not clamped. Complete-import is a client declaration, not proof that the server
+not clamped.
+
+`mark_channel_read` is the one whole-channel cut: it advances the channel
+timeline and every thread in that channel, including unlisted ones, through the
+anchor's author time. The anchor must be an accessible eligible-kind message in
+the channel, top-level or reply, deleted or not; ancestry is not checked. A
+reply is read at or below the greater of its thread frontier and this cut. An
+anchor that no longer exists is `blocked`. `latest_message_id` is a natural
+anchor. A null ID with `latest_message_complete=false` does not prove empty
+history; it only leaves the client without an anchor. Thread marks and channel `mark_through`
+never set the cut. Complete-import is a client declaration, not proof that the server
 verified or decrypted a legacy snapshot. Null `imported_at_ms` means provisional.
 
 Sparse legacy seen hints must not be converted to the largest timestamp: that

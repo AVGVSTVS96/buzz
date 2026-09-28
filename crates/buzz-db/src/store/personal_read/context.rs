@@ -55,15 +55,21 @@ impl Db {
                     }
                     Err(error) => return Err(error),
                 };
+            // A thread's effective prefix includes the channel's whole-channel cut,
+            // exactly as the sidebar projection counts it.
             let prefix: Option<i64> = sqlx::query_scalar(
-                "SELECT through_timestamp FROM personal_read_frontiers
-                 WHERE community_id=$1 AND actor=$2 AND channel_id=$3 AND root_id=$4",
+                "SELECT GREATEST(
+                    (SELECT through_timestamp FROM personal_read_frontiers
+                     WHERE community_id=$1 AND actor=$2 AND channel_id=$3 AND root_id=$4),
+                    (SELECT threads_through_timestamp FROM personal_read_frontiers
+                     WHERE community_id=$1 AND actor=$2 AND channel_id=$3 AND root_id=''::bytea
+                        AND $4<>''::bytea))",
             )
             .bind(community.as_uuid())
             .bind(actor_bytes.as_slice())
             .bind(query.target.channel_id)
             .bind(&root)
-            .fetch_optional(&mut *tx)
+            .fetch_one(&mut *tx)
             .await?;
             let ids: Vec<Vec<u8>> = query
                 .message_ids

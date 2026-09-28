@@ -20,3 +20,6 @@ mod participation_postgres_tests;
 
 #[cfg(test)]
 mod projection_postgres_tests;
+
+#[cfg(test)]
+mod threads_postgres_tests;

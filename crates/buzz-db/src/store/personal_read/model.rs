@@ -27,6 +27,14 @@ pub enum ReadIntent {
         /// Fixed anchor; retry must not substitute the latest message.
         message_id: String,
     },
+    /// Advance the channel timeline and every thread in it through one fixed
+    /// message's author time. The anchor may be a reply; ancestry is irrelevant.
+    MarkChannelRead {
+        /// Channel being marked, including all of its threads.
+        channel_id: Uuid,
+        /// Fixed anchor; retry must not substitute the latest message.
+        message_id: String,
+    },
     /// Migration/recovery only: preserve an original legacy timestamp verbatim.
     LegacyPrefix {
         /// Original channel or canonical thread scope.
@@ -63,6 +71,8 @@ pub struct ReadAccount {
 
 /// Maximum channel summaries in one sidebar page.
 pub const MAX_CHANNELS: usize = 20;
+/// Maximum unread-thread summaries per channel row.
+pub const MAX_THREAD_SUMMARIES: usize = 5;
 /// Bounded event evidence per channel; exhaustion is never inferred at this cap.
 pub const MAX_CHANNEL_SCAN: usize = 256;
 /// Receipt-window work budget per channel, before eligibility/ancestry joins.
@@ -124,9 +134,37 @@ pub struct ChannelReadSummary {
     /// and the unread-tracking horizon.
     /// None proves absence only when latest_message_complete is true.
     pub latest_message_id: Option<String>,
+    /// Author time (Unix seconds) of latest_message_id; None exactly when it is None.
+    pub latest_message_at: Option<i64>,
     /// Whether the latest lookup found a result or exhausted channel history.
     /// False means the bounded probe found none, but an unexamined tail remains.
     pub latest_message_complete: bool,
+    /// Threads with unread replies, newest unread reply first.
+    pub threads: ThreadSummaries,
+}
+
+/// A bounded, ordered list of unread threads within one channel row.
+#[derive(Debug, Serialize)]
+pub struct ThreadSummaries {
+    /// At most MAX_THREAD_SUMMARIES, by latest_reply_at DESC then root_id ASC.
+    pub items: Vec<ThreadReadSummary>,
+    /// True only when evidence was exhausted and no thread was omitted.
+    pub complete: bool,
+}
+
+/// Unread replies in one canonical thread. No conversation bytes.
+#[derive(Debug, Serialize)]
+pub struct ThreadReadSummary {
+    /// Canonical thread-root event ID.
+    pub root_id: String,
+    /// Unread replies in this thread (same definition as the row count).
+    pub unread: ReadCount,
+    /// Directed subset, with the same definition as the row's attention.
+    pub attention: ReadCount,
+    /// Newest observed unread reply: a valid thread mark_through anchor.
+    pub latest_reply_id: String,
+    /// Author time (Unix seconds) of latest_reply_id.
+    pub latest_reply_at: i64,
 }
 
 /// A bounded roster page, with no cross-page snapshot or removal inference.

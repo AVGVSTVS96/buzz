@@ -92,6 +92,8 @@ pub struct BuzzV1Descriptor {
     pub max_contexts: usize,
     /// Maximum message selectors across one context request.
     pub max_context_messages: usize,
+    /// Maximum unread-thread summaries per sidebar channel row.
+    pub max_thread_summaries: usize,
 }
 
 /// Public capability descriptor for relay-proxied GIF search.
@@ -323,7 +325,7 @@ pub(crate) async fn nip11_document(state: &crate::state::AppState, raw_host: &st
     if let Ok(tenant) = crate::tenant::bind_community(&state.db, raw_host).await {
         if state.config.buzz_v1_enabled {
             use buzz_db::personal_read::{
-                MAX_CHANNELS, MAX_CONTEXTS, MAX_CONTEXT_MESSAGES, MAX_INTENTS,
+                MAX_CHANNELS, MAX_CONTEXTS, MAX_CONTEXT_MESSAGES, MAX_INTENTS, MAX_THREAD_SUMMARIES,
             };
             info.buzz_v1 = Some(BuzzV1Descriptor {
                 version: 1,
@@ -333,6 +335,7 @@ pub(crate) async fn nip11_document(state: &crate::state::AppState, raw_host: &st
                 max_intents: MAX_INTENTS,
                 max_contexts: MAX_CONTEXTS,
                 max_context_messages: MAX_CONTEXT_MESSAGES,
+                max_thread_summaries: MAX_THREAD_SUMMARIES,
             });
         }
         info.read_state_snapshot = Some(serde_json::json!({

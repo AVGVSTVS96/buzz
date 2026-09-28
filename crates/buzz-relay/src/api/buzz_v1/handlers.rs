@@ -12,11 +12,23 @@ use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
+/// 1..=MAX_CHANNELS unique UUIDs, comma-separated; anything else is invalid.
+fn parse_channel_ids(value: &str) -> Option<Vec<Uuid>> {
+    let ids = value
+        .split(',')
+        .map(|id| Uuid::parse_str(id).ok())
+        .collect::<Option<Vec<_>>>()?;
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
+    ((1..=MAX_CHANNELS).contains(&ids.len()) && unique.len() == ids.len()).then_some(ids)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SidebarQuery {
     limit: Option<usize>,
     cursor: Option<Uuid>,
+    /// Comma-separated channel UUIDs to refresh; exclusive with paging.
+    channel_ids: Option<String>,
 }
 
 pub(super) async fn sidebar(
@@ -34,17 +46,32 @@ pub(super) async fn sidebar(
         {
             return Err(Error::invalid());
         }
-        let page = state
-            .db
-            .personal_read_sidebar(
-                principal.tenant.community(),
-                &principal.actor,
-                state.config.buzz_v1_retention_seconds,
-                query.limit.unwrap_or(MAX_CHANNELS),
-                query.cursor,
-            )
-            .await
-            .map_err(|_| Error::unavailable())?;
+        let community = principal.tenant.community();
+        let retention = state.config.buzz_v1_retention_seconds;
+        let page = match query.channel_ids {
+            Some(ids) => {
+                let ids = parse_channel_ids(&ids)
+                    .filter(|_| query.limit.is_none() && query.cursor.is_none())
+                    .ok_or_else(Error::invalid)?;
+                state
+                    .db
+                    .personal_read_sidebar_channels(community, &principal.actor, retention, &ids)
+                    .await
+            }
+            None => {
+                state
+                    .db
+                    .personal_read_sidebar(
+                        community,
+                        &principal.actor,
+                        retention,
+                        query.limit.unwrap_or(MAX_CHANNELS),
+                        query.cursor,
+                    )
+                    .await
+            }
+        }
+        .map_err(|_| Error::unavailable())?;
         auth::recheck(&state, &headers, &principal).await?;
         let channels: Vec<_> = page.channels.iter().map(|c| c.channel_id).collect();
         let memberships = state

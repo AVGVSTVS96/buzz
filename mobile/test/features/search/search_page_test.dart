@@ -916,7 +916,8 @@ void main() {
       memberCount: 2,
       isMember: true,
     );
-    const agentPubkey = 'agent-pubkey';
+    // Mention tags carry exact 64-hex keys; readers ignore anything else.
+    final agentPubkey = 'a9' * 32;
     const cachedProfile = UserProfile(pubkey: 'author-pubkey');
     final state = SearchState(
       query: 'helper',
@@ -954,7 +955,7 @@ void main() {
             channel.id,
           ).overrideWith((ref) async => {agentPubkey}),
           agentDirectoryDisplayNamesProvider.overrideWith(
-            (ref) => const {agentPubkey: 'Helper Bot'},
+            (ref) => {agentPubkey: 'Helper Bot'},
           ),
         ],
         child: const SearchPage(),
@@ -965,7 +966,7 @@ void main() {
     final content = tester.widget<MessageContent>(
       find.byKey(const ValueKey('search-message-body-message-1')),
     );
-    expect(content.mentionNames, const {agentPubkey: 'Helper Bot'});
+    expect(content.mentionNames, {agentPubkey: 'Helper Bot'});
     expect(content.agentMentionPubkeys, contains(agentPubkey));
     expect(find.byIcon(LucideIcons.bot), findsOneWidget);
   });

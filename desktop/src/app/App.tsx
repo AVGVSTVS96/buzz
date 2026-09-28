@@ -775,6 +775,7 @@ function CommunityApp({
           <CommunityOnboardingFlow
             onCancel={handleCommunityOnboardingCancel}
             onConnect={handleCommunityOnboardingConnect}
+            onRetry={reconnectCommunity}
           />
         </div>
       ) : null}

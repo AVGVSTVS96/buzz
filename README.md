@@ -11,6 +11,7 @@
   <a href="VISION_AGENT.md">Agents</a> ·
   <a href="ARCHITECTURE.md">Architecture</a> ·
   <a href="RELEASING.md">Releasing</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="LICENSE">Apache 2.0</a>
 </p>
 

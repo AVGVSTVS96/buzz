@@ -44,7 +44,7 @@ pub enum CreateCommunityWithOwnerResult {
     Created(CreatedCommunityRecord),
     /// The host already belongs to another owner.
     HostExists,
-    /// The intended owner already owns the maximum number of communities.
+    /// The intended owner has reached the active or lifetime community limit.
     LimitReached,
 }
 
@@ -68,9 +68,9 @@ pub struct OwnedCommunitiesPage {
     pub communities: Vec<OwnedCommunityRecord>,
     /// De-duplicated live memberships and incomplete owner deletion reservations.
     pub quota_used: i64,
-    /// Configured maximum hosted communities for one owner.
+    /// Configured active limit only; the lifetime cap is reflected in `can_create`.
     pub quota_limit: i64,
-    /// Whether the authoritative snapshot leaves capacity for another community.
+    /// Whether the snapshot leaves room under both the active and lifetime caps.
     pub can_create: bool,
 }
 
@@ -262,15 +262,13 @@ impl Db {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let quota_used =
-            relay_members::owner_quota_used_in_transaction(&mut tx, &owner_pubkey).await?;
+        let quota = relay_members::owner_quota_in_transaction(&mut tx, &owner_pubkey).await?;
         tx.commit().await?;
-        let quota_limit = relay_members::max_communities_per_owner();
         Ok(OwnedCommunitiesPage {
             communities,
-            quota_used,
-            quota_limit,
-            can_create: quota_used < quota_limit,
+            quota_used: quota.active,
+            quota_limit: relay_members::max_communities_per_owner(),
+            can_create: quota.admits(),
         })
     }
 
@@ -477,10 +475,10 @@ impl Db {
             let host: String = row.try_get("host")?;
 
             // Enforce the limit before inserting the new owner row.
-            let owned_count =
-                relay_members::owner_quota_used_in_transaction(&mut tx, &owner_pubkey).await?;
-
-            if owned_count >= relay_members::max_communities_per_owner() {
+            if !relay_members::owner_quota_in_transaction(&mut tx, &owner_pubkey)
+                .await?
+                .admits()
+            {
                 tx.rollback().await?;
                 return Ok(CreateCommunityWithOwnerResult::LimitReached);
             }
@@ -1207,6 +1205,77 @@ mod postgres_tests {
                 .expect("post-race quota")
                 .quota_used,
             crate::relay_members::max_communities_per_owner()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn completed_owner_deletions_count_toward_lifetime_cap() {
+        let db = setup_db().await;
+        let owner = format!("{:064x}", Uuid::new_v4().as_u128());
+        let other_owner = format!("{:064x}", Uuid::new_v4().as_u128());
+        let operator = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+        // Create and completely delete up to the lifetime cap: each tombstone
+        // frees its active slot but keeps its host and its lifetime count.
+        for i in 0..crate::relay_members::MAX_LIFETIME_COMMUNITIES_PER_OWNER {
+            let host = format!("lifetime-{i}-{}.example", Uuid::new_v4().simple());
+            let CreateCommunityWithOwnerResult::Created(record) = db
+                .create_community_with_owner(&host, &owner)
+                .await
+                .expect("create under lifetime cap")
+            else {
+                panic!("create {i} must succeed below the lifetime cap")
+            };
+            sqlx::query(
+                "INSERT INTO community_deletion_requests \
+                 (id, community_id, community_host, requested_by, request_origin, owner_pubkey, \
+                  mediating_operator_pubkey, acknowledgement_version, stage, completed_at) \
+                 VALUES ($1, $2, $3, $4, 'owner', $4, $5, 1, 'retention_pending', now())",
+            )
+            .bind(Uuid::new_v4())
+            .bind(record.id.as_uuid())
+            .bind(&host)
+            .bind(&owner)
+            .bind(operator)
+            .execute(&db.pool)
+            .await
+            .expect("insert completed owner deletion");
+            sqlx::query("DELETE FROM relay_members WHERE community_id = $1")
+                .bind(record.id.as_uuid())
+                .execute(&db.pool)
+                .await
+                .expect("simulate purged membership");
+        }
+
+        let page = db
+            .list_communities_owned_by(&owner)
+            .await
+            .expect("owner list at lifetime cap");
+        assert_eq!(page.quota_used, 0, "completed deletions free active slots");
+        assert!(!page.can_create, "the lifetime cap still blocks creation");
+
+        let host = format!("lifetime-overflow-{}.example", Uuid::new_v4().simple());
+        assert_eq!(
+            db.create_community_with_owner(&host, &owner)
+                .await
+                .expect("create past lifetime cap"),
+            CreateCommunityWithOwnerResult::LimitReached
+        );
+
+        let transfer_host = format!("lifetime-transfer-{}.example", Uuid::new_v4().simple());
+        let CreateCommunityWithOwnerResult::Created(target) = db
+            .create_community_with_owner(&transfer_host, &other_owner)
+            .await
+            .expect("create transfer target")
+        else {
+            panic!("expected transfer target")
+        };
+        assert_eq!(
+            db.transfer_ownership(target.id, &owner, &other_owner)
+                .await
+                .expect("transfer past lifetime cap"),
+            crate::relay_members::TransferResult::LimitReached
         );
     }
 

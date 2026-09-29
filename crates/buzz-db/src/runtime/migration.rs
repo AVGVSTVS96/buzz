@@ -1784,7 +1784,7 @@ mod postgres_tests {
             assert!(sql.contains("community_deletion_requests_owner_quota_reservations"));
             assert!(sql.contains("request_origin = 'owner'"));
             assert!(sql.contains("stage <> 'aborted'"));
-            assert!(sql.contains("completed_at is null"));
+            assert!(sql.contains("include (community_id, completed_at)"));
         }
         assert!(migration.contains("set local lock_timeout = '5s'"));
     }

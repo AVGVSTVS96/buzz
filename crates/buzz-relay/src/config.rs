@@ -1377,6 +1377,31 @@ impl Config {
             nip_fi: crate::nip_fi_config::NipFiRelayConfig::from_env()?,
         })
     }
+
+    /// Build a baseline `Config` suitable for test fixtures that need a
+    /// structurally valid config without caring about specific field values.
+    ///
+    /// Equivalent to `from_env()` with all env variables absent, but calls
+    /// that function while holding `NIP_FI_ENV_LOCK` so that concurrent NIP-FI
+    /// env-writer tests cannot produce a partially-written env state that this
+    /// call observes.  Every test fixture that previously called
+    /// `Config::from_env().expect("…")` should use this instead — it is the
+    /// only env-isolation-safe way to obtain a default config in test code.
+    ///
+    /// Fields that differ from production defaults (`database_url`,
+    /// `redis_url`, etc.) should be overridden on the returned struct after
+    /// calling this function, exactly as was done before.
+    ///
+    /// [FI-TRACE-ENV-RACE]
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        crate::nip_fi_config::FOR_TEST_LOCK_WAITERS
+            .lock()
+            .unwrap()
+            .push(std::thread::current().id());
+        let _fi_guard = crate::nip_fi_config::NIP_FI_ENV_LOCK.lock().unwrap();
+        Self::from_env().expect("default config must load for test fixture")
+    }
 }
 
 #[cfg(test)]
@@ -1398,6 +1423,23 @@ mod tests {
     // Parallel env-var mutation causes `defaults_are_valid` to see the invalid
     // value set by `invalid_bind_addr_returns_error`, causing a flaky failure.
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Acquire both the FI env lock and the config-test env lock in a consistent
+    /// order so concurrent FI writers never observe a partially-written env state.
+    ///
+    /// Lock ordering: NIP_FI_ENV_LOCK → ENV_MUTEX. Every direct `Config::from_env()`
+    /// caller in this test module must hold both locks. Use this helper instead of
+    /// acquiring them separately to guarantee the order is never inverted.
+    ///
+    /// [FI-TRACE-ENV-RACE]
+    fn env_guards() -> (
+        std::sync::MutexGuard<'static, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        let fi = crate::nip_fi_config::NIP_FI_ENV_LOCK.lock().unwrap();
+        let cfg = ENV_MUTEX.lock().unwrap();
+        (fi, cfg)
+    }
 
     /// Look up against a fixed set, standing in for process env.
     fn env_of<'a>(set: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + use<'a> {
@@ -1454,7 +1496,7 @@ mod tests {
 
     #[test]
     fn defaults_are_valid() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let config = Config::from_env().expect("default config");
         assert!(config.bind_addr.port() > 0);
         assert!(!config.database_url.is_empty());
@@ -1506,6 +1548,10 @@ mod tests {
 
     /// Run `Config::from_env()` with the admin variables forced to `values`,
     /// restoring the ambient environment afterwards.
+    ///
+    /// Callers must already hold [`env_guards()`] before calling this function,
+    /// so that FI writers cannot produce a partially-written env state while
+    /// `Config::from_env()` reads it. [FI-TRACE-ENV-RACE]
     fn config_with_admin_env(values: &[(&str, Option<&str>)]) -> Result<Config, ConfigError> {
         const KEYS: [&str; 3] = ["BUZZ_ADMIN_HOST", "BUZZ_ADMIN_TOKEN", "BUZZ_ADMIN_AUTH"];
         let previous: Vec<_> = KEYS
@@ -1616,7 +1662,7 @@ mod tests {
 
     #[test]
     fn admin_token_set_is_ignored_and_warns_at_startup() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         // Token authentication was removed. A lingering BUZZ_ADMIN_TOKEN with a
         // host is ignored (logged as a warning) and never changes the resolved
         // auth mode: unset/nip98 stay nip98, disabled stays disabled.
@@ -1648,7 +1694,7 @@ mod tests {
 
     #[test]
     fn admin_surface_defaults_to_nip98_when_auth_unset() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let admin = config_with_admin_env(&[("BUZZ_ADMIN_HOST", Some("admin.example"))])
             .expect("config with an admin host and no BUZZ_ADMIN_AUTH")
             .admin
@@ -1662,7 +1708,7 @@ mod tests {
 
     #[test]
     fn admin_host_bare_ipv6_literal_fails_closed() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         for host in ["::1", "::1:3000", "fe80::1", "2001:db8::1"] {
             let result = config_with_admin_env(&[("BUZZ_ADMIN_HOST", Some(host))]);
             assert!(
@@ -1685,7 +1731,7 @@ mod tests {
         //   - query/fragment suffixes parse as a valid URL, but the `?x=1` /
         //     `#frag` lands in the query/fragment rather than the host, so a
         //     parse-only gate would miss them — the structural check catches them.
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         for host in [
             "[::1",
             "[::1:3000",
@@ -1709,7 +1755,7 @@ mod tests {
 
     #[test]
     fn admin_host_bracketed_ipv6_literal_is_accepted() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         for host in ["[::1]", "[::1]:3000", "[2001:db8::1]:8443"] {
             let admin = config_with_admin_env(&[("BUZZ_ADMIN_HOST", Some(host))])
                 .unwrap_or_else(|e| panic!("bracketed IPv6 host {host:?} must be accepted: {e:?}"))
@@ -1721,7 +1767,7 @@ mod tests {
 
     #[test]
     fn admin_host_mixed_case_is_normalized_to_lowercase() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         // Hostnames are case-insensitive (RFC 4343). A mixed-case BUZZ_ADMIN_HOST
         // must be stored lowercase so it round-trips through desktop URL parsing
         // (url::Url always lowercases hostnames) without a mismatch.
@@ -1743,7 +1789,7 @@ mod tests {
 
     #[test]
     fn admin_token_without_a_host_is_ignored_and_warns() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         // Even without BUZZ_ADMIN_HOST, a lingering BUZZ_ADMIN_TOKEN is ignored
         // (logged as a warning) — token auth was removed and the admin surface
         // stays absent because the host is unset, not because of the token.
@@ -1763,7 +1809,7 @@ mod tests {
 
     #[test]
     fn disabled_mode_activates_without_a_token() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let admin = config_with_admin_env(&[
             ("BUZZ_ADMIN_HOST", Some("admin.example")),
             ("BUZZ_ADMIN_TOKEN", None),
@@ -1778,7 +1824,7 @@ mod tests {
 
     #[test]
     fn admin_auth_junk_values_all_fail_closed() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         for junk in [
             "1",
             "yes",
@@ -1811,7 +1857,7 @@ mod tests {
     fn admin_auth_empty_string_defaults_to_nip98() {
         // An empty value (e.g. `BUZZ_ADMIN_AUTH=`) is treated as unset → nip98,
         // the fail-secure default.
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let admin = config_with_admin_env(&[
             ("BUZZ_ADMIN_HOST", Some("admin.example")),
             ("BUZZ_ADMIN_TOKEN", None),
@@ -1825,7 +1871,7 @@ mod tests {
 
     #[test]
     fn nip98_mode_parses_and_succeeds_without_pubkeys_env() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let admin = config_with_admin_env(&[
             ("BUZZ_ADMIN_HOST", Some("admin.example")),
             ("BUZZ_ADMIN_AUTH", Some("nip98")),
@@ -1840,7 +1886,7 @@ mod tests {
 
     #[test]
     fn malformed_relay_owner_pubkey_is_a_startup_error_not_warn_and_ignore() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("RELAY_OWNER_PUBKEY");
         for bad in ["not-a-pubkey", &"a".repeat(63), &"z".repeat(64), "abcd"] {
             std::env::set_var("RELAY_OWNER_PUBKEY", bad);
@@ -1864,7 +1910,7 @@ mod tests {
 
     #[test]
     fn valid_relay_owner_pubkey_parses_correctly() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("RELAY_OWNER_PUBKEY");
         let valid = "a".repeat(64);
         std::env::set_var("RELAY_OWNER_PUBKEY", &valid);
@@ -1878,7 +1924,7 @@ mod tests {
 
     #[test]
     fn s3_addressing_style_env_accepts_virtual_and_rejects_invalid_values() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_S3_ADDRESSING_STYLE");
 
         std::env::set_var("BUZZ_S3_ADDRESSING_STYLE", "virtual");
@@ -1909,7 +1955,7 @@ mod tests {
     fn s3_addressing_style_env_rejects_non_unicode_values() {
         use std::os::unix::ffi::OsStringExt;
 
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_S3_ADDRESSING_STYLE");
         std::env::set_var(
             "BUZZ_S3_ADDRESSING_STYLE",
@@ -1933,7 +1979,7 @@ mod tests {
 
     #[test]
     fn redis_pool_size_env_override_and_invalid_fallback() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_REDIS_POOL_SIZE");
 
         std::env::set_var("BUZZ_REDIS_POOL_SIZE", "32");
@@ -1958,7 +2004,7 @@ mod tests {
 
     #[test]
     fn db_pool_size_env_override_and_invalid_fallback() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_DB_POOL_SIZE");
 
         std::env::set_var("BUZZ_DB_POOL_SIZE", "80");
@@ -1983,7 +2029,7 @@ mod tests {
 
     #[test]
     fn db_read_pool_size_env_override_and_invalid_fallback() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_DB_READ_POOL_SIZE");
 
         std::env::remove_var("BUZZ_DB_READ_POOL_SIZE");
@@ -2012,7 +2058,7 @@ mod tests {
 
     #[test]
     fn read_database_url_unset_or_blank_is_none() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("READ_DATABASE_URL");
 
         std::env::remove_var("READ_DATABASE_URL");
@@ -2040,7 +2086,7 @@ mod tests {
 
     #[test]
     fn replica_read_max_age_defaults_off_and_rejects_junk() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_REPLICA_READ_MAX_AGE_MS");
         let previous_old = std::env::var_os("BUZZ_REPLICA_HEAD_MAX_AGE_SECS");
         std::env::remove_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS");
@@ -2092,7 +2138,7 @@ mod tests {
 
     #[test]
     fn drain_jitter_defaults_off_and_rejects_junk() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_DRAIN_JITTER_MS");
 
         std::env::remove_var("BUZZ_DRAIN_JITTER_MS");
@@ -2146,7 +2192,7 @@ mod tests {
 
     #[test]
     fn audit_logging_defaults_on_and_accepts_explicit_off() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_AUDIT_ENABLED");
         std::env::remove_var("BUZZ_AUDIT_ENABLED");
         assert!(parse_bool("BUZZ_AUDIT_ENABLED", true).unwrap());
@@ -2161,7 +2207,7 @@ mod tests {
 
     #[test]
     fn audit_logging_rejects_invalid_boolean() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_AUDIT_ENABLED");
         std::env::set_var("BUZZ_AUDIT_ENABLED", "sometimes");
         let result = parse_bool("BUZZ_AUDIT_ENABLED", true);
@@ -2179,7 +2225,7 @@ mod tests {
 
     #[test]
     fn join_policy_age_attestation_rejects_invalid_boolean() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_AGE_ATTESTATION_REQUIRED");
         std::env::set_var("BUZZ_AGE_ATTESTATION_REQUIRED", "sometimes");
         let result = parse_optional_bool("BUZZ_AGE_ATTESTATION_REQUIRED");
@@ -2197,7 +2243,7 @@ mod tests {
 
     #[test]
     fn rate_limits_can_be_overridden() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var("BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN", "1001");
         std::env::set_var("BUZZ_RATE_LIMIT_GIF_SEARCHES_PER_MIN", "1004");
         std::env::set_var("BUZZ_RATE_LIMIT_HUMAN_API_CALLS_PER_MIN", "1002");
@@ -2217,7 +2263,7 @@ mod tests {
 
     #[test]
     fn rate_limit_overrides_reject_zero() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var("BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC", "0");
         let result = Config::from_env();
         std::env::remove_var("BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC");
@@ -2231,7 +2277,7 @@ mod tests {
 
     #[test]
     fn relay_operator_pubkeys_parse_dedupe_and_normalize() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var(
             "RELAY_OPERATOR_PUBKEYS",
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -2255,7 +2301,7 @@ mod tests {
 
     #[test]
     fn relay_operator_pubkeys_invalid_entry_is_error() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var("RELAY_OPERATOR_PUBKEYS", "not-a-pubkey");
         let result = Config::from_env();
         std::env::remove_var("RELAY_OPERATOR_PUBKEYS");
@@ -2272,7 +2318,7 @@ mod tests {
         // community provisioning and the NIP-98 admin console. Configuring the
         // admin console (pubkeys) must NOT force the provisioning origin — boot
         // succeeds; provisioning stays fail-closed at request time.
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var(
             "RELAY_OPERATOR_PUBKEYS",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -2294,7 +2340,7 @@ mod tests {
 
     #[test]
     fn relay_operator_api_origin_rejects_paths() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var("RELAY_OPERATOR_API_ORIGIN", "https://buzz.example/operator");
         let result = Config::from_env();
         std::env::remove_var("RELAY_OPERATOR_API_ORIGIN");
@@ -2307,7 +2353,7 @@ mod tests {
 
     #[test]
     fn push_is_opt_in_and_gateway_is_required_when_enabled() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous_enabled = std::env::var_os("BUZZ_PUSH_ENABLED");
         let previous = std::env::var_os("BUZZ_PUSH_GATEWAY_DELIVERY_URL");
         std::env::remove_var("BUZZ_PUSH_ENABLED");
@@ -2364,7 +2410,7 @@ mod tests {
 
     #[test]
     fn invalid_push_enabled_value_is_rejected() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_PUSH_ENABLED");
         std::env::set_var("BUZZ_PUSH_ENABLED", "sometimes");
         let result = Config::from_env();
@@ -2441,7 +2487,7 @@ mod tests {
 
     #[test]
     fn malformed_operator_listener_config_prevents_startup() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let result = config_with_operator_listeners(Some(";"));
 
         assert!(matches!(
@@ -2456,7 +2502,7 @@ mod tests {
     fn non_utf8_operator_listener_config_prevents_startup() {
         use std::os::unix::ffi::OsStringExt;
 
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let previous = std::env::var_os("BUZZ_OPERATOR_LISTENERS");
         std::env::set_var(
             "BUZZ_OPERATOR_LISTENERS",
@@ -2479,7 +2525,7 @@ mod tests {
 
     #[test]
     fn valid_and_absent_operator_listener_config_preserve_routes() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         let key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let raw = format!("{key}:https://listener.example/mentions");
         let config = config_with_operator_listeners(Some(&raw)).expect("valid listener config");
@@ -2497,7 +2543,7 @@ mod tests {
 
     #[test]
     fn invalid_push_gateway_timeout_is_not_silently_defaulted() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var("BUZZ_PUSH_GATEWAY_TIMEOUT_MS", "99");
         let result = Config::from_env();
         std::env::remove_var("BUZZ_PUSH_GATEWAY_TIMEOUT_MS");
@@ -2510,7 +2556,7 @@ mod tests {
 
     #[test]
     fn invalid_push_executor_key_id_is_rejected() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var("BUZZ_PUSH_EXECUTOR_KEY_ID", "");
         let result = Config::from_env();
         std::env::remove_var("BUZZ_PUSH_EXECUTOR_KEY_ID");
@@ -2523,7 +2569,7 @@ mod tests {
 
     #[test]
     fn huddle_audio_available_can_be_disabled_for_horizontal_scaling() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var("BUZZ_HUDDLE_AUDIO_AVAILABLE", "false");
         let config = Config::from_env().expect("config");
         std::env::remove_var("BUZZ_HUDDLE_AUDIO_AVAILABLE");
@@ -2543,7 +2589,7 @@ mod tests {
 
     #[test]
     fn pairing_relay_url_accepts_websocket_urls_and_rejects_http() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var("BUZZ_PAIRING_RELAY_URL", "wss://pairing.buzz.xyz");
         let config = Config::from_env().expect("config");
         assert_eq!(
@@ -2562,7 +2608,7 @@ mod tests {
 
     #[test]
     fn max_frame_bytes_can_be_configured() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         std::env::set_var("BUZZ_MAX_FRAME_BYTES", "262144");
         let config = Config::from_env().expect("config");
         std::env::remove_var("BUZZ_MAX_FRAME_BYTES");
@@ -2571,7 +2617,7 @@ mod tests {
 
     #[test]
     fn git_repo_path_is_created_if_missing() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guards = env_guards();
         // Pick a path under temp_dir that definitely doesn't exist yet.
         let base = std::env::temp_dir().join(format!(
             "buzz-test-git-repo-path-{}-{}",

@@ -338,8 +338,6 @@ pub struct DeleteCommunityRequest {
     acknowledgement_version: i32,
 }
 
-const DELETE_RECEIPT_PATH: &str = "/operator/communities/delete/receipt";
-
 /// Idempotently archive a community owned by the asserted end-user identity.
 pub async fn archive_community(
     State(state): State<Arc<AppState>>,
@@ -469,6 +467,12 @@ pub async fn unarchive_community(
 /// PostgreSQL-only transaction and returns `202`; inventory, approval,
 /// quiescing, object-store access, and executor work remain asynchronous.
 ///
+/// Resubmitting the same UUID with the same host, owner, and acknowledgement
+/// version returns `202` with that request's current `status`, at any stage and
+/// even after membership purge, and never admits new work. Callers recover an
+/// ambiguous submission by resending it; a different tuple under a known UUID
+/// is `409 deletion_request_conflict`.
+///
 /// Owner consent is asserted by the operator, not proven to the relay. The
 /// operator authenticates the owner and collects the acknowledgement upstream;
 /// this request carries only the operator's NIP-98 signature. Authorization is
@@ -575,67 +579,6 @@ pub async fn delete_community(
             "status": accepted.stage.to_string(),
         })),
     ))
-}
-
-/// Read one durable owner-deletion receipt without admitting or mutating work.
-pub async fn delete_community_receipt(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    authorize_operator_request(
-        &state,
-        &headers,
-        "POST",
-        DELETE_RECEIPT_PATH,
-        None,
-        Some(&body),
-    )
-    .await?;
-    let request: DeleteCommunityRequest = serde_json::from_slice(&body).map_err(|e| {
-        deletion_api_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            &format!("invalid delete-receipt JSON: {e}"),
-        )
-    })?;
-    let owner = validate_pubkey_hex(&request.owner_pubkey).ok_or_else(|| {
-        deletion_api_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "invalid owner_pubkey: expected 64-char hex pubkey",
-        )
-    })?;
-    let receipt = state.db.deletion_store().get(request.request_id).await;
-    let receipt = match receipt {
-        Ok(receipt)
-            if receipt.request_origin == buzz_db::deletion::DeletionRequestOrigin::Owner
-                && receipt.owner_pubkey.as_deref() == Some(owner.as_str())
-                && receipt.community_host == request.host
-                && receipt.acknowledgement_version == Some(request.acknowledgement_version) =>
-        {
-            receipt
-        }
-        Ok(_) | Err(buzz_db::DbError::NotFound(_)) => {
-            return Err(deletion_api_error(
-                StatusCode::NOT_FOUND,
-                "deletion_receipt_not_found",
-                "deletion receipt not found",
-            ));
-        }
-        Err(error) => {
-            return Err(internal_error(&format!(
-                "read owner deletion receipt: {error}"
-            )));
-        }
-    };
-    Ok(Json(serde_json::json!({
-        "request_id": receipt.id,
-        "community_id": receipt.community_id.to_string(),
-        "host": receipt.community_host,
-        "acknowledgement_version": receipt.acknowledgement_version,
-        "status": receipt.stage.to_string(),
-    })))
 }
 
 /// List communities where a pubkey currently holds the `owner` role.
@@ -779,7 +722,7 @@ pub async fn transfer_community(
         buzz_db::relay_members::TransferResult::LimitReached => {
             return Err(api_error(
                 StatusCode::CONFLICT,
-                "limit_reached: transferee already owns the maximum number of communities",
+                "limit_reached: transferee has reached the community limit",
             ));
         }
     };
@@ -947,7 +890,7 @@ mod postgres_tests {
     }
 
     async fn operator_test_state(operator_keys: &[Keys]) -> Option<Arc<AppState>> {
-        let mut config = crate::config::Config::from_env().ok()?;
+        let mut config = crate::config::Config::for_test(); // [FI-TRACE-ENV-RACE]
         config.database_url = crate::test_support::database_url();
         config.redis_url = "redis://127.0.0.1:1".to_string();
         config.relay_url = "wss://tenant.example".to_string();
@@ -1263,35 +1206,21 @@ mod postgres_tests {
         }
 
         let request_id = Uuid::new_v4();
-        let body = owner_delete_body(&host, &owner, request_id);
         let accepted = signed_operator_request(
             Arc::clone(&state),
             &operator,
             "POST",
             "/operator/communities/delete",
-            Some(body.clone()),
+            Some(owner_delete_body(&host, &owner, request_id)),
         )
         .await;
         assert_eq!(accepted.status(), StatusCode::ACCEPTED);
         assert_eq!(read_json(accepted).await["host"], host);
-
-        let receipt = signed_operator_request(
-            Arc::clone(&state),
-            &operator,
-            "POST",
-            "/operator/communities/delete/receipt",
-            Some(body),
-        )
-        .await;
-        assert_eq!(receipt.status(), StatusCode::OK);
-        let receipt = read_json(receipt).await;
-        assert_eq!(receipt["host"], host);
-        assert_eq!(receipt["request_id"], request_id.to_string());
     }
 
     #[tokio::test]
     #[ignore = "requires Postgres"]
-    async fn owner_delete_receipt_is_bound_read_only_and_reports_aborted() {
+    async fn owner_delete_resubmission_reports_current_status_without_new_intent() {
         let operator = Keys::generate();
         let outsider = Keys::generate();
         let owner = Keys::generate();
@@ -1325,25 +1254,43 @@ mod postgres_tests {
             .deletion_store()
             .list(1_000)
             .await
-            .expect("list receipts before reads")
+            .expect("list requests before replays")
             .into_iter()
             .filter(|request| request.id == request_id)
             .count();
 
-        let receipt = signed_operator_request(
+        let replay = signed_operator_request(
             Arc::clone(&state),
             &operator,
             "POST",
-            "/operator/communities/delete/receipt",
+            "/operator/communities/delete",
             Some(body.clone()),
         )
         .await;
-        assert_eq!(receipt.status(), StatusCode::OK);
-        let receipt = read_json(receipt).await;
-        assert_eq!(receipt["request_id"], request_id.to_string());
-        assert_eq!(receipt["host"], host);
-        assert_eq!(receipt["acknowledgement_version"], 1);
-        assert_eq!(receipt["status"], "submitted");
+        assert_eq!(replay.status(), StatusCode::ACCEPTED);
+        let replay = read_json(replay).await;
+        assert_eq!(replay["request_id"], request_id.to_string());
+        assert_eq!(replay["host"], host);
+        assert_eq!(replay["acknowledgement_version"], 1);
+        assert_eq!(replay["status"], "submitted");
+
+        // Recovery must survive membership purge: the replay converges on the
+        // stored tuple before any owner or archive check runs.
+        sqlx::query("DELETE FROM relay_members WHERE pubkey = $1 AND role = 'owner'")
+            .bind(owner.public_key().to_hex())
+            .execute(state.db.pool())
+            .await
+            .expect("simulate membership purge");
+        let purged_replay = signed_operator_request(
+            Arc::clone(&state),
+            &operator,
+            "POST",
+            "/operator/communities/delete",
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(purged_replay.status(), StatusCode::ACCEPTED);
+        assert_eq!(read_json(purged_replay).await["status"], "submitted");
 
         for mismatch in [
             serde_json::json!({
@@ -1358,33 +1305,51 @@ mod postgres_tests {
                 "request_id": request_id,
                 "acknowledgement_version": 1,
             }),
-            serde_json::json!({
-                "host": host,
-                "owner_pubkey": owner.public_key().to_hex(),
-                "request_id": request_id,
-                "acknowledgement_version": 2,
-            }),
         ] {
             let response = signed_operator_request(
                 Arc::clone(&state),
                 &operator,
                 "POST",
-                "/operator/communities/delete/receipt",
+                "/operator/communities/delete",
                 Some(mismatch.to_string()),
             )
             .await;
-            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            assert_eq!(response.status(), StatusCode::CONFLICT);
             assert_eq!(
                 read_json(response).await["code"],
-                "deletion_receipt_not_found"
+                "deletion_request_conflict"
             );
         }
+
+        // Version validation precedes the UUID lookup, so a changed version is
+        // rejected as unsupported rather than as a request conflict.
+        let changed_version = signed_operator_request(
+            Arc::clone(&state),
+            &operator,
+            "POST",
+            "/operator/communities/delete",
+            Some(
+                serde_json::json!({
+                    "host": host,
+                    "owner_pubkey": owner.public_key().to_hex(),
+                    "request_id": request_id,
+                    "acknowledgement_version": 2,
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+        assert_eq!(changed_version.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            read_json(changed_version).await["code"],
+            "unsupported_acknowledgement_version"
+        );
 
         let outsider_response = signed_operator_request(
             Arc::clone(&state),
             &outsider,
             "POST",
-            "/operator/communities/delete/receipt",
+            "/operator/communities/delete",
             Some(body.clone()),
         )
         .await;
@@ -1395,16 +1360,16 @@ mod postgres_tests {
             .deletion_store()
             .abort(request_id, &operator.public_key().to_hex(), "test abort")
             .await
-            .expect("abort receipt");
+            .expect("abort request");
         let aborted = signed_operator_request(
             Arc::clone(&state),
             &operator,
             "POST",
-            "/operator/communities/delete/receipt",
+            "/operator/communities/delete",
             Some(body),
         )
         .await;
-        assert_eq!(aborted.status(), StatusCode::OK);
+        assert_eq!(aborted.status(), StatusCode::ACCEPTED);
         assert_eq!(read_json(aborted).await["status"], "aborted");
 
         let after = state
@@ -1412,11 +1377,11 @@ mod postgres_tests {
             .deletion_store()
             .list(1_000)
             .await
-            .expect("list receipts after reads")
+            .expect("list requests after replays")
             .into_iter()
             .filter(|request| request.id == request_id)
             .count();
-        assert_eq!(before, after, "receipt lookups must not add request rows");
+        assert_eq!(before, after, "replays must not add request rows");
     }
 
     #[tokio::test]
@@ -2874,7 +2839,7 @@ mod postgres_tests {
     async fn provisioning_fails_closed_when_origin_unset_but_pubkeys_set() {
         let operator = Keys::generate();
 
-        let mut config = crate::config::Config::from_env().expect("default config loads");
+        let mut config = crate::config::Config::for_test(); // [FI-TRACE-ENV-RACE]
         config.require_relay_membership = false;
         config.redis_url = "redis://127.0.0.1:1".to_string();
         config.relay_operator_pubkeys = vec![operator.public_key().to_hex()];

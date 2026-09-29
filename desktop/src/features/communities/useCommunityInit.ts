@@ -150,6 +150,13 @@ type CommunityInitResult =
       error: string;
     };
 
+type EnterpriseLoginController = {
+  attemptId: string;
+  browserStarted: boolean;
+  resolve: ((allowed: boolean) => void) | null;
+  retired: boolean;
+};
+
 /**
  * Applies the active community config to the Tauri backend and resets
  * all community-scoped module singletons when the community changes.
@@ -178,14 +185,15 @@ export function useCommunityInit(
     error: string | null;
     isPending: boolean;
   } | null>(null);
-  const enterpriseLoginDecisionRef = useRef<
-    ((allowed: boolean) => void) | null
-  >(null);
-  const enterpriseLoginAttemptIdRef = useRef<string | null>(null);
+  const enterpriseLoginControllerRef = useRef<EnterpriseLoginController | null>(
+    null,
+  );
 
   const continueEnterpriseLogin = useCallback(() => {
-    const resolve = enterpriseLoginDecisionRef.current;
-    enterpriseLoginDecisionRef.current = null;
+    const controller = enterpriseLoginControllerRef.current;
+    if (!controller || controller.retired) return;
+    const resolve = controller.resolve;
+    controller.resolve = null;
     setEnterpriseLoginPrompt((prompt) =>
       prompt ? { ...prompt, error: null, isPending: true } : prompt,
     );
@@ -193,17 +201,26 @@ export function useCommunityInit(
   }, []);
 
   const cancelEnterpriseLogin = useCallback(() => {
-    const resolve = enterpriseLoginDecisionRef.current;
-    enterpriseLoginDecisionRef.current = null;
-    setEnterpriseLoginPrompt(null);
-    const attemptId = enterpriseLoginAttemptIdRef.current;
-    if (attemptId !== null) {
-      void cancelEnterpriseAuthLogin({ attemptId }).catch(() => {
-        // Best-effort cleanup for a browser login this hook invocation owns.
-      });
-      enterpriseLoginAttemptIdRef.current = null;
+    const controller = enterpriseLoginControllerRef.current;
+    if (controller !== null) {
+      controller.retired = true;
+      enterpriseLoginControllerRef.current = null;
     }
-    resolve?.(false);
+    setEnterpriseLoginPrompt(null);
+    setResult({
+      isReady: false,
+      needsSetup: false,
+      appliedKey: null,
+      error: "Enterprise sign-in canceled",
+    });
+    if (controller?.browserStarted) {
+      void cancelEnterpriseAuthLogin({ attemptId: controller.attemptId }).catch(
+        () => {
+          // Best-effort cleanup for a browser login this hook invocation owns.
+        },
+      );
+    }
+    controller?.resolve?.(false);
   }, []);
 
   // Trust-list edits must not reset active drafts, connections, or providers.
@@ -248,6 +265,7 @@ export function useCommunityInit(
   useEffect(() => {
     let cancelled = false;
     let ownedEnterpriseLoginAttemptId: string | null = null;
+    let ownedEnterpriseLoginController: EnterpriseLoginController | null = null;
 
     async function init() {
       if (!activeCommunity) {
@@ -408,15 +426,24 @@ export function useCommunityInit(
       const enterpriseLoginAttemptId = `enterprise-auth-${
         globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
       }`;
+      const enterpriseLoginController: EnterpriseLoginController = {
+        attemptId: enterpriseLoginAttemptId,
+        browserStarted: false,
+        resolve: null,
+        retired: false,
+      };
       try {
         const enterpriseAuth = await ensureEnterpriseLoginForRelay(
           activeCommunity.relayUrl,
           {
             loginAttemptId: enterpriseLoginAttemptId,
             onEnterpriseLoginRequired: () => {
-              if (cancelled) return false;
+              if (cancelled || enterpriseLoginController.retired) return false;
               return new Promise<boolean>((resolve) => {
-                enterpriseLoginDecisionRef.current = resolve;
+                enterpriseLoginController.resolve = resolve;
+                ownedEnterpriseLoginController = enterpriseLoginController;
+                enterpriseLoginControllerRef.current =
+                  enterpriseLoginController;
                 setEnterpriseLoginPrompt({
                   communityName: activeCommunity.name,
                   error: null,
@@ -425,34 +452,37 @@ export function useCommunityInit(
               });
             },
             onBrowserLoginStarted: () => {
+              if (enterpriseLoginController.retired) return;
+              enterpriseLoginController.browserStarted = true;
               ownedEnterpriseLoginAttemptId = enterpriseLoginAttemptId;
-              enterpriseLoginAttemptIdRef.current = enterpriseLoginAttemptId;
+              enterpriseLoginControllerRef.current = enterpriseLoginController;
             },
           },
         );
         enterpriseProfileForResult =
           authoritativeEnterpriseProfile(enterpriseAuth);
         ownedEnterpriseLoginAttemptId = null;
-        if (enterpriseLoginAttemptIdRef.current === enterpriseLoginAttemptId) {
-          enterpriseLoginAttemptIdRef.current = null;
+        if (
+          enterpriseLoginControllerRef.current === enterpriseLoginController
+        ) {
+          enterpriseLoginControllerRef.current = null;
         }
+        if (cancelled || enterpriseLoginController.retired) return;
         setEnterpriseLoginPrompt(null);
       } catch (error) {
         ownedEnterpriseLoginAttemptId = null;
-        if (enterpriseLoginAttemptIdRef.current === enterpriseLoginAttemptId) {
-          enterpriseLoginAttemptIdRef.current = null;
+        if (
+          enterpriseLoginControllerRef.current === enterpriseLoginController
+        ) {
+          enterpriseLoginControllerRef.current = null;
         }
         const errorMessage =
           error instanceof Error
             ? error.message
             : "Enterprise login is required for this community";
         console.error("Enterprise login gate failed:", error);
-        if (!cancelled) {
-          setEnterpriseLoginPrompt((prompt) =>
-            prompt
-              ? { ...prompt, error: errorMessage, isPending: false }
-              : prompt,
-          );
+        if (!cancelled && !enterpriseLoginController.retired) {
+          setEnterpriseLoginPrompt(null);
           setResult({
             isReady: false,
             needsSetup: false,
@@ -558,10 +588,16 @@ export function useCommunityInit(
 
     return () => {
       cancelled = true;
-      const resolveEnterpriseLogin = enterpriseLoginDecisionRef.current;
-      if (resolveEnterpriseLogin !== null) {
-        enterpriseLoginDecisionRef.current = null;
-        resolveEnterpriseLogin(false);
+      if (ownedEnterpriseLoginController !== null) {
+        ownedEnterpriseLoginController.retired = true;
+        if (
+          enterpriseLoginControllerRef.current ===
+          ownedEnterpriseLoginController
+        ) {
+          enterpriseLoginControllerRef.current = null;
+          ownedEnterpriseLoginController.resolve?.(false);
+        }
+        ownedEnterpriseLoginController = null;
       }
       if (ownedEnterpriseLoginAttemptId !== null) {
         void cancelEnterpriseAuthLogin({
@@ -569,11 +605,6 @@ export function useCommunityInit(
         }).catch(() => {
           // Best-effort cleanup for a browser login this hook invocation owns.
         });
-        if (
-          enterpriseLoginAttemptIdRef.current === ownedEnterpriseLoginAttemptId
-        ) {
-          enterpriseLoginAttemptIdRef.current = null;
-        }
         ownedEnterpriseLoginAttemptId = null;
       }
     };

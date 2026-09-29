@@ -1891,6 +1891,98 @@ test("joining enterprise login retry reruns init for the active community", asyn
   await expect(page.getByText("Browser login was rejected")).toHaveCount(0);
 });
 
+test("returning enterprise user can cancel pending browser login and retry into the app", async ({
+  page,
+}) => {
+  const relayUrl = "wss://enterprise-returning-recovery.example";
+  const communityId = "e2e-returning-enterprise-community";
+  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
+  await page.addInitScript(
+    ({ pubkey, relayUrl, communityId }) => {
+      window.localStorage.setItem(
+        `buzz-machine-onboarding-complete.v2:${pubkey}`,
+        "true",
+      );
+      window.localStorage.setItem(
+        "buzz-communities",
+        JSON.stringify([
+          {
+            id: communityId,
+            name: "Enterprise",
+            relayUrl,
+            addedAt: "2026-09-18T00:00:00.000Z",
+            pubkey,
+          },
+        ]),
+      );
+      window.localStorage.setItem("buzz-active-community-id", communityId);
+    },
+    { pubkey: BLANK_TYLER_IDENTITY.pubkey, relayUrl, communityId },
+  );
+  await installMockBridge(
+    page,
+    {
+      enterpriseLoginGate: { status: "required" },
+      enterpriseAuth: null,
+      enterpriseLoginFirstDelayMs: 5_000,
+      profileHasEvent: true,
+    },
+    {
+      relayWsUrl: relayUrl,
+      skipOnboardingSeed: true,
+      skipCommunitySeed: true,
+    },
+  );
+  await page.goto("/");
+
+  await expect(page.getByTestId("enterprise-browser-login-gate")).toBeVisible();
+  await page.getByTestId("enterprise-browser-login-continue").click();
+  await expect(
+    page.getByRole("button", { name: "Cancel sign-in" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Cancel sign-in" }).click();
+
+  await expect(page.getByTestId("community-apply-error")).toBeVisible();
+  await expect(page.getByText("Enterprise sign-in canceled")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+            (command) => command === "cancel_enterprise_auth_login",
+          ).length,
+      ),
+    )
+    .toBe(1);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+            (command) => command === "apply_workspace",
+          ).length,
+      ),
+    )
+    .toBe(0);
+
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByTestId("enterprise-browser-login-gate")).toBeVisible();
+  await page.getByTestId("enterprise-browser-login-continue").click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+            (command) => command === "apply_workspace",
+          ).length,
+      ),
+    )
+    .toBe(1);
+  await expect(page.getByTestId("enterprise-browser-login-gate")).toHaveCount(
+    0,
+  );
+});
+
 test("first-community owner can replace a mismatched account identity", async ({
   page,
 }) => {

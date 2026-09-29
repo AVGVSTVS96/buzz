@@ -383,6 +383,204 @@ test("useCommunityInit keeps cancellation visible while browser enterprise login
   }
 });
 
+test("useCommunityInit surfaces recovery after rejected enterprise browser login", async () => {
+  const { cleanup, renderHook, waitFor, act } = await import(
+    "@testing-library/react"
+  );
+  const { useCommunityInit } = await import("./useCommunityInit.ts");
+  const calls = [];
+  const restore = installTauriInvoke(async (command, args) => {
+    calls.push([command, args]);
+    if (command === "get_identity") {
+      return { pubkey: "pubkey-1", display_name: "Tester" };
+    }
+    if (command === "set_agent_avatar_communities") return null;
+    if (command === "enterprise_login_gate") return { status: "required" };
+    if (command === "get_enterprise_auth") return null;
+    if (command === "start_enterprise_auth_login") {
+      throw new Error("Browser login was rejected");
+    }
+    if (command === "apply_workspace") {
+      throw new Error("apply_workspace must not run after failed login");
+    }
+    throw new Error(`unexpected command: ${command}`);
+  });
+
+  try {
+    const hook = renderHook(() =>
+      useCommunityInit(testCommunity(), "community-key", false, true),
+    );
+
+    await waitFor(() => assert.ok("enterpriseLogin" in hook.result.current));
+    await act(async () => {
+      hook.result.current.enterpriseLogin.onContinue();
+    });
+
+    await waitFor(() =>
+      assert.equal(hook.result.current.error, "Browser login was rejected"),
+    );
+    assert.equal("enterpriseLogin" in hook.result.current, false);
+    assert.equal(
+      calls.filter(([command]) => command === "start_enterprise_auth_login")
+        .length,
+      1,
+    );
+    assert.equal(
+      calls.some(([command]) => command === "apply_workspace"),
+      false,
+    );
+    hook.unmount();
+  } finally {
+    restore();
+    cleanup();
+    mock.reset();
+  }
+});
+
+test("useCommunityInit ignores successful enterprise login completion after cancel", async () => {
+  const { cleanup, renderHook, waitFor, act } = await import(
+    "@testing-library/react"
+  );
+  const { useCommunityInit } = await import("./useCommunityInit.ts");
+  const calls = [];
+  let resolveLogin;
+  const restore = installTauriInvoke(async (command, args) => {
+    calls.push([command, args]);
+    if (command === "get_identity") {
+      return { pubkey: "pubkey-1", display_name: "Tester" };
+    }
+    if (command === "set_agent_avatar_communities") return null;
+    if (command === "enterprise_login_gate") return { status: "required" };
+    if (command === "get_enterprise_auth") return null;
+    if (command === "start_enterprise_auth_login") {
+      return new Promise((resolve) => {
+        resolveLogin = resolve;
+      });
+    }
+    if (command === "cancel_enterprise_auth_login") return null;
+    if (command === "apply_workspace") {
+      throw new Error("apply_workspace must not run after canceled login");
+    }
+    throw new Error(`unexpected command: ${command}`);
+  });
+
+  try {
+    const hook = renderHook(() =>
+      useCommunityInit(testCommunity(), "community-key", false, true),
+    );
+
+    await waitFor(() => assert.ok("enterpriseLogin" in hook.result.current));
+    await act(async () => {
+      hook.result.current.enterpriseLogin.onContinue();
+    });
+    await waitFor(() => {
+      assert.equal(
+        calls.some(([command]) => command === "start_enterprise_auth_login"),
+        true,
+      );
+    });
+
+    await act(async () => {
+      hook.result.current.enterpriseLogin.onCancel();
+      resolveLogin({ expiresAt: "2026-09-18T21:00:00Z" });
+    });
+
+    await waitFor(() =>
+      assert.equal(hook.result.current.error, "Enterprise sign-in canceled"),
+    );
+    assert.equal("enterpriseLogin" in hook.result.current, false);
+    assert.equal(
+      calls.some(([command]) => command === "apply_workspace"),
+      false,
+    );
+    hook.unmount();
+  } finally {
+    restore();
+    cleanup();
+    mock.reset();
+  }
+});
+
+test("useCommunityInit keeps a newer community prompt when stale enterprise login completes", async () => {
+  const { cleanup, renderHook, waitFor, act } = await import(
+    "@testing-library/react"
+  );
+  const { useCommunityInit } = await import("./useCommunityInit.ts");
+  const calls = [];
+  const resolvers = [];
+  const communityA = testCommunity({
+    id: "community-a",
+    name: "Community A",
+    relayUrl: "wss://enterprise-a.example",
+  });
+  const communityB = testCommunity({
+    id: "community-b",
+    name: "Community B",
+    relayUrl: "wss://enterprise-b.example",
+  });
+  const restore = installTauriInvoke(async (command, args) => {
+    calls.push([command, args]);
+    if (command === "get_identity") {
+      return { pubkey: "pubkey-1", display_name: "Tester" };
+    }
+    if (command === "set_agent_avatar_communities") return null;
+    if (command === "enterprise_login_gate") return { status: "required" };
+    if (command === "get_enterprise_auth") return null;
+    if (command === "start_enterprise_auth_login") {
+      return new Promise((resolve) => {
+        resolvers.push(resolve);
+      });
+    }
+    if (command === "cancel_enterprise_auth_login") return null;
+    if (command === "apply_workspace") {
+      throw new Error("apply_workspace must not run for stale login");
+    }
+    throw new Error(`unexpected command: ${command}`);
+  });
+
+  try {
+    const hook = renderHook(
+      ({ community, key }) => useCommunityInit(community, key, false, true),
+      { initialProps: { community: communityA, key: "community-a-key" } },
+    );
+
+    await waitFor(() => assert.ok("enterpriseLogin" in hook.result.current));
+    await act(async () => {
+      hook.result.current.enterpriseLogin.onContinue();
+    });
+    await waitFor(() => assert.equal(resolvers.length, 1));
+
+    hook.rerender({ community: communityB, key: "community-b-key" });
+    await waitFor(() =>
+      assert.equal(
+        hook.result.current.enterpriseLogin?.communityName,
+        "Community B",
+      ),
+    );
+
+    await act(async () => {
+      resolvers[0]({ expiresAt: "2026-09-18T21:00:00Z" });
+    });
+
+    await waitFor(() =>
+      assert.equal(
+        hook.result.current.enterpriseLogin?.communityName,
+        "Community B",
+      ),
+    );
+    assert.equal(hook.result.current.enterpriseLogin.isPending, false);
+    assert.equal(
+      calls.some(([command]) => command === "apply_workspace"),
+      false,
+    );
+    hook.unmount();
+  } finally {
+    restore();
+    cleanup();
+    mock.reset();
+  }
+});
+
 test("useCommunityInit waits for explicit enterprise browser consent", async () => {
   const { cleanup, renderHook, waitFor, act } = await import(
     "@testing-library/react"

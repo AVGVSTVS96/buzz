@@ -606,7 +606,8 @@ pub fn owner_count_advisory_lock_key(pubkey_hex: &str) -> i64 {
 
 /// Lifetime cap on communities a pubkey may own, counting owner-deleted
 /// communities whose tombstones permanently retain their hosts. Bounds
-/// create-then-delete host squatting; never below the active limit.
+/// create-then-delete host squatting. Absolute: it does not scale with
+/// `BUZZ_MAX_COMMUNITIES_PER_OWNER`.
 pub const MAX_LIFETIME_COMMUNITIES_PER_OWNER: i64 = 20;
 
 /// One owner's quota usage, read inside the admitting transaction.
@@ -621,8 +622,8 @@ pub(crate) struct OwnerQuota {
 impl OwnerQuota {
     /// Whether this owner may gain one more community.
     pub fn admits(self) -> bool {
-        let limit = max_communities_per_owner();
-        self.active < limit && self.lifetime < MAX_LIFETIME_COMMUNITIES_PER_OWNER.max(limit)
+        self.active < max_communities_per_owner()
+            && self.lifetime < MAX_LIFETIME_COMMUNITIES_PER_OWNER
     }
 }
 
@@ -1307,11 +1308,14 @@ mod postgres_tests {
     fn owner_quota_admits_only_under_active_and_lifetime_caps() {
         let quota = |active, lifetime| super::OwnerQuota { active, lifetime };
         let limit = super::max_communities_per_owner();
-        let lifetime = super::MAX_LIFETIME_COMMUNITIES_PER_OWNER.max(limit);
+        let lifetime = super::MAX_LIFETIME_COMMUNITIES_PER_OWNER;
         assert!(quota(0, 0).admits());
         assert!(quota(limit - 1, lifetime - 1).admits());
         assert!(!quota(limit, limit).admits(), "active cap");
-        assert!(!quota(0, lifetime).admits(), "tombstones count toward lifetime");
+        assert!(
+            !quota(0, lifetime).admits(),
+            "tombstones count toward lifetime"
+        );
     }
 
     #[test]

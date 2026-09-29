@@ -166,7 +166,7 @@ The relay enforces two per-owner caps on create and on transfer-in, both as
   (`BUZZ_MAX_COMMUNITIES_PER_OWNER`, default 5). A deletion keeps its slot
   until logical completion records `completed_at`.
 - **Lifetime:** live ownership plus every non-aborted owner deletion, including
-  completed ones, capped at 20 (or the active limit if that is higher).
+  completed ones, capped at an absolute 20 regardless of the active limit.
   Deleted communities keep their hosts as permanent tombstones, so this bounds
   create-then-delete host squatting. Aborted deletions restore the community
   and count only through its live membership.

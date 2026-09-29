@@ -157,6 +157,12 @@ current `status` at any stage, including after membership purge, and admits no
 new work. Clients recover an ambiguous submission by resending it. The same
 UUID with a different tuple returns `409 deletion_request_conflict`.
 
+The acknowledgement version is validated before the UUID lookup, so resend
+recovery only works while the relay still accepts the version the request was
+made under. Retiring a version makes resends of pending requests created under
+it fail with `400 unsupported_acknowledgement_version`; keep the old version
+accepted for replay until no client can hold a pending request made with it.
+
 ## Owner quota
 
 The relay enforces two per-owner caps on create and on transfer-in, both as

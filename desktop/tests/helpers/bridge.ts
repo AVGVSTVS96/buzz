@@ -199,7 +199,7 @@ type MockBridgeOptions = {
   builderlabDeletionHttpStatusSequence?: number[];
   builderlabDeletionBodyStatus?: number;
   /** Hold deletion/receipt responses until the test explicitly releases them. */
-  builderlabDeferDeletion?: boolean;
+  builderlabDeferDeletion?: boolean | "initial" | "receipt";
   builderlabAuthSequence?: Array<{
     email?: string;
     name?: string;

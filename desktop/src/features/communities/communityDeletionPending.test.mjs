@@ -84,7 +84,7 @@ test("persistence failure is observable and clear is bounded to the deletion key
   const target = storage();
   target.setItem("unrelated", "keep");
   assert.equal(persistPendingCommunityDeletion(envelope, target), true);
-  clearPendingCommunityDeletion(target);
+  clearPendingCommunityDeletion(envelope, target);
   assert.equal(target.getItem("unrelated"), "keep");
 });
 
@@ -98,6 +98,23 @@ test("persistence boundary never overwrites an existing envelope", () => {
   };
   assert.equal(persistPendingCommunityDeletion(second, target), false);
   assert.deepEqual(loadPendingCommunityDeletion(target), envelope);
+});
+
+test("terminal clear affects only the matching request and account envelope", () => {
+  const target = storage();
+  const second = {
+    ...envelope,
+    request_id: "44444444-4444-4444-8444-444444444444",
+  };
+  assert.equal(persistPendingCommunityDeletion(second, target), true);
+  const bytes = target.getItem("buzz:hosted-community-delete-pending:v1");
+  clearPendingCommunityDeletion(envelope, target);
+  assert.equal(
+    target.getItem("buzz:hosted-community-delete-pending:v1"),
+    bytes,
+  );
+  clearPendingCommunityDeletion(second, target);
+  assert.equal(loadPendingCommunityDeletion(target), null);
 });
 
 test("ambiguous receipt and same-UUID resubmit misses retain the envelope", () => {

@@ -163,7 +163,7 @@ export function HostedCommunitiesSettingsCard() {
         ) {
           setPendingDeletion(storedDeletion);
         } else {
-          clearPendingCommunityDeletion();
+          clearPendingCommunityDeletion(storedDeletion);
           setPendingDeletion(null);
         }
       }
@@ -205,6 +205,7 @@ export function HostedCommunitiesSettingsCard() {
       });
     return () => {
       active = false;
+      accountGeneration.current += 1;
     };
   }, [loadAccount]);
 
@@ -443,7 +444,7 @@ export function HostedCommunitiesSettingsCard() {
     );
     if (response.error) {
       if (disposition === "abort" || disposition === "clear") {
-        clearPendingCommunityDeletion();
+        clearPendingCommunityDeletion(envelope);
         setPendingDeletion(null);
       }
       throw new Error(
@@ -461,7 +462,7 @@ export function HostedCommunitiesSettingsCard() {
         "Deletion acceptance is uncertain. Check deletion status; do not start a new request.",
       );
     }
-    clearPendingCommunityDeletion();
+    clearPendingCommunityDeletion(envelope);
     setPendingDeletion(null);
     hiddenCommunityIds.current.add(envelope.community_id);
     setCommunities((current) =>
@@ -673,7 +674,7 @@ export function HostedCommunitiesSettingsCard() {
         BUILDERLAB_BACKEND_ORIGIN,
       )
     ) {
-      clearPendingCommunityDeletion();
+      clearPendingCommunityDeletion(envelope);
       setPendingDeletion(null);
       return;
     }

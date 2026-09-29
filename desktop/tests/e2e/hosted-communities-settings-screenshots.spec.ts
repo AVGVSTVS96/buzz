@@ -79,7 +79,7 @@ async function openDeletionFixture(
       | { identity: { npub?: string; pubkey_hex?: string } }
       | { error: { code: string; setup_needed?: boolean } }
     >;
-    deferDeletion?: boolean;
+    deferDeletion?: boolean | "initial" | "receipt";
   } = {},
 ) {
   await installMockBridge(page, {
@@ -117,6 +117,7 @@ async function startArchivedDeletion(page: Page) {
   await page
     .getByTestId("hosted-community-row")
     .filter({ hasText: "Archived team" })
+    .filter({ hasNotText: "Second archived team" })
     .getByRole("button", { name: "Delete", exact: true })
     .click();
   await page
@@ -363,6 +364,87 @@ test("late A response cannot settle after a valid A-B-A owner transition", async
     0,
   );
   await expect.poll(() => storedDeletionRequestId(page)).toBeNull();
+});
+
+test("a pre-remount acceptance cannot erase a later uncertain request", async ({
+  page,
+}) => {
+  const secondArchived = {
+    id: "33333333-3333-4333-8333-333333333333",
+    name: "Second archived team",
+    normalized_host: "second.communities.buzz.xyz",
+    archived_at: "2026-09-28T00:00:00Z",
+  };
+  await openDeletionFixture(page, {
+    capability: true,
+    communities: [...DELETION_COMMUNITIES, secondArchived],
+    deferDeletion: "initial",
+    errorSequence: [null, { code: "acceptance_unknown" }, null],
+  });
+  await startArchivedDeletion(page);
+  const firstId = await storedDeletionRequestId(page);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_COMMANDS__?.filter(
+            (command) => command === "delete_builderlab_community",
+          ).length ?? 0,
+      ),
+    )
+    .toBe(1);
+  await page.evaluate(() => {
+    if (window.__BUZZ_E2E__?.mock)
+      window.__BUZZ_E2E__.mock.builderlabDeferDeletion = false;
+  });
+
+  expect(firstId).not.toBeNull();
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("settings-view")).toHaveCount(0);
+  await openSettings(page, "hosted-communities");
+  await expect.poll(() => storedDeletionRequestId(page)).toBeNull();
+  await expect(
+    page.getByText("Deletion started", { exact: true }),
+  ).toBeVisible();
+
+  const second = page
+    .getByTestId("hosted-community-row")
+    .filter({ hasText: "Second archived team" });
+  await second.getByRole("button", { name: "Delete", exact: true }).click();
+  await page
+    .getByLabel("Type the exact host to continue: second.communities.buzz.xyz")
+    .fill("second.communities.buzz.xyz");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page
+    .getByRole("button", { name: "Delete community permanently" })
+    .click();
+  const pendingKey = "buzz:hosted-community-delete-pending:v1";
+  const secondBytes = await page.evaluate(
+    (key) => window.localStorage.getItem(key),
+    pendingKey,
+  );
+  expect(secondBytes).not.toBeNull();
+  expect(JSON.parse(secondBytes as string).request_id).not.toBe(firstId);
+  await expect(
+    page.getByText(/Deletion acceptance is uncertain/),
+  ).toBeVisible();
+
+  expect(
+    await page.evaluate(() =>
+      window.__BUZZ_E2E_RELEASE_BUILDERLAB_DELETIONS__?.(),
+    ),
+  ).toBe(1);
+  await expect
+    .poll(() =>
+      page.evaluate((key) => window.localStorage.getItem(key), pendingKey),
+    )
+    .toBe(secondBytes);
+  await expect(
+    page.getByText(JSON.parse(secondBytes as string).request_id, {
+      exact: true,
+    }),
+  ).toBeVisible();
 });
 
 test("one pending envelope blocks a second mounted deletion without overwriting or dispatching", async ({

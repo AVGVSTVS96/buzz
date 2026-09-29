@@ -99,24 +99,22 @@ test("the string normalizer rejects the same non-key values directly", () => {
 });
 
 test("shared unknown errors stay neutral on non-deletion surfaces when deletion is unavailable", () => {
-  for (const canDeleteBuzzCommunities of [undefined, false]) {
-    for (const fallback of [
-      "Could not create the community.",
-      "Could not archive the community.",
-      "Could not load communities.",
-      "Could not prepare hosted-community onboarding.",
-    ]) {
-      const message = hostedCommunityErrorMessage(
-        { code: "unknown" },
-        undefined,
-        fallback,
-      );
-      assert.equal(
-        message,
-        "The hosted-community service returned an invalid response.",
-        `capability=${String(canDeleteBuzzCommunities)} fallback=${fallback}`,
-      );
-      assert.doesNotMatch(message, /delet/i);
-    }
+  for (const fallback of [
+    "Could not create the community.",
+    "Could not archive the community.",
+    "Could not load communities.",
+    "Could not prepare hosted-community onboarding.",
+  ]) {
+    const message = hostedCommunityErrorMessage(
+      { code: "unknown" },
+      undefined,
+      fallback,
+    );
+    assert.equal(
+      message,
+      "The hosted-community service returned an invalid response.",
+      `fallback=${fallback}`,
+    );
+    assert.doesNotMatch(message, /delet/i);
   }
 });

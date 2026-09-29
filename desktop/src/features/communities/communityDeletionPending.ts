@@ -123,10 +123,14 @@ export function persistPendingCommunityDeletion(
 }
 
 export function clearPendingCommunityDeletion(
+  envelope: PendingCommunityDeletion,
   storage: StorageLike = defaultStorage(),
 ): void {
   try {
-    storage.removeItem(PENDING_COMMUNITY_DELETION_KEY);
+    const stored = loadPendingCommunityDeletion(storage);
+    if (stored && KEYS.every((key) => stored[key] === envelope[key])) {
+      storage.removeItem(PENDING_COMMUNITY_DELETION_KEY);
+    }
   } catch {
     // Clearing is best effort after a terminal server result.
   }

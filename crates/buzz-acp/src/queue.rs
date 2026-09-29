@@ -2195,20 +2195,21 @@ impl MergeFraming {
     }
 }
 
-/// Framing strings for the goose-native steer path (lib.rs mode-gate),
-/// pulled from the same source-of-truth as the cancel+merge fallback
+/// Section tag carrying the goose-native steer guidance.
+pub(crate) const NATIVE_STEER_TAG: &str = "steering";
+
+/// Guidance for the goose-native steer path (lib.rs mode-gate), pulled from
+/// the same source-of-truth as the cancel+merge fallback
 /// (`MergeFraming::for_reason(Some(CancelReason::Steer))`).
 ///
-/// Returns `(new_tag, closing_note)`. Native-steer renders only
-/// the new-message header + the single event block + the closing note —
-/// no `prior_header`, no original-request section, because the in-flight
-/// goose turn already has all of that in context. The two paths share
-/// these strings so an agent receiving either transport gets the same
+/// Native steer renders this guidance inside a [`NATIVE_STEER_TAG`] section
+/// followed by the single `<buzz-event>` — no prior-request section, because
+/// the in-flight goose turn already has that in context. The two paths share
+/// this wording so an agent receiving either transport gets the same
 /// "weave it in, don't abandon your work" orientation (Eva's drift-proof
 /// requirement: native and fallback must not diverge in UX).
-pub(crate) fn native_steer_framing() -> (&'static str, &'static str) {
-    let framing = MergeFraming::for_reason(Some(CancelReason::Steer));
-    (framing.new_tag, framing.closing_note)
+pub(crate) fn native_steer_guidance() -> &'static str {
+    MergeFraming::for_reason(Some(CancelReason::Steer)).closing_note
 }
 
 #[cfg(test)]

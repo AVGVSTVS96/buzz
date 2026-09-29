@@ -499,7 +499,7 @@ pub enum ControlSignal {
 /// The read loop owns the `AcpClient`'s reader/writer for the duration of the
 /// turn, so we cannot drive a steer write from the main thread directly. The
 /// main loop carries the steer prompt body (already framed by
-/// `queue::native_steer_framing()` + `queue::format_event_block`); the read
+/// `queue::native_steer_guidance()` + `queue::format_event_block`); the read
 /// loop completes `sessionId` (lexical) and `expectedRunId`
 /// (`AcpClient::active_run_id` at write time) when it actually emits the
 /// JSON-RPC request. The main loop awaits a `SteerAck` on the `ack_tx`
@@ -532,7 +532,7 @@ pub enum ControlSignal {
 pub struct SteerRequest {
     /// Prompt body text blocks. Each entry becomes one `text` content
     /// block in `params.prompt`. Built by the main loop via
-    /// `queue::native_steer_framing()` + `queue::format_event_block` so
+    /// `queue::native_steer_guidance()` + `queue::format_event_block` so
     /// the wording cannot drift from the cancel+merge fallback path.
     pub prompt_blocks: Vec<String>,
     /// Oneshot for the read loop to report the outcome.

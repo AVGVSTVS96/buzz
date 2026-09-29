@@ -4314,20 +4314,19 @@ fn try_native_steer(
     steer_ack_tx: &mpsc::UnboundedSender<SteerAckEvent>,
 ) -> bool {
     let channel_id = scope.channel_id();
-    // Build the steer body: framing strings come from
-    // `queue::native_steer_framing()` (Eva's drift-proof requirement —
-    // native and cancel+merge fallback share these so the agent gets the
-    // same orientation regardless of transport). The single event block
-    // is rendered by `queue::format_event_block`, the same function
-    // `queue::format_prompt` uses internally for `[Buzz event: …]`
-    // sections, so the rendering also cannot drift.
+    // Build the steer body: a `<steering>` section holding the guidance from
+    // `queue::native_steer_guidance()` (Eva's drift-proof requirement —
+    // native and cancel+merge fallback share that wording so the agent gets
+    // the same orientation regardless of transport), followed by the single
+    // `<buzz-event>`. The event block is rendered by
+    // `queue::format_event_block`, the same function `queue::format_prompt`
+    // uses for its event sections, so the rendering also cannot drift.
     //
     // Passing `None` for `channel_info` / `profile_lookup` is intentional:
     // native steer is a *delta* into a live turn — the agent already saw
     // channel context and the actor's profile in the original prompt,
     // duplicating it here would defeat the point of non-cancelling
     // steering (which is to inject only what's new).
-    let (tag, closing) = queue::native_steer_framing();
     let event_id_hex = event.id.to_hex();
     let be = queue::BatchEvent {
         event,
@@ -4335,13 +4334,14 @@ fn try_native_steer(
         received_at: std::time::Instant::now(),
     };
     let event_block = queue::format_event_block(channel_id, None, &be, None);
-    let new_message = prompt_framing::semantic_section(tag, "");
+    let steering =
+        prompt_framing::semantic_section(queue::NATIVE_STEER_TAG, queue::native_steer_guidance());
     let event_section = prompt_framing::semantic_section_with_attributes(
         "buzz-event",
         &[("type", prompt_tag.as_str())],
         &event_block,
     );
-    let body = format!("{new_message}\n\n{event_section}\n\n{closing}");
+    let body = format!("{steering}\n\n{event_section}");
 
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<pool::SteerAck>();
     let request = pool::SteerRequest {
@@ -5292,9 +5292,14 @@ mod agent_draft_prompt_tests {
         assert!(prompt.contains("## Incoming Turn Contract"));
         assert!(prompt.contains("`Content:` field in the current `<buzz-event>`"));
         assert!(prompt.contains("each event inside `<buzz-events>`"));
-        // Bind native-steer wording to its production framing. Interrupt
+        // Bind native-steer wording to its production framing. Merge
         // framing is bound through `format_prompt` in the queue tests.
-        assert!(prompt.contains(crate::queue::native_steer_framing().0));
+        assert!(prompt.contains(&format!(
+            "`<{}>` section of guidance, followed by the new request in a `<buzz-event>`",
+            crate::queue::NATIVE_STEER_TAG
+        )));
+        assert!(prompt.contains("`<new-message-arrived-while-you-were-working>`"));
+        assert!(prompt.contains("`<new-request-supersedes-previous>`"));
         assert!(prompt.contains("Use `<thread-context>` or `<conversation-context>`"));
         assert!(prompt.contains("do not mistake prior messages for the current request"));
         assert!(prompt.contains("Treat `<context>` as authoritative routing"));
@@ -9491,6 +9496,69 @@ mod error_outcome_emission_tests {
     ) {
         let generation = pool.record_scope_owner(scope.clone(), agent.index);
         agent.state.set_scope_owner_generation(scope, generation);
+    }
+
+    #[tokio::test]
+    async fn native_steer_body_is_steering_guidance_then_one_buzz_event() {
+        let channel_id = Uuid::new_v4();
+        let scope = scope::SessionScope::Conversation { channel_id };
+        let mut pool = AgentPool::from_slots(vec![None]);
+        let (steer_tx, mut steer_rx) = mpsc::channel::<crate::pool::SteerRequest>(1);
+        let task_id = pool.join_set.spawn(async {}).id();
+        pool.task_map_mut().insert(
+            task_id,
+            crate::pool::TaskMeta {
+                agent_index: 0,
+                channel_id: Some(channel_id),
+                scope: Some(scope.clone()),
+                turn_id: "test-turn-id".into(),
+                recoverable_batch: None,
+                control_tx: None,
+                steer_tx: Some(steer_tx),
+                successful_steer_deliveries: HashSet::new(),
+            },
+        );
+        let mut queue = EventQueue::new(config::DedupMode::Queue);
+        let (steer_ack_tx, _steer_ack_rx) = mpsc::unbounded_channel();
+        let event = EventBuilder::new(Kind::Custom(9), "Change of plan: reply only DONE!")
+            .sign_with_keys(&Keys::generate())
+            .expect("sign steer event");
+
+        assert!(try_native_steer(
+            &mut pool,
+            &mut queue,
+            scope,
+            event.clone(),
+            "@mention".into(),
+            &steer_ack_tx,
+        ));
+
+        let request = steer_rx.try_recv().expect("native steer request sent");
+        let [body] = request.prompt_blocks.as_slice() else {
+            panic!("expected exactly one steer prompt block");
+        };
+        let guidance = crate::queue::native_steer_guidance();
+        let event_block = crate::queue::format_event_block(
+            channel_id,
+            None,
+            &BatchEvent {
+                event: event.clone(),
+                prompt_tag: "@mention".into(),
+                received_at: std::time::Instant::now(),
+            },
+            None,
+        );
+        assert_eq!(
+            body,
+            &format!(
+                "<steering>\n{guidance}\n</steering>\n\n\
+                 <buzz-event type=\"@mention\">\n{event_block}\n</buzz-event>"
+            )
+        );
+        assert!(!body.contains("new-message-arrived-while-you-were-working"));
+        assert_eq!(body.matches(guidance).count(), 1);
+        assert_eq!(body.matches(&event.id.to_hex()).count(), 1);
+        assert_eq!(body.matches("Change of plan: reply only DONE!").count(), 1);
     }
 
     #[tokio::test]

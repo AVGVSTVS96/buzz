@@ -20,7 +20,7 @@ export function extractPromptText(payload: Record<string, unknown>): string {
 }
 
 const SEMANTIC_PROMPT_SECTION_START =
-  /^\s*<(?:workspace|base|agent-instructions|system|team-instructions|core-memory|huddle-instructions|channel-canvas|context|thread-context|conversation-context|buzz-event|buzz-events|what-you-were-working-on|new-message-arrived-while-you-were-working|previous-request-interrupted-before-completion|new-request-supersedes-previous)(?:\s[^>]*)?>/;
+  /^\s*<(?:workspace|base|agent-instructions|system|team-instructions|core-memory|huddle-instructions|channel-canvas|context|thread-context|conversation-context|steering|buzz-event|buzz-events|what-you-were-working-on|new-message-arrived-while-you-were-working|previous-request-interrupted-before-completion|new-request-supersedes-previous)(?:\s[^>]*)?>/;
 
 /**
  * Parse ACP prompt blocks without losing the connector-facing slash-command
@@ -416,6 +416,7 @@ function splitSemanticTurnSections(text: string): {
     "context",
     "thread-context",
     "conversation-context",
+    "steering",
     "buzz-event",
     "buzz-events",
     "what-you-were-working-on",
@@ -473,6 +474,8 @@ function semanticTurnTitle(
       const truncated = attributes.truncated === "true" ? ", truncated" : "";
       return `${label} (${attributes.included} of ${attributes.total} messages${truncated})`;
     }
+    case "steering":
+      return "Steering";
     case "buzz-event":
       return attributes.type ? `Buzz event: ${attributes.type}` : "Buzz event";
     case "buzz-events":

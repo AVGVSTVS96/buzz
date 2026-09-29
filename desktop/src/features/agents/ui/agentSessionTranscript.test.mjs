@@ -1357,6 +1357,57 @@ test("steer ingress bundles its prompt context into the steer prompt segment, no
   );
 });
 
+test("native steer renders the event under steering guidance as the user message", () => {
+  const guidance =
+    "Note: A new message arrived while you were working. Continue your in-progress work.";
+  const events = [
+    {
+      seq: 1,
+      timestamp: "2026-07-01T10:00:00.000Z",
+      kind: "acp_write",
+      agentIndex: 0,
+      channelId: "ch-1",
+      sessionId: "sess-1",
+      turnId: "turn-1",
+      payload: {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "_goose/unstable/session/steer",
+        params: {
+          sessionId: "sess-1",
+          prompt: [
+            {
+              type: "text",
+              text: [
+                "<steering>",
+                guidance,
+                "</steering>",
+                "",
+                '<buzz-event type="@mention">',
+                `Event ID: ${"e".repeat(64)}`,
+                `From: x (hex: ${"f".repeat(64)})`,
+                "Content: reply only DONE!",
+                "</buzz-event>",
+              ].join("\n"),
+            },
+          ],
+        },
+      },
+    },
+  ];
+
+  const rawItems = buildTranscript(events);
+  const steerMessage = rawItems.find((item) => item.type === "message");
+  const steerContext = rawItems.find((item) => item.type === "metadata");
+  assert.equal(steerMessage?.text, "reply only DONE!");
+  assert.equal(steerMessage?.acpSource, "session/steer:user");
+  assert.deepEqual(
+    steerContext?.sections.map((section) => section.title),
+    ["Steering", "Buzz event: @mention"],
+  );
+  assert.equal(steerContext?.sections[0].body, guidance);
+});
+
 // --- session/prompt late delivery (live subscription timing race) ---
 
 test("buildTranscript correctly renders prompt segment when session/prompt arrives after status lifecycle events", () => {

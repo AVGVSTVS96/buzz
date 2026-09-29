@@ -544,7 +544,7 @@ pub enum TransferResult {
     LifecycleConflict,
     /// Durable deletion intent exists and wins over ownership mutation.
     DeletionPending,
-    /// The transferee already owns the maximum number of communities.
+    /// The transferee has reached the active or lifetime community limit.
     /// Enforced atomically inside the transfer transaction so concurrent
     /// transfers to the same recipient cannot both pass the limit.
     LimitReached,
@@ -684,8 +684,8 @@ pub(crate) async fn owner_quota_in_transaction(
 /// 3. Locks the current owner row `FOR UPDATE` and verifies
 ///    `expected_owner_pubkey` matches. This prevents a stale-owner race where
 ///    a delayed/retried request overwrites a completed transfer.
-/// 4. Enforces the [`MAX_COMMUNITIES_PER_OWNER`] limit on the transferee by
-///    counting owned communities inside the same transaction.
+/// 4. Enforces the transferee's active and lifetime limits
+///    ([`OwnerQuota::admits`]) inside the same transaction.
 /// 5. Upserts `new_owner_pubkey` as `owner` (insert or promote).
 /// 6. Demotes every other owner in this community to `member` — **not**
 ///    `admin`, per product decision: the former owner retains no management

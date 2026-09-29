@@ -44,7 +44,7 @@ pub enum CreateCommunityWithOwnerResult {
     Created(CreatedCommunityRecord),
     /// The host already belongs to another owner.
     HostExists,
-    /// The intended owner already owns the maximum number of communities.
+    /// The intended owner has reached the active or lifetime community limit.
     LimitReached,
 }
 
@@ -68,7 +68,7 @@ pub struct OwnedCommunitiesPage {
     pub communities: Vec<OwnedCommunityRecord>,
     /// De-duplicated live memberships and incomplete owner deletion reservations.
     pub quota_used: i64,
-    /// Configured maximum hosted communities for one owner.
+    /// Configured active limit only; the lifetime cap is reflected in `can_create`.
     pub quota_limit: i64,
     /// Whether the snapshot leaves room under both the active and lifetime caps.
     pub can_create: bool,

@@ -172,7 +172,10 @@ The relay enforces two per-owner caps on create and on transfer-in, both as
   and count only through its live membership.
 
 Owner-list responses carry `quota_used` (active), `quota_limit` (active), and
-`can_create` (both caps). The projection is advisory: clients may use it for
+`can_create` (both caps). `can_create: false` is the only signal a client needs:
+show a generic community-limit message and do not derive a reason from the
+counts, because an owner at the lifetime cap can have `quota_used` below
+`quota_limit`. The projection is advisory: clients may use it for
 UX, but the relay's `limit_reached` is authoritative, and quota changes have no
 deployment order. Keep owner deletion off until this relay and the drain
 executor are live; on rollback, turn deletion off before rolling back the relay.

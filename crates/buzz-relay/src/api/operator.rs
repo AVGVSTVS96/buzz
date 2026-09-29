@@ -722,7 +722,7 @@ pub async fn transfer_community(
         buzz_db::relay_members::TransferResult::LimitReached => {
             return Err(api_error(
                 StatusCode::CONFLICT,
-                "limit_reached: transferee already owns the maximum number of communities",
+                "limit_reached: transferee has reached the community limit",
             ));
         }
     };

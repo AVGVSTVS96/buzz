@@ -15,6 +15,7 @@ import { npubEncode } from "nostr-tools/nip19";
 
 import {
   hostedCommunityErrorMessage,
+  hostedCommunityCreateAvailable,
   normalizedBoundKeyHex,
   usableBoundIdentityNpub,
 } from "./hostedCommunityApi.ts";
@@ -117,4 +118,15 @@ test("shared unknown errors stay neutral on non-deletion surfaces when deletion 
     );
     assert.doesNotMatch(message, /delet/i);
   }
+});
+
+test("only explicit can_create false hides Create, never visible rows or absent projection", () => {
+  for (const response of [
+    {},
+    { communities: Array.from({ length: 7 }) },
+    { can_create: true },
+  ]) {
+    assert.equal(hostedCommunityCreateAvailable(response), true);
+  }
+  assert.equal(hostedCommunityCreateAvailable({ can_create: false }), false);
 });

@@ -79,6 +79,13 @@ export type HostedCommunityAccount = {
   canCreate: boolean;
 };
 
+/** Only the server's explicit negative quota projection blocks creation. */
+export function hostedCommunityCreateAvailable(
+  response: HostedCommunitiesResponse,
+): boolean {
+  return response.can_create !== false;
+}
+
 export function hostedCommunityErrorMessage(
   error: HostedCommunityApiError | undefined,
   correlationId: string | undefined,
@@ -221,10 +228,7 @@ export async function loadHostedCommunityAccount(): Promise<HostedCommunityAccou
     quotaLimit: Number.isInteger(communitiesResponse.quota_limit)
       ? (communitiesResponse.quota_limit as number)
       : null,
-    canCreate:
-      Number.isInteger(communitiesResponse.quota_used) &&
-      Number.isInteger(communitiesResponse.quota_limit) &&
-      communitiesResponse.can_create === true,
+    canCreate: hostedCommunityCreateAvailable(communitiesResponse),
   };
 }
 

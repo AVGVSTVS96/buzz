@@ -267,8 +267,8 @@ type E2eConfig = {
     } | null>;
     builderlabDeletionHttpStatusSequence?: number[];
     builderlabDeletionBodyStatus?: number;
-    /** Hold deletion/receipt responses until the test explicitly releases them. */
-    builderlabDeferDeletion?: boolean | "initial" | "receipt";
+    /** Hold deletion responses until the test explicitly releases them. */
+    builderlabDeferDeletion?: boolean | "initial";
     builderlabAuthSequence?: Array<{
       email?: string;
       name?: string;
@@ -12654,14 +12654,10 @@ export function maybeInstallE2eTauriMocks() {
           },
         };
       }
-      case "delete_builderlab_community":
-      case "get_builderlab_community_deletion_receipt": {
+      case "delete_builderlab_community": {
         if (
           activeConfig?.mock?.builderlabDeferDeletion === true ||
-          (activeConfig?.mock?.builderlabDeferDeletion === "initial" &&
-            command === "delete_builderlab_community") ||
-          (activeConfig?.mock?.builderlabDeferDeletion === "receipt" &&
-            command === "get_builderlab_community_deletion_receipt")
+          activeConfig?.mock?.builderlabDeferDeletion === "initial"
         ) {
           await new Promise<void>((resolve) => {
             heldBuilderlabDeletionReleases.push(resolve);
@@ -12718,7 +12714,7 @@ export function maybeInstallE2eTauriMocks() {
             host: input.host,
             request_id: input.requestId,
             acknowledgement_version: input.acknowledgementVersion,
-            status: "accepted",
+            status: "submitted",
           },
         };
       }

@@ -26,7 +26,7 @@ export type PendingCommunityDeletion = CommunityDeletionRequest & {
   backend_origin: string;
 };
 
-export type CommunityDeletionAttempt = "initial" | "receipt" | "resubmit";
+export type CommunityDeletionAttempt = "initial" | "check";
 
 export type CommunityDeletionResponseLike = {
   request_id?: string;
@@ -122,13 +122,21 @@ export function persistPendingCommunityDeletion(
   }
 }
 
+/** Confirm the durable request still matches before sending or settling it. */
+export function pendingCommunityDeletionMatchesPersisted(
+  envelope: PendingCommunityDeletion,
+  storage: StorageLike = defaultStorage(),
+): boolean {
+  const stored = loadPendingCommunityDeletion(storage);
+  return stored !== null && KEYS.every((key) => stored[key] === envelope[key]);
+}
+
 export function clearPendingCommunityDeletion(
   envelope: PendingCommunityDeletion,
   storage: StorageLike = defaultStorage(),
 ): void {
   try {
-    const stored = loadPendingCommunityDeletion(storage);
-    if (stored && KEYS.every((key) => stored[key] === envelope[key])) {
+    if (pendingCommunityDeletionMatchesPersisted(envelope, storage)) {
       storage.removeItem(PENDING_COMMUNITY_DELETION_KEY);
     }
   } catch {
@@ -170,46 +178,71 @@ function responseMatchesDeletionTuple(
   );
 }
 
-/**
- * Decide whether one server result can terminate a persisted deletion intent.
- * Once dispatch is ambiguous, ordinary receipt/resubmit errors retain the same
- * UUID; only a tuple-bound acceptance or abort is terminal.
- */
+const ACCEPTED_STAGES = new Set([
+  "submitted",
+  "inventoried",
+  "approved",
+  "fenced",
+  "drained",
+  "bindings_removed",
+  "postgres_purged",
+  "cache_purged",
+  "logically_verified",
+  "retention_pending",
+]);
+
+const DEFINITIVE_ERRORS: Readonly<Record<string, number>> = {
+  missing_mapping: 400,
+  invalid_request: 400,
+  confirmation_mismatch: 400,
+  unsupported_acknowledgement_version: 400,
+  not_owner: 404,
+  must_archive: 409,
+  protected_target: 409,
+  deletion_conflict: 409,
+};
+
+const FRESH_ONLY_ERRORS = new Set([
+  "missing_mapping",
+  "invalid_request",
+  "confirmation_mismatch",
+  "unsupported_acknowledgement_version",
+]);
+
+/** Settle only a tuple-bound stage or a native-status/typed-code rejection. */
 export function deletionResponseDisposition(
   transport: CommunityDeletionTransport,
   envelope: PendingCommunityDeletion,
   attempt: CommunityDeletionAttempt,
 ): CommunityDeletionDisposition {
   const response = transport.body ?? {};
-  const httpStatus = transport.http_status;
+  const status = transport.http_status;
   const tupleMatches = responseMatchesDeletionTuple(response, envelope);
-  if (httpStatus === 202 && response.status === "accepted" && tupleMatches) {
-    return "accept";
+  if (status === 202 && tupleMatches) {
+    if (response.status && ACCEPTED_STAGES.has(response.status))
+      return "accept";
+    if (response.status === "aborted") return "abort";
   }
   if (
-    httpStatus === 409 &&
+    status === 409 &&
     response.error?.code === "deletion_aborted" &&
     tupleMatches
   ) {
     return "abort";
   }
-  if (attempt !== "initial" || !response.error?.code) return "retain";
-
-  // This exact status/code map is the established cross-client contract. It
-  // narrows terminal fresh-admission failures but does not prove an intermediary
-  // could not synthesize a matching pair; the remaining trust is the native
-  // authenticated Builderlab boundary, never a status claimed by the body.
-  const terminalFreshAdmissionErrors: Readonly<Record<string, number>> = {
-    missing_mapping: 400,
-    invalid_request: 400,
-    confirmation_mismatch: 400,
-    unsupported_acknowledgement_version: 400,
-    not_owner: 404,
-    must_archive: 409,
-    protected_target: 409,
-    deletion_conflict: 409,
-  };
-  return terminalFreshAdmissionErrors[response.error.code] === httpStatus
-    ? "clear"
-    : "retain";
+  const code = response.error?.code;
+  const suppliedTuple = [
+    "request_id",
+    "community_id",
+    "host",
+    "acknowledgement_version",
+  ].some((field) => Object.hasOwn(response, field));
+  if (
+    code &&
+    (!suppliedTuple || tupleMatches) &&
+    DEFINITIVE_ERRORS[code] === status &&
+    (attempt === "initial" || !FRESH_ONLY_ERRORS.has(code))
+  )
+    return "clear";
+  return "retain";
 }

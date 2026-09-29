@@ -7,6 +7,7 @@ import {
   loadPendingCommunityDeletion,
   persistPendingCommunityDeletion,
   pendingCommunityDeletionMatchesAccount,
+  pendingCommunityDeletionMatchesPersisted,
 } from "./communityDeletionPending.ts";
 
 function storage() {
@@ -100,6 +101,32 @@ test("persistence boundary never overwrites an existing envelope", () => {
   assert.deepEqual(loadPendingCommunityDeletion(target), envelope);
 });
 
+test("persisted request must still match all tuple and owner/origin fields before dispatch", () => {
+  const target = storage();
+  assert.equal(persistPendingCommunityDeletion(envelope, target), true);
+  assert.equal(
+    pendingCommunityDeletionMatchesPersisted(envelope, target),
+    true,
+  );
+  for (const changed of [
+    { ...envelope, request_id: "44444444-4444-4444-8444-444444444444" },
+    { ...envelope, community_id: "33333333-3333-4333-8333-333333333333" },
+    { ...envelope, host: "other.communities.buzz.xyz" },
+    { ...envelope, bound_owner_pubkey: "b".repeat(64) },
+    { ...envelope, backend_origin: "https://other.example" },
+  ]) {
+    assert.equal(
+      pendingCommunityDeletionMatchesPersisted(changed, target),
+      false,
+    );
+  }
+  clearPendingCommunityDeletion(envelope, target);
+  assert.equal(
+    pendingCommunityDeletionMatchesPersisted(envelope, target),
+    false,
+  );
+});
+
 test("terminal clear affects only the matching request and account envelope", () => {
   const target = storage();
   const second = {
@@ -117,17 +144,46 @@ test("terminal clear affects only the matching request and account envelope", ()
   assert.equal(loadPendingCommunityDeletion(target), null);
 });
 
-test("ambiguous receipt and same-UUID resubmit misses retain the envelope", () => {
-  for (const attempt of ["receipt", "resubmit"]) {
-    assert.equal(
-      deletionResponseDisposition(
-        transport(404, { error: { code: "not_owner" } }),
-        envelope,
-        attempt,
-      ),
-      "retain",
-    );
+test("same-UUID check settles definitive errors but retains fresh-only and wrong status", () => {
+  for (const [code, status, freshOnly] of [
+    ["missing_mapping", 400, true],
+    ["invalid_request", 400, true],
+    ["confirmation_mismatch", 400, true],
+    ["unsupported_acknowledgement_version", 400, true],
+    ["not_owner", 404, false],
+    ["must_archive", 409, false],
+    ["protected_target", 409, false],
+    ["deletion_conflict", 409, false],
+  ]) {
+    for (const attempt of ["initial", "check"]) {
+      assert.equal(
+        deletionResponseDisposition(
+          transport(status, { error: { code } }),
+          envelope,
+          attempt,
+        ),
+        attempt === "check" && freshOnly ? "retain" : "clear",
+        `${attempt} ${code} exact status`,
+      );
+      assert.equal(
+        deletionResponseDisposition(
+          transport(status + 1, { error: { code } }),
+          envelope,
+          attempt,
+        ),
+        "retain",
+        `${attempt} ${code} wrong status`,
+      );
+    }
   }
+  assert.equal(
+    deletionResponseDisposition(
+      transport(409, { error: { code: "deletion_request_conflict" } }),
+      envelope,
+      "check",
+    ),
+    "retain",
+  );
   assert.equal(
     deletionResponseDisposition(
       transport(503, { error: { code: "acceptance_unknown" } }),
@@ -138,39 +194,133 @@ test("ambiguous receipt and same-UUID resubmit misses retain the envelope", () =
   );
 });
 
-test("only tuple-bound acceptance or abort terminates ambiguous recovery", () => {
+test("only tuple-bound canonical stages or abort settle same-UUID recovery", () => {
   const tuple = {
     request_id: envelope.request_id,
     community_id: envelope.community_id,
     host: envelope.host,
     acknowledgement_version: envelope.acknowledgement_version,
   };
+  for (const status of [
+    "submitted",
+    "inventoried",
+    "approved",
+    "fenced",
+    "drained",
+    "bindings_removed",
+    "postgres_purged",
+    "cache_purged",
+    "logically_verified",
+    "retention_pending",
+  ]) {
+    assert.equal(
+      deletionResponseDisposition(
+        transport(202, { ...tuple, status }),
+        envelope,
+        "check",
+      ),
+      "accept",
+      status,
+    );
+  }
   assert.equal(
     deletionResponseDisposition(
-      transport(202, { ...tuple, status: "accepted" }),
+      transport(202, { ...tuple, status: "aborted" }),
       envelope,
-      "receipt",
-    ),
-    "accept",
-  );
-  assert.equal(
-    deletionResponseDisposition(
-      transport(409, { ...tuple, error: { code: "deletion_aborted" } }),
-      envelope,
-      "receipt",
+      "check",
     ),
     "abort",
   );
   assert.equal(
     deletionResponseDisposition(
-      transport(409, {
+      transport(409, { ...tuple, error: { code: "deletion_aborted" } }),
+      envelope,
+      "check",
+    ),
+    "abort",
+  );
+  for (const status of ["accepted", "admitted", "completed", "future_stage"]) {
+    assert.equal(
+      deletionResponseDisposition(
+        transport(202, { ...tuple, status }),
+        envelope,
+        "check",
+      ),
+      "retain",
+      status,
+    );
+  }
+  for (const body of [
+    {
+      ...tuple,
+      request_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      status: "approved",
+    },
+    { ...tuple, host: "other.communities.buzz.xyz", status: "approved" },
+    { ...tuple, acknowledgement_version: 2, status: "aborted" },
+  ]) {
+    assert.equal(
+      deletionResponseDisposition(transport(202, body), envelope, "check"),
+      "retain",
+    );
+  }
+  assert.equal(
+    deletionResponseDisposition(
+      transport(503, { ...tuple, status: "approved", http_status: 202 }),
+      envelope,
+      "initial",
+    ),
+    "retain",
+  );
+  assert.equal(
+    deletionResponseDisposition(
+      transport(200, {
         ...tuple,
-        request_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         error: { code: "deletion_aborted" },
+        http_status: 409,
       }),
       envelope,
-      "receipt",
+      "check",
     ),
+    "retain",
+  );
+});
+
+test("a typed rejection with a partial or mismatched tuple stays uncertain", () => {
+  for (const attempt of ["initial", "check"]) {
+    assert.equal(
+      deletionResponseDisposition(
+        transport(404, {
+          error: { code: "not_owner" },
+          request_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        }),
+        envelope,
+        attempt,
+      ),
+      "retain",
+    );
+    assert.equal(
+      deletionResponseDisposition(
+        transport(409, {
+          error: { code: "must_archive" },
+          host: "elsewhere.example",
+        }),
+        envelope,
+        attempt,
+      ),
+      "retain",
+    );
+  }
+  assert.equal(
+    deletionResponseDisposition(
+      transport(400, { error: { code: "invalid_request" }, request_id: 42 }),
+      envelope,
+      "initial",
+    ),
+    "retain",
+  );
+  assert.equal(
+    deletionResponseDisposition(transport(409, null), envelope, "check"),
     "retain",
   );
 });
@@ -235,7 +385,7 @@ test("native status, never a body-claimed status, binds acceptance and abort", (
   };
   assert.equal(
     deletionResponseDisposition(
-      transport(202, { ...tuple, status: "accepted" }),
+      transport(202, { ...tuple, status: "approved" }),
       envelope,
       "initial",
     ),
@@ -245,7 +395,7 @@ test("native status, never a body-claimed status, binds acceptance and abort", (
     deletionResponseDisposition(
       transport(503, {
         ...tuple,
-        status: "accepted",
+        status: "approved",
         http_status: 202,
       }),
       envelope,
@@ -257,7 +407,7 @@ test("native status, never a body-claimed status, binds acceptance and abort", (
     deletionResponseDisposition(
       transport(409, { ...tuple, error: { code: "deletion_aborted" } }),
       envelope,
-      "receipt",
+      "check",
     ),
     "abort",
   );
@@ -269,7 +419,7 @@ test("native status, never a body-claimed status, binds acceptance and abort", (
         http_status: 409,
       }),
       envelope,
-      "receipt",
+      "check",
     ),
     "retain",
   );

@@ -79,7 +79,7 @@ async function openDeletionFixture(
       | { identity: { npub?: string; pubkey_hex?: string } }
       | { error: { code: string; setup_needed?: boolean } }
     >;
-    deferDeletion?: boolean | "initial" | "receipt";
+    deferDeletion?: boolean | "initial";
   } = {},
 ) {
   await installMockBridge(page, {
@@ -137,6 +137,47 @@ async function storedDeletionRequestId(page: Page) {
     return raw ? JSON.parse(raw).request_id : null;
   });
 }
+
+test("reopen sends nothing and Check resends the same saved request once", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, {
+    capability: true,
+    errorSequence: [{ code: "acceptance_unknown" }, null],
+  });
+  await startArchivedDeletion(page);
+  await expect(page.getByText(/Deletion acceptance for/)).toBeVisible();
+  const firstId = await storedDeletionRequestId(page);
+  expect(firstId).not.toBeNull();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("settings-view")).toHaveCount(0);
+  await openSettings(page, "hosted-communities");
+  await expect(page.getByText(firstId, { exact: true })).toBeVisible();
+  await expect.poll(() => storedDeletionRequestId(page)).toBe(firstId);
+  expect(
+    await page.evaluate(
+      () =>
+        window.__BUZZ_E2E_COMMANDS__?.filter(
+          (command) => command === "delete_builderlab_community",
+        ).length,
+    ),
+  ).toBe(1);
+  await page.getByRole("button", { name: "Check deletion status" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_COMMANDS__?.filter(
+            (command) => command === "delete_builderlab_community",
+          ).length,
+      ),
+    )
+    .toBe(2);
+  await expect.poll(() => storedDeletionRequestId(page)).toBeNull();
+  await expect(
+    page.getByText("Deletion started", { exact: true }),
+  ).toBeVisible();
+});
 
 test("deletion is default-off and identity mismatch preserves the gate", async ({
   page,
@@ -231,7 +272,7 @@ test("archived deletion requires exact host and two confirmations, then removes 
     .toBe(1);
 });
 
-test("ambiguous deletion keeps the same pending request and exposes receipt lookup", async ({
+test("ambiguous deletion keeps the same pending request and exposes manual same-UUID check", async ({
   page,
 }) => {
   await openDeletionFixture(page, {
@@ -403,6 +444,8 @@ test("a pre-remount acceptance cannot erase a later uncertain request", async ({
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("settings-view")).toHaveCount(0);
   await openSettings(page, "hosted-communities");
+  await expect.poll(() => storedDeletionRequestId(page)).toBe(firstId);
+  await page.getByRole("button", { name: "Check deletion status" }).click();
   await expect.poll(() => storedDeletionRequestId(page)).toBeNull();
   await expect(
     page.getByText("Deletion started", { exact: true }),
@@ -556,7 +599,7 @@ test("native HTTP status wins over a contradictory body claim in the mounted flo
   await expect(archived).toBeVisible();
 });
 
-test("ambiguous resubmit not_owner retains the same request UUID", async ({
+test("ambiguous check not_owner settles the same request UUID", async ({
   page,
 }) => {
   await openDeletionFixture(page, {
@@ -584,9 +627,9 @@ test("ambiguous resubmit not_owner retains the same request UUID", async ({
     return raw ? JSON.parse(raw).request_id : null;
   });
   await expect(page.getByText(requestId, { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Resubmit same request" }).click();
+  await page.getByRole("button", { name: "Check deletion status" }).click();
   await expect(page.getByText(/Only the community owner/)).toBeVisible();
-  await expect(page.getByText(requestId, { exact: true })).toBeVisible();
+  await expect(page.getByText(requestId, { exact: true })).toHaveCount(0);
   await expect
     .poll(() =>
       page.evaluate(() => {
@@ -596,10 +639,10 @@ test("ambiguous resubmit not_owner retains the same request UUID", async ({
         return raw ? JSON.parse(raw).request_id : null;
       }),
     )
-    .toBe(requestId);
+    .toBeNull();
 });
 
-test("resubmit rechecks capability after the fresh owner list", async ({
+test("check rechecks capability after the fresh owner list", async ({
   page,
 }) => {
   await openDeletionFixture(page, {
@@ -621,13 +664,13 @@ test("resubmit rechecks capability after the fresh owner list", async ({
   await page
     .getByRole("button", { name: "Delete community permanently" })
     .click();
-  await page.getByRole("button", { name: "Resubmit same request" }).click();
+  await page.getByRole("button", { name: "Check deletion status" }).click();
   await expect(
     page.getByText(/Community deletion is no longer enabled/),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Resubmit same request" }),
-  ).toHaveCount(0);
+    page.getByRole("button", { name: "Check deletion status" }),
+  ).toBeDisabled();
   await expect
     .poll(() =>
       page.evaluate(
@@ -640,7 +683,7 @@ test("resubmit rechecks capability after the fresh owner list", async ({
     .toBe(1);
 });
 
-test("resubmit fails closed when the fresh owner list misses", async ({
+test("check fails closed when the fresh owner list misses", async ({
   page,
 }) => {
   await openDeletionFixture(page, {
@@ -662,7 +705,7 @@ test("resubmit fails closed when the fresh owner list misses", async ({
   await page
     .getByRole("button", { name: "Delete community permanently" })
     .click();
-  await page.getByRole("button", { name: "Resubmit same request" }).click();
+  await page.getByRole("button", { name: "Check deletion status" }).click();
   await expect(
     page.getByText(/not present in the fresh owner list/),
   ).toBeVisible();

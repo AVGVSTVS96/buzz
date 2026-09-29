@@ -726,25 +726,6 @@ pub(crate) async fn delete_builderlab_community(
     .await
 }
 
-#[tauri::command]
-pub(crate) async fn get_builderlab_community_deletion_receipt(
-    community_id: String,
-    host: String,
-    request_id: String,
-    acknowledgement_version: i32,
-    app_state: tauri::State<'_, crate::app_state::AppState>,
-    session: tauri::State<'_, BuilderlabSession>,
-) -> Result<AuthenticatedJsonResponse, String> {
-    authenticated_json_with_status(
-        &app_state.http_client,
-        &session,
-        reqwest::Method::POST,
-        "/v1/buzz/communities/delete/receipt",
-        community_deletion_body(community_id, host, request_id, acknowledgement_version),
-    )
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -833,10 +814,7 @@ mod tests {
                 "acknowledgement_version": 1,
             })
         );
-        for path in [
-            "/v1/buzz/communities/delete",
-            "/v1/buzz/communities/delete/receipt",
-        ] {
+        for path in ["/v1/buzz/communities/delete"] {
             let url = api_url(path).expect("deletion URL");
             assert_eq!(url.origin().ascii_serialization(), BUILDERLAB_ORIGIN);
             assert_eq!(url.path(), format!("/api/goose{path}"));
@@ -858,16 +836,14 @@ mod tests {
     #[test]
     fn community_deletion_commands_are_registered_on_the_native_boundary() {
         let lib = include_str!("lib.rs");
-        for command in [
-            "delete_builderlab_community,",
-            "get_builderlab_community_deletion_receipt,",
-        ] {
+        for command in ["delete_builderlab_community,"] {
             assert_eq!(
                 lib.matches(command).count(),
                 1,
                 "{command} must be registered exactly once"
             );
         }
+        assert!(!lib.contains("get_builderlab_community_deletion_receipt"));
         let source = include_str!("builderlab.rs");
         assert!(source.contains(".header(reqwest::header::ORIGIN, BUILDERLAB_ORIGIN)"));
     }

@@ -14,6 +14,7 @@ import { useIdentityQuery } from "@/shared/api/hooks";
 import {
   HOSTED_COMMUNITY_SUFFIX as HOST_SUFFIX,
   hostedCommunityErrorMessage as errorMessage,
+  hostedCommunityCreateAvailable,
   hostedCommunityRelayUrl as relayUrl,
   normalizedBoundKeyHex,
   usableBoundIdentityNpub,
@@ -32,6 +33,7 @@ import {
   deletionResponseDisposition,
   loadPendingCommunityDeletion,
   pendingCommunityDeletionMatchesAccount,
+  pendingCommunityDeletionMatchesPersisted,
   persistPendingCommunityDeletion,
   publicDeletionRequest,
   type CommunityDeletionAttempt,
@@ -86,8 +88,8 @@ export function HostedCommunitiesSettingsCard() {
   const [error, setError] = React.useState<string | null>(null);
   const [statusMessage, setStatusMessage] = React.useState<string | null>(null);
   const [quota, setQuota] = React.useState<{
-    used: number;
-    limit: number;
+    used: number | null;
+    limit: number | null;
     canCreate: boolean;
   } | null>(null);
   const [pendingDeletion, setPendingDeletion] =
@@ -173,19 +175,15 @@ export function HostedCommunitiesSettingsCard() {
           !community.id || !hiddenCommunityIds.current.has(community.id),
       );
       setCommunities(nextCommunities);
-      const hasQuota =
-        Number.isInteger(communitiesResponse.quota_used) &&
-        Number.isInteger(communitiesResponse.quota_limit) &&
-        typeof communitiesResponse.can_create === "boolean";
-      setQuota(
-        hasQuota
-          ? {
-              used: communitiesResponse.quota_used as number,
-              limit: communitiesResponse.quota_limit as number,
-              canCreate: communitiesResponse.can_create === true,
-            }
+      setQuota({
+        used: Number.isInteger(communitiesResponse.quota_used)
+          ? (communitiesResponse.quota_used as number)
           : null,
-      );
+        limit: Number.isInteger(communitiesResponse.quota_limit)
+          ? (communitiesResponse.quota_limit as number)
+          : null,
+        canCreate: hostedCommunityCreateAvailable(communitiesResponse),
+      });
       return { communities: nextCommunities, owner: nextOwner };
     }, [adoptAccountOwner]);
 
@@ -432,26 +430,36 @@ export function HostedCommunitiesSettingsCard() {
         envelope,
         accountOwner.current ?? "",
         BUILDERLAB_BACKEND_ORIGIN,
-      )
-    ) {
+      ) ||
+      !pendingCommunityDeletionMatchesPersisted(envelope)
+    )
       return;
-    }
     const response = transport.body ?? {};
     const disposition = deletionResponseDisposition(
       transport,
       envelope,
       attempt,
     );
+    if (disposition === "abort") {
+      clearPendingCommunityDeletion(envelope);
+      setPendingDeletion(null);
+      setStatusMessage(
+        "Deletion stopped. This community is not being deleted.",
+      );
+      await loadAccount();
+      return;
+    }
     if (response.error) {
-      if (disposition === "abort" || disposition === "clear") {
+      if (disposition === "clear") {
         clearPendingCommunityDeletion(envelope);
         setPendingDeletion(null);
+        await loadAccount();
       }
       throw new Error(
         errorMessage(
           response.error,
           response.correlation_id,
-          attempt === "receipt"
+          attempt === "check"
             ? "Could not confirm deletion status. The existing request remains pending."
             : "Could not start community deletion.",
         ),
@@ -505,24 +513,33 @@ export function HostedCommunitiesSettingsCard() {
   };
 
   const invokeDeletion = async (
-    command:
-      | "delete_builderlab_community"
-      | "get_builderlab_community_deletion_receipt",
     envelope: PendingCommunityDeletion,
     attempt: CommunityDeletionAttempt,
     generation: number,
   ) => {
+    if (
+      !deletionContextMatches(envelope, generation) ||
+      !pendingCommunityDeletionMatchesPersisted(envelope)
+    )
+      return;
     const request = publicDeletionRequest(envelope);
     let response: CommunityDeletionTransport;
     try {
-      response = await invoke<CommunityDeletionTransport>(command, {
-        communityId: request.community_id,
-        host: request.host,
-        requestId: request.request_id,
-        acknowledgementVersion: request.acknowledgement_version,
-      });
+      response = await invoke<CommunityDeletionTransport>(
+        "delete_builderlab_community",
+        {
+          communityId: request.community_id,
+          host: request.host,
+          requestId: request.request_id,
+          acknowledgementVersion: request.acknowledgement_version,
+        },
+      );
     } catch (cause) {
-      if (!deletionContextMatches(envelope, generation)) return;
+      if (
+        !deletionContextMatches(envelope, generation) ||
+        !pendingCommunityDeletionMatchesPersisted(envelope)
+      )
+        return;
       throw cause;
     }
     if (!deletionContextMatches(envelope, generation)) return;
@@ -563,103 +580,88 @@ export function HostedCommunitiesSettingsCard() {
     setPendingDeletion(envelope);
     void runDeletion("Starting deletion…", envelope, async (generation) => {
       try {
-        await invokeDeletion(
-          "delete_builderlab_community",
-          envelope,
-          "initial",
-          generation,
-        );
+        await invokeDeletion(envelope, "initial", generation);
       } finally {
         if (deleteInFlight.current === inFlight) deleteInFlight.current = null;
       }
     });
   };
 
-  const checkDeletionStatus = (envelope: PendingCommunityDeletion) =>
-    runDeletion("Checking deletion status…", envelope, async (generation) => {
-      await invokeDeletion(
-        "get_builderlab_community_deletion_receipt",
-        envelope,
-        "receipt",
-        generation,
-      );
-    });
-
-  const resubmitPendingDeletion = (envelope: PendingCommunityDeletion) => {
+  const checkDeletionStatus = (envelope: PendingCommunityDeletion) => {
     if (
       identityMismatch ||
       accountOwner.current !== envelope.bound_owner_pubkey ||
+      !pendingCommunityDeletionMatchesPersisted(envelope) ||
       deleteInFlight.current !== null
     )
       return;
-    const inFlight = Symbol("community-deletion-resubmit");
+    const inFlight = Symbol("community-deletion-check");
     deleteInFlight.current = inFlight;
-    void runDeletion("Resubmitting deletion…", envelope, async (generation) => {
-      try {
-        const refreshedAuth = await invoke<BuilderlabAuth | null>(
-          "get_builderlab_auth",
-        );
-        if (!deletionContextMatches(envelope, generation)) return;
-        if (!refreshedAuth) {
-          adoptAccountOwner(null);
-          setAuth(null);
-          setIdentity(null);
-          setCommunities([]);
-          setQuota(null);
-          setPendingDeletion(null);
-          return;
-        }
-        setAuth(refreshedAuth);
-        if (refreshedAuth.canDeleteBuzzCommunities !== true) {
-          throw new Error(
-            "Community deletion is no longer enabled for this account. The existing request remains pending.",
+    void runDeletion(
+      "Checking deletion status…",
+      envelope,
+      async (generation) => {
+        try {
+          const refreshedAuth = await invoke<BuilderlabAuth | null>(
+            "get_builderlab_auth",
           );
-        }
-        const refreshedAccount = await loadAccount();
-        if (!deletionContextMatches(envelope, generation)) return;
-        const confirmedAuth = await invoke<BuilderlabAuth | null>(
-          "get_builderlab_auth",
-        );
-        if (!deletionContextMatches(envelope, generation)) return;
-        if (!confirmedAuth) {
-          adoptAccountOwner(null);
-          setAuth(null);
-          setIdentity(null);
-          setCommunities([]);
-          setQuota(null);
-          setPendingDeletion(null);
-          return;
-        }
-        setAuth(confirmedAuth);
-        if (confirmedAuth.canDeleteBuzzCommunities !== true) {
-          throw new Error(
-            "Community deletion is no longer enabled for this account. The existing request remains pending.",
+          if (!deletionContextMatches(envelope, generation)) return;
+          if (!refreshedAuth) {
+            adoptAccountOwner(null);
+            setAuth(null);
+            setIdentity(null);
+            setCommunities([]);
+            setQuota(null);
+            setPendingDeletion(null);
+            return;
+          }
+          setAuth(refreshedAuth);
+          if (refreshedAuth.canDeleteBuzzCommunities !== true) {
+            throw new Error(
+              "Community deletion is no longer enabled for this account. The existing request remains pending.",
+            );
+          }
+          const refreshedAccount = await loadAccount();
+          if (!deletionContextMatches(envelope, generation)) return;
+          const confirmedAuth = await invoke<BuilderlabAuth | null>(
+            "get_builderlab_auth",
           );
-        }
-        const current = refreshedAccount.communities.find(
-          (community) =>
-            community.id === envelope.community_id &&
-            community.normalized_host === envelope.host &&
-            Boolean(community.archived_at),
-        );
-        if (!current) {
-          throw new Error(
-            "The exact archived community is not present in the fresh owner list. The existing request remains pending; check its deletion status.",
+          if (!deletionContextMatches(envelope, generation)) return;
+          if (!confirmedAuth) {
+            adoptAccountOwner(null);
+            setAuth(null);
+            setIdentity(null);
+            setCommunities([]);
+            setQuota(null);
+            setPendingDeletion(null);
+            return;
+          }
+          setAuth(confirmedAuth);
+          if (confirmedAuth.canDeleteBuzzCommunities !== true) {
+            throw new Error(
+              "Community deletion is no longer enabled for this account. The existing request remains pending.",
+            );
+          }
+          const current = refreshedAccount.communities.find(
+            (community) =>
+              community.id === envelope.community_id &&
+              community.normalized_host === envelope.host &&
+              Boolean(community.archived_at),
           );
+          if (!current) {
+            throw new Error(
+              "The exact archived community is not present in the fresh owner list. The existing request remains pending; check its deletion status.",
+            );
+          }
+          await invokeDeletion(envelope, "check", generation);
+        } finally {
+          if (deleteInFlight.current === inFlight)
+            deleteInFlight.current = null;
         }
-        await invokeDeletion(
-          "delete_builderlab_community",
-          envelope,
-          "resubmit",
-          generation,
-        );
-      } finally {
-        if (deleteInFlight.current === inFlight) deleteInFlight.current = null;
-      }
-    });
+      },
+    );
   };
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: account key bounds the one recovery lookup
   React.useEffect(() => {
     if (!auth || loading || !boundHex) return;
     const accountKey = `${BUILDERLAB_BACKEND_ORIGIN}:${boundHex}`;
@@ -679,8 +681,6 @@ export function HostedCommunitiesSettingsCard() {
       return;
     }
     setPendingDeletion(envelope);
-    void checkDeletionStatus(envelope);
-    // One lookup per authoritative account/origin on reopen; later checks are manual.
   }, [auth, boundHex, loading]);
 
   const normalizedName = name.trim().toLowerCase();
@@ -733,7 +733,7 @@ export function HostedCommunitiesSettingsCard() {
       !validName ||
       !usableBoundIdentity ||
       identityMismatch ||
-      quota?.canCreate !== true
+      quota?.canCreate === false
     )
       return;
     void run("Creating community…", async () => {
@@ -785,7 +785,7 @@ export function HostedCommunitiesSettingsCard() {
   };
 
   const busy = action != null;
-  const atCommunityLimit = quota?.canCreate !== true;
+  const atCommunityLimit = quota?.canCreate === false;
   const deletionCapability = auth?.canDeleteBuzzCommunities === true;
 
   return (
@@ -816,28 +816,19 @@ export function HostedCommunitiesSettingsCard() {
           <p>
             Deletion acceptance for {pendingDeletion.host} is uncertain. Keep
             request <code>{pendingDeletion.request_id}</code> pending until its
-            existing receipt is confirmed. Status checks may remain unresolved;
-            do not start a new request.
+            status is resolved. Checking deletion status resends this same
+            request ID and may start the original deletion if it was never
+            received. Do not start a different request.
           </p>
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
               size="sm"
-              disabled={busy}
+              disabled={busy || !deletionCapability || identityMismatch}
               onClick={() => void checkDeletionStatus(pendingDeletion)}
             >
               Check deletion status
             </Button>
-            {deletionCapability ? (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busy || identityMismatch}
-                onClick={() => resubmitPendingDeletion(pendingDeletion)}
-              >
-                Resubmit same request
-              </Button>
-            ) : null}
           </div>
         </div>
       ) : null}
@@ -980,7 +971,7 @@ export function HostedCommunitiesSettingsCard() {
               <h3 className="font-medium">
                 Your communities
                 <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  {quota
+                  {quota?.used != null && quota.limit != null
                     ? `${quota.used} of ${quota.limit} used`
                     : "Quota unavailable"}
                 </span>
@@ -1070,9 +1061,9 @@ export function HostedCommunitiesSettingsCard() {
             </div>
             {atCommunityLimit ? (
               <p className="text-sm text-muted-foreground">
-                {quota
+                {quota?.limit != null
                   ? `You've reached the limit of ${quota.limit} hosted communities. A deletion frees its slot only after logical cleanup completes.`
-                  : "Community quota is unavailable. Creation stays disabled until the server returns an authoritative quota."}
+                  : "You've reached the hosted-community limit. A deletion frees its slot only after logical cleanup completes."}
               </p>
             ) : null}
             <div className="flex max-w-xl items-center gap-2">

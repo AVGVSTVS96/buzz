@@ -151,22 +151,31 @@ eligible for execution. Transient preparation failures use the existing retry
 schedule; permanent or exhausted failures block durably. Owner-facing
 admission has no cancellation endpoint.
 
-## Client compatibility and rollout order
+Admission is idempotent on the request UUID. Resending the same UUID with the
+same host, owner, and acknowledgement version returns `202` with that request's
+current `status` at any stage, including after membership purge, and admits no
+new work. Clients recover an ambiguous submission by resending it. The same
+UUID with a different tuple returns `409 deletion_request_conflict`.
 
-Owner-list responses now carry the authoritative quota trio: `quota_used`,
-`quota_limit`, and `can_create`. Quota-dependent clients fail closed when any
-member of that trio is absent: they disable new Create controls even when the
-separate community-deletion capability is absent or false. They do not derive
-capacity from the number of visible rows, because an in-progress deletion can
-hide a row while still reserving its owner's slot.
+## Owner quota
 
-Roll this contract out in dependency order: relay first, then KGoose, then
-Desktop and any other quota-dependent clients. This ordering is a compatibility
-requirement, not authorization to enable owner deletion or its drain job.
-During that rollout, keep the already-published migration 0052 channel-artifact
-surface and migration 0053 owner auto-approval surface byte-for-byte intact;
-do not rewrite their migration ledger entries or recreate a persistent
-database to introduce the quota projection.
+The relay enforces two per-owner caps on create and on transfer-in, both as
+`limit_reached`:
+
+- **Active:** live ownership plus incomplete owner deletions
+  (`BUZZ_MAX_COMMUNITIES_PER_OWNER`, default 5). A deletion keeps its slot
+  until logical completion records `completed_at`.
+- **Lifetime:** live ownership plus every non-aborted owner deletion, including
+  completed ones, capped at 20 (or the active limit if that is higher).
+  Deleted communities keep their hosts as permanent tombstones, so this bounds
+  create-then-delete host squatting. Aborted deletions restore the community
+  and count only through its live membership.
+
+Owner-list responses carry `quota_used` (active), `quota_limit` (active), and
+`can_create` (both caps). The projection is advisory: clients may use it for
+UX, but the relay's `limit_reached` is authoritative, and quota changes have no
+deployment order. Keep owner deletion off until this relay and the drain
+executor are live; on rollback, turn deletion off before rolling back the relay.
 
 The chart has no existing PrometheusRule or provider-neutral CronJob alert
 integration. Operators must alert on failed/missed Jobs and long-running active

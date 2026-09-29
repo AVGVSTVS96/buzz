@@ -1,4 +1,8 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    sync::LazyLock,
+};
 
 use buzz_core_pkg::PresenceStatus;
 use serde_json::Value;
@@ -101,6 +105,35 @@ pub async fn update_profile(
         .unwrap_or_else(|| empty_profile_info(&current_pubkey_hex_unwrap(&state))))
 }
 
+fn profile_update_lock(
+    api_base_url: &str,
+    expected_pubkey: &str,
+) -> &'static tokio::sync::Mutex<()> {
+    const PROFILE_UPDATE_LOCK_STRIPES: usize = 64;
+    static PROFILE_UPDATE_LOCKS: LazyLock<[tokio::sync::Mutex<()>; PROFILE_UPDATE_LOCK_STRIPES]> =
+        LazyLock::new(|| std::array::from_fn(|_| tokio::sync::Mutex::new(())));
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    api_base_url.trim_end_matches('/').hash(&mut hasher);
+    expected_pubkey.to_lowercase().hash(&mut hasher);
+    &PROFILE_UPDATE_LOCKS[(hasher.finish() as usize) % PROFILE_UPDATE_LOCK_STRIPES]
+}
+
+fn should_check_expected_avatar(avatar_url: Option<&str>) -> bool {
+    normalized_profile_field(avatar_url).is_some()
+}
+
+fn assert_expected_avatar(
+    current: &Value,
+    expected_avatar_url: Option<&str>,
+) -> Result<(), String> {
+    let current_avatar_url = current.get("picture").and_then(Value::as_str);
+    if normalized_avatar_url(current_avatar_url) != normalized_avatar_url(expected_avatar_url) {
+        return Err("profile avatar changed before deferred save".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn update_profile_at_relay(
     relay_url: String,
@@ -111,14 +144,40 @@ pub async fn update_profile_at_relay(
     name: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ProfileInfo, String> {
-    let signer = capture_expected_signer(&state, &expected_pubkey)?;
+    update_profile_at_relay_inner(
+        relay_url,
+        expected_pubkey,
+        expected_avatar_url,
+        avatar_url,
+        display_name,
+        name,
+        &state,
+    )
+    .await
+}
 
-    let api_base_url = relay_http_base_url(&relay_url);
+async fn update_profile_at_relay_inner(
+    relay_url: String,
+    expected_pubkey: String,
+    expected_avatar_url: Option<String>,
+    avatar_url: Option<String>,
+    display_name: Option<String>,
+    name: Option<String>,
+    state: &AppState,
+) -> Result<ProfileInfo, String> {
+    let signer = capture_expected_signer(state, &expected_pubkey)?;
+
+    let api_base_url = relay_http_base_url(&relay_url)
+        .trim_end_matches('/')
+        .to_string();
     let filter = serde_json::json!({
         "kinds": [0],
         "authors": [expected_pubkey],
         "limit": 1
     });
+    let profile_update_lock = profile_update_lock(&api_base_url, &expected_pubkey);
+    let _profile_update_guard = profile_update_lock.lock().await;
+
     let prior_events = query_relay_at_with_keys(
         &state,
         &api_base_url,
@@ -131,16 +190,8 @@ pub async fn update_profile_at_relay(
     let current: Value = prior_event
         .and_then(|event| serde_json::from_str::<Value>(&event.content).ok())
         .unwrap_or(Value::Null);
-    if expected_avatar_url.is_some() {
-        let current_avatar_url = current
-            .get("picture")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        if normalized_avatar_url(current_avatar_url.as_deref())
-            != normalized_avatar_url(expected_avatar_url.as_deref())
-        {
-            return Err("profile avatar changed before deferred save".to_string());
-        }
+    if should_check_expected_avatar(avatar_url.as_deref()) {
+        assert_expected_avatar(&current, expected_avatar_url.as_deref())?;
     }
 
     let builder = build_scoped_profile_event(
@@ -438,6 +489,338 @@ fn empty_profile_info(pubkey: &str) -> ProfileInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{extract::State as AxumState, routing::post, Json, Router};
+    use std::sync::Arc;
+    use tokio::sync::{mpsc, oneshot};
+
+    #[derive(Clone)]
+    struct ProfileRelayState {
+        current: Arc<tokio::sync::Mutex<Option<nostr::Event>>>,
+        first_submit_gate: Arc<tokio::sync::Mutex<Option<oneshot::Receiver<()>>>>,
+        first_submit_started: mpsc::Sender<()>,
+    }
+
+    struct ProfileRelay {
+        url: String,
+        current: Arc<tokio::sync::Mutex<Option<nostr::Event>>>,
+        first_submit_release: Option<oneshot::Sender<()>>,
+        first_submit_started: mpsc::Receiver<()>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for ProfileRelay {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    fn profile_event(
+        keys: &nostr::Keys,
+        display_name: Option<&str>,
+        name: Option<&str>,
+        avatar_url: Option<&str>,
+    ) -> nostr::Event {
+        events::build_profile(display_name, name, avatar_url, None, None)
+            .expect("build profile")
+            .sign_with_keys(keys)
+            .expect("sign profile")
+    }
+
+    fn profile_state(keys: &nostr::Keys) -> AppState {
+        let state = crate::app_state::build_app_state();
+        *state.keys.lock().expect("lock keys") = keys.clone();
+        state
+    }
+
+    async fn profile_relay(
+        initial: Option<nostr::Event>,
+        delay_first_submit: bool,
+    ) -> ProfileRelay {
+        let current = Arc::new(tokio::sync::Mutex::new(initial));
+        let (first_submit_started, started_rx) = mpsc::channel(2);
+        let (first_submit_release, release_rx) = oneshot::channel();
+        let state = ProfileRelayState {
+            current: Arc::clone(&current),
+            first_submit_gate: Arc::new(tokio::sync::Mutex::new(
+                delay_first_submit.then_some(release_rx),
+            )),
+            first_submit_started,
+        };
+        let app = Router::new()
+            .route(
+                "/query",
+                post(|AxumState(state): AxumState<ProfileRelayState>| async move {
+                    let events = state
+                        .current
+                        .lock()
+                        .await
+                        .as_ref()
+                        .cloned()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    Json(events)
+                }),
+            )
+            .route(
+                &["/ev", "ents"].concat(),
+                post(
+                    |AxumState(state): AxumState<ProfileRelayState>, Json(event): Json<nostr::Event>| async move {
+                        assert!(event.verify().is_ok());
+                        if let Some(release) = state.first_submit_gate.lock().await.take() {
+                            let _ = state.first_submit_started.send(()).await;
+                            let _ = release.await;
+                        }
+                        let event_id = event.id.to_hex();
+                        *state.current.lock().await = Some(event);
+                        Json(serde_json::json!({"event_id": event_id, "accepted": true, "message": ""}))
+                    },
+                ),
+            )
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind relay");
+        let address = listener.local_addr().expect("relay address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        ProfileRelay {
+            url: format!("http://{address}"),
+            current,
+            first_submit_release: delay_first_submit.then_some(first_submit_release),
+            first_submit_started: started_rx,
+            server,
+        }
+    }
+
+    fn profile_content(event: &nostr::Event) -> Value {
+        serde_json::from_str(&event.content).expect("profile json")
+    }
+
+    #[tokio::test]
+    async fn deferred_avatar_expect_empty_succeeds_only_while_empty() {
+        let _serial = crate::relay_admission::TEST_SERIAL.lock().await;
+        crate::relay_admission::reset_rate_limit_gate();
+        let keys = nostr::Keys::generate();
+        let state = profile_state(&keys);
+        let pubkey = keys.public_key().to_hex();
+        let relay = profile_relay(None, false).await;
+
+        let saved = update_profile_at_relay_inner(
+            relay.url.clone(),
+            pubkey.clone(),
+            None,
+            Some("https://example.com/first.png".to_string()),
+            None,
+            None,
+            &state,
+        )
+        .await
+        .expect("empty baseline accepts first avatar");
+        assert_eq!(
+            saved.avatar_url.as_deref(),
+            Some("https://example.com/first.png")
+        );
+
+        *relay.current.lock().await = Some(profile_event(
+            &keys,
+            Some("Newer"),
+            None,
+            Some("https://example.com/newer.png"),
+        ));
+        let error = match update_profile_at_relay_inner(
+            relay.url.clone(),
+            pubkey,
+            None,
+            Some("https://example.com/stale.png".to_string()),
+            None,
+            None,
+            &state,
+        )
+        .await
+        {
+            Ok(_) => panic!("stale empty-baseline avatar save unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "profile avatar changed before deferred save");
+        let final_event = relay.current.lock().await.clone().expect("profile head");
+        assert_eq!(
+            profile_content(&final_event)["picture"],
+            "https://example.com/newer.png"
+        );
+        crate::relay_admission::reset_rate_limit_gate();
+    }
+
+    #[tokio::test]
+    async fn deferred_avatar_expect_nonempty_still_compares_current_avatar() {
+        let _serial = crate::relay_admission::TEST_SERIAL.lock().await;
+        crate::relay_admission::reset_rate_limit_gate();
+        let keys = nostr::Keys::generate();
+        let state = profile_state(&keys);
+        let pubkey = keys.public_key().to_hex();
+        let relay = profile_relay(
+            Some(profile_event(
+                &keys,
+                Some("Existing"),
+                None,
+                Some("https://example.com/old.png"),
+            )),
+            false,
+        )
+        .await;
+
+        let saved = update_profile_at_relay_inner(
+            relay.url.clone(),
+            pubkey.clone(),
+            Some("https://example.com/old.png".to_string()),
+            Some("https://example.com/new.png".to_string()),
+            None,
+            None,
+            &state,
+        )
+        .await
+        .expect("matching nonempty baseline accepts avatar");
+        assert_eq!(
+            saved.avatar_url.as_deref(),
+            Some("https://example.com/new.png")
+        );
+
+        let error = match update_profile_at_relay_inner(
+            relay.url.clone(),
+            pubkey,
+            Some("https://example.com/old.png".to_string()),
+            Some("https://example.com/stale.png".to_string()),
+            None,
+            None,
+            &state,
+        )
+        .await
+        {
+            Ok(_) => panic!("stale nonempty-baseline avatar save unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "profile avatar changed before deferred save");
+        let final_event = relay.current.lock().await.clone().expect("profile head");
+        assert_eq!(
+            profile_content(&final_event)["picture"],
+            "https://example.com/new.png"
+        );
+        crate::relay_admission::reset_rate_limit_gate();
+    }
+
+    #[tokio::test]
+    async fn name_only_profile_update_preserves_avatar_without_expected_avatar() {
+        let _serial = crate::relay_admission::TEST_SERIAL.lock().await;
+        crate::relay_admission::reset_rate_limit_gate();
+        let keys = nostr::Keys::generate();
+        let state = profile_state(&keys);
+        let pubkey = keys.public_key().to_hex();
+        let relay = profile_relay(
+            Some(profile_event(
+                &keys,
+                Some("Old Name"),
+                Some("old"),
+                Some("https://example.com/avatar.png"),
+            )),
+            false,
+        )
+        .await;
+
+        let saved = update_profile_at_relay_inner(
+            relay.url.clone(),
+            pubkey,
+            None,
+            None,
+            Some("New Name".to_string()),
+            Some("new".to_string()),
+            &state,
+        )
+        .await
+        .expect("name-only corporate profile save remains valid");
+        assert_eq!(saved.display_name.as_deref(), Some("New Name"));
+        assert_eq!(
+            saved.avatar_url.as_deref(),
+            Some("https://example.com/avatar.png")
+        );
+        let final_event = relay.current.lock().await.clone().expect("profile head");
+        let content = profile_content(&final_event);
+        assert_eq!(content["display_name"], "New Name");
+        assert_eq!(content["name"], "new");
+        assert_eq!(content["picture"], "https://example.com/avatar.png");
+        crate::relay_admission::reset_rate_limit_gate();
+    }
+
+    #[tokio::test]
+    async fn profile_update_lock_forces_late_deferred_avatar_to_recheck_after_newer_avatar() {
+        let _serial = crate::relay_admission::TEST_SERIAL.lock().await;
+        crate::relay_admission::reset_rate_limit_gate();
+        let keys = nostr::Keys::generate();
+        let state = Arc::new(profile_state(&keys));
+        let pubkey = keys.public_key().to_hex();
+        let mut relay = profile_relay(None, true).await;
+
+        let newer = tokio::spawn({
+            let state = Arc::clone(&state);
+            let relay_url = relay.url.clone();
+            let pubkey = pubkey.clone();
+            async move {
+                update_profile_at_relay_inner(
+                    relay_url,
+                    pubkey,
+                    None,
+                    Some("https://example.com/newer.png".to_string()),
+                    None,
+                    None,
+                    &state,
+                )
+                .await
+            }
+        });
+        relay
+            .first_submit_started
+            .recv()
+            .await
+            .expect("newer save reached relay submit");
+
+        let older = tokio::spawn({
+            let state = Arc::clone(&state);
+            let relay_url = relay.url.clone();
+            let pubkey = pubkey.clone();
+            async move {
+                update_profile_at_relay_inner(
+                    relay_url,
+                    pubkey,
+                    None,
+                    Some("https://example.com/older.png".to_string()),
+                    None,
+                    None,
+                    &state,
+                )
+                .await
+            }
+        });
+
+        relay
+            .first_submit_release
+            .take()
+            .expect("first submit release")
+            .send(())
+            .expect("release first submit");
+        let newer_profile = newer.await.expect("newer task").expect("newer save");
+        assert_eq!(
+            newer_profile.avatar_url.as_deref(),
+            Some("https://example.com/newer.png")
+        );
+        let older_error = match older.await.expect("older task") {
+            Ok(_) => panic!("older deferred avatar save unexpectedly overwrote newer avatar"),
+            Err(error) => error,
+        };
+        assert_eq!(older_error, "profile avatar changed before deferred save");
+        let final_event = relay.current.lock().await.clone().expect("profile head");
+        assert_eq!(
+            profile_content(&final_event)["picture"],
+            "https://example.com/newer.png"
+        );
+        crate::relay_admission::reset_rate_limit_gate();
+    }
 
     #[test]
     fn deferred_profile_signer_is_captured_and_rejects_wrong_identity() {

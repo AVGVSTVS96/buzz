@@ -239,6 +239,7 @@ export function deletionResponseDisposition(
   ].some((field) => Object.hasOwn(response, field));
   if (
     code &&
+    typeof status === "number" &&
     (!suppliedTuple || tupleMatches) &&
     DEFINITIVE_ERRORS[code] === status &&
     (attempt === "initial" || !FRESH_ONLY_ERRORS.has(code))

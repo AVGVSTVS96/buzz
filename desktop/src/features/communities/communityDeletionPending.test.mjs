@@ -424,3 +424,19 @@ test("native status, never a body-claimed status, binds acceptance and abort", (
     "retain",
   );
 });
+
+test("missing native status cannot settle a typed deletion error", () => {
+  for (const code of ["future_code", "not_owner", "must_archive"]) {
+    for (const attempt of ["initial", "check"]) {
+      assert.equal(
+        deletionResponseDisposition(
+          { body: { error: { code } } },
+          envelope,
+          attempt,
+        ),
+        "retain",
+        attempt + " " + code + " without native status is ambiguous",
+      );
+    }
+  }
+});

@@ -32,6 +32,12 @@ pub use crate::reminder::{
 /// the advertised ceiling and the enforced one cannot drift.
 pub const DEFAULT_MAX_PAGE_LIMIT: i64 = 1_000;
 
+/// NIP-AR revision and removal kinds, whose stable identity is a `d` tag.
+pub const ARTIFACT_KINDS: [i32; 2] = [
+    buzz_core::kind::KIND_ARTIFACT as i32,
+    buzz_core::kind::KIND_ARTIFACT_REMOVAL as i32,
+];
+
 /// Optional filters for [`query_events`].
 #[derive(Debug, Clone)]
 pub struct EventQuery {
@@ -78,6 +84,11 @@ pub struct EventQuery {
     /// Restrict results to events with an `e` tag referencing any of these event IDs (hex).
     /// Uses JSONB containment (`tags @> ...`) against the `tags` column.
     pub e_tags: Option<Vec<String>>,
+    /// Restrict artifact rows ([`ARTIFACT_KINDS`]) to those with a `d` tag
+    /// matching any of these values, via JSONB containment. Their `d_tag`
+    /// column is NULL (not NIP-33), so this lets identity lookups match before
+    /// SQL `LIMIT`. Rows of other kinds are left to the caller's post-filter.
+    pub d_tag_values: Option<Vec<String>>,
     /// Restrict results to events with an exact custom tag pair.
     /// Uses JSONB containment against `tags` before SQL `LIMIT`.
     pub custom_tag: Option<(String, String)>,
@@ -139,6 +150,7 @@ impl EventQuery {
             authors: None,
             ids: None,
             e_tags: None,
+            d_tag_values: None,
             custom_tag: None,
             channel_ids: None,
             channel_ids_include_global: true,
@@ -339,6 +351,59 @@ async fn huddle_started_link_exists_with_operation(
     .bind(uuid_needle)
     .bind(HUDDLE_LINK_CANDIDATE_LIMIT)
     .fetch_all(&mut *connection)
+    .await?;
+
+    Ok(candidates
+        .iter()
+        .any(|content| huddle_started_content_links(content, ephemeral_channel_id)))
+}
+
+/// Return whether a creator-signed huddle-start event links a parent channel
+/// to the requested ephemeral huddle channel — checked inside an open
+/// transaction with a shared row lock on matching rows.
+///
+/// Uses `SELECT ... FOR SHARE` so any concurrent `soft_delete_event_and_update_thread()` that
+/// attempts `UPDATE events SET deleted_at = NOW() WHERE ...` on the same row
+/// must wait until this transaction commits or rolls back. This makes the
+/// re-read authoritative against concurrent deletion — "visibility" alone
+/// (i.e. a plain SELECT) is insufficient under READ COMMITTED because deletion
+/// can commit between the SELECT and the join commit in the same transaction.
+///
+/// Uses `tx.as_mut()` so the lock participates in the caller's transaction.
+/// A `false` return means the link was deleted or was never inserted, and the
+/// caller should abort the surrounding transaction.
+pub async fn huddle_started_link_exists_in_transaction(
+    tx: &mut Transaction<'_, Postgres>,
+    community_id: CommunityId,
+    parent_channel_id: Uuid,
+    ephemeral_channel_id: Uuid,
+    creator_pubkey: &[u8],
+) -> Result<bool> {
+    let uuid_needle = format!("%{}%", ephemeral_channel_id);
+    let candidates: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT content
+        FROM events
+        WHERE deleted_at IS NULL
+          AND community_id = $1
+          AND channel_id = $2
+          AND kind = $3
+          AND pubkey = $4
+          AND octet_length(content) <= $5
+          AND content ILIKE $6
+        ORDER BY created_at DESC, id ASC
+        LIMIT $7
+        FOR SHARE
+        "#,
+    )
+    .bind(community_id.as_uuid())
+    .bind(parent_channel_id)
+    .bind(KIND_HUDDLE_STARTED as i32)
+    .bind(creator_pubkey)
+    .bind(HUDDLE_LINK_CONTENT_MAX_BYTES)
+    .bind(uuid_needle)
+    .bind(HUDDLE_LINK_CANDIDATE_LIMIT)
+    .fetch_all(tx.as_mut())
     .await?;
 
     Ok(candidates
@@ -569,6 +634,12 @@ fn build_query_events_sql(q: &EventQuery) -> QueryBuilder<sqlx::Postgres> {
 
     // Use unqualified column names when no join, qualified when joined.
     let col_prefix = if q.p_tag_hex.is_some() { "e." } else { "" };
+    // Generic reads return only current artifact revisions, including delete
+    // tombstones; explicit revision IDs also read earlier revisions.
+    if q.ids.is_none() {
+        let table = if q.p_tag_hex.is_some() { "e" } else { "events" };
+        qb.push(format!(" AND NOT ({table}.kind = 45010 AND NOT EXISTS (SELECT 1 FROM artifact_heads ah WHERE ah.community_id={table}.community_id AND ah.event_id={table}.id))"));
+    }
 
     if let Some(ch) = q.channel_id {
         qb.push(format!(" AND {col_prefix}channel_id = "))
@@ -650,6 +721,10 @@ fn build_query_events_sql(q: &EventQuery) -> QueryBuilder<sqlx::Postgres> {
         if !e_tags.is_empty() {
             push_e_tag_filter(&mut qb, col_prefix, e_tags);
         }
+    }
+
+    if let Some(ref values) = q.d_tag_values {
+        push_artifact_d_tag_predicate(&mut qb, col_prefix, values);
     }
 
     if let Some((ref name, ref value)) = q.custom_tag {
@@ -782,6 +857,27 @@ fn push_e_tag_filter(qb: &mut QueryBuilder<sqlx::Postgres>, col_prefix: &str, e_
         .push("::jsonb[])");
 }
 
+/// Match `#d` on artifact rows before `LIMIT` while leaving other kinds to the
+/// caller's post-filter: `(kind NOT IN (artifact kinds) OR tags @> [["d", v]] ...)`.
+fn push_artifact_d_tag_predicate(
+    qb: &mut QueryBuilder<sqlx::Postgres>,
+    col_prefix: &str,
+    values: &[String],
+) {
+    if values.is_empty() {
+        return;
+    }
+    let [revision, removal] = ARTIFACT_KINDS;
+    qb.push(format!(
+        " AND ({col_prefix}kind NOT IN ({revision}, {removal})"
+    ));
+    for value in values {
+        qb.push(format!(" OR {col_prefix}tags @> "));
+        qb.push_bind(serde_json::json!([["d", value]]));
+    }
+    qb.push(")");
+}
+
 pub(crate) fn row_to_stored_event(row: sqlx::postgres::PgRow) -> Result<Option<StoredEvent>> {
     let id_bytes: Vec<u8> = row.try_get("id")?;
     let pubkey_bytes: Vec<u8> = row.try_get("pubkey")?;
@@ -876,6 +972,12 @@ pub(crate) async fn count_events_on(conn: &mut sqlx::PgConnection, q: &EventQuer
     };
 
     let col_prefix = if q.p_tag_hex.is_some() { "e." } else { "" };
+    // Generic reads return only current artifact revisions, including delete
+    // tombstones; explicit revision IDs also read earlier revisions.
+    if q.ids.is_none() {
+        let table = if q.p_tag_hex.is_some() { "e" } else { "events" };
+        qb.push(format!(" AND NOT ({table}.kind = 45010 AND NOT EXISTS (SELECT 1 FROM artifact_heads ah WHERE ah.community_id={table}.community_id AND ah.event_id={table}.id))"));
+    }
 
     if let Some(ch) = q.channel_id {
         qb.push(format!(" AND {col_prefix}channel_id = "))
@@ -947,6 +1049,10 @@ pub(crate) async fn count_events_on(conn: &mut sqlx::PgConnection, q: &EventQuer
         if !e_tags.is_empty() {
             push_e_tag_filter(&mut qb, col_prefix, e_tags);
         }
+    }
+
+    if let Some(ref values) = q.d_tag_values {
+        push_artifact_d_tag_predicate(&mut qb, col_prefix, values);
     }
 
     if let Some(s) = q.since {
@@ -1108,6 +1214,13 @@ pub(crate) async fn soft_delete_event_and_update_thread_in_tx(
     .bind(event_id)
     .fetch_optional(&mut *tx)
     .await?;
+
+    // Relay-signed move removals are the source channel's only replay record.
+    if target.is_some_and(|(kind, _)| kind == 45011) {
+        return Err(DbError::InvalidData(
+            "artifact removal markers cannot be deleted".into(),
+        ));
+    }
 
     if let Some((kind, Some(channel_id))) = target {
         if kind == KIND_CANVAS as i32 {
@@ -1732,7 +1845,12 @@ pub async fn insert_channel_head_checked(
     let received_at = Utc::now();
     let incoming_id = event.id.as_bytes();
 
-    let mut tx = pool.begin().await?;
+    let connection = crate::observability::acquire_writer(
+        pool,
+        crate::observability::WriterOperation::EventWrite,
+    )
+    .await?;
+    let mut tx = sqlx::Transaction::begin(connection, None).await?;
 
     // Serialize check+insert per (community, kind, channel).
     let lock_key = event_replacement_lock_key(
@@ -3413,6 +3531,136 @@ mod postgres_tests {
             .into_iter()
             .collect(),
             "the production huddle lookup must emit one writer/subscription_history start and success terminal"
+        );
+    }
+
+    // I4 deletion-race witness:
+    // `huddle_started_link_exists_in_transaction` acquires FOR SHARE on the
+    // matching row. A concurrent `soft_delete_event` (UPDATE events SET
+    // deleted_at = NOW() WHERE ...) must BLOCK until the join transaction
+    // commits or rolls back — it cannot race past the re-read and commit
+    // deletion before the join completes.
+    //
+    // Test protocol:
+    //   1. Insert a huddle_started event row.
+    //   2. Open a transaction and call `huddle_started_link_exists_in_transaction`
+    //      (acquires FOR SHARE).
+    //   3. Concurrently try `soft_delete_event` from a second connection —
+    //      the UPDATE blocks because FOR SHARE conflicts with UPDATE.
+    //   4. Commit the first transaction.
+    //   5. The concurrent delete now completes — confirm it succeeds.
+    //
+    // Mutation evidence:
+    //   Remove `FOR SHARE` from the SELECT in `huddle_started_link_exists_in_transaction` →
+    //   the concurrent delete completes before the join tx commits →
+    //   `link_gone_before_commit` becomes true before the tx commits →
+    //   assertion panics ("FOR SHARE must make delete block").
+    #[tokio::test]
+    #[ignore = "requires Postgres — link deletion contends with join transaction via FOR SHARE"]
+    async fn i4_huddle_link_deletion_blocked_by_join_transaction_for_share() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::Notify;
+
+        let pool = setup_pool().await;
+        let community = make_test_community(&pool).await;
+        let community_id = buzz_core::CommunityId::from_uuid(community);
+        let parent = make_test_channel(&pool, community, None).await;
+        let session = make_test_channel(&pool, community, None).await;
+        let creator = vec![0xAAu8; 32];
+        let event_id = vec![0xBBu8; 32];
+
+        // Insert the huddle_started event row.
+        let content = serde_json::json!({"ephemeral_channel_id": session.to_string()}).to_string();
+        sqlx::query(
+            "INSERT INTO events \
+             (community_id, id, pubkey, created_at, kind, tags, content, sig, channel_id) \
+             VALUES ($1, $2, $3, NOW(), $4, '[]', $5, $6, $7)",
+        )
+        .bind(community)
+        .bind(&event_id)
+        .bind(&creator)
+        .bind(KIND_HUDDLE_STARTED as i32)
+        .bind(&content)
+        .bind(vec![0u8; 64])
+        .bind(parent)
+        .execute(&pool)
+        .await
+        .expect("insert huddle_started event");
+
+        // Signal: join transaction has acquired FOR SHARE, delete may attempt.
+        let delete_may_start = Arc::new(Notify::new());
+        // Signal: delete completed (or timed out).
+        let delete_completed = Arc::new(AtomicBool::new(false));
+        let link_gone_before_commit = Arc::new(AtomicBool::new(false));
+
+        let delete_may_start2 = delete_may_start.clone();
+        let delete_completed2 = delete_completed.clone();
+        let link_gone2 = link_gone_before_commit.clone();
+        let pool2 = pool.clone();
+        let event_id2 = event_id.clone();
+        let community2 = community_id;
+
+        // Spawn the deleter: waits for the join tx to hold FOR SHARE, then tries
+        // to delete. It should block until the join tx commits.
+        let delete_handle = tokio::spawn(async move {
+            delete_may_start2.notified().await;
+            // Record whether the link row is still live at delete time.
+            // Under FOR SHARE this call will block until the join tx commits.
+            let result =
+                soft_delete_event_and_update_thread(&pool2, community2, &event_id2, None, None)
+                    .await
+                    .expect("soft_delete_event_and_update_thread should not error");
+            // Mark whether the link was deleted (not already gone).
+            link_gone2.store(result, Ordering::Relaxed);
+            delete_completed2.store(true, Ordering::Relaxed);
+        });
+
+        // Open the join transaction and acquire FOR SHARE.
+        let mut tx = pool.begin().await.expect("begin join tx");
+        let exists = huddle_started_link_exists_in_transaction(
+            &mut tx,
+            community_id,
+            parent,
+            session,
+            &creator,
+        )
+        .await
+        .expect("huddle_started_link_exists_in_transaction");
+        assert!(exists, "I4: link must exist before commit");
+
+        // Signal the deleter to attempt its UPDATE now.
+        delete_may_start.notify_one();
+
+        // Give the deleter a brief window to attempt the DELETE. Under correct
+        // FOR SHARE locking, it blocks here and `delete_completed` stays false.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(
+            !delete_completed.load(Ordering::Relaxed),
+            "I4: FOR SHARE must make soft_delete_event block — \
+             delete completed before the join transaction committed, \
+             which proves deletion can race past the re-read. \
+             Remove FOR SHARE from the SELECT in \
+             huddle_started_link_exists_in_transaction to reproduce."
+        );
+
+        // Commit the join transaction — delete should unblock.
+        tx.commit().await.expect("commit join tx");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), delete_handle)
+            .await
+            .expect("I4: delete must complete within 5s after join tx commit")
+            .expect("delete_handle must not panic");
+
+        // After the join tx commits, the delete should have succeeded.
+        assert!(
+            link_gone_before_commit.load(Ordering::Relaxed),
+            "I4: soft_delete_event must succeed once the join tx releases FOR SHARE"
+        );
+        assert!(
+            delete_completed.load(Ordering::Relaxed),
+            "I4: delete must complete after join tx commit"
         );
     }
 

@@ -137,6 +137,7 @@ type CommunityInitResult =
       enterpriseLogin: {
         communityName: string;
         error: string | null;
+        isPending: boolean;
         onCancel: () => void;
         onContinue: () => void;
       };
@@ -175,15 +176,19 @@ export function useCommunityInit(
   const [enterpriseLoginPrompt, setEnterpriseLoginPrompt] = useState<{
     communityName: string;
     error: string | null;
+    isPending: boolean;
   } | null>(null);
   const enterpriseLoginDecisionRef = useRef<
     ((allowed: boolean) => void) | null
   >(null);
+  const enterpriseLoginAttemptIdRef = useRef<string | null>(null);
 
   const continueEnterpriseLogin = useCallback(() => {
     const resolve = enterpriseLoginDecisionRef.current;
     enterpriseLoginDecisionRef.current = null;
-    setEnterpriseLoginPrompt(null);
+    setEnterpriseLoginPrompt((prompt) =>
+      prompt ? { ...prompt, error: null, isPending: true } : prompt,
+    );
     resolve?.(true);
   }, []);
 
@@ -191,6 +196,13 @@ export function useCommunityInit(
     const resolve = enterpriseLoginDecisionRef.current;
     enterpriseLoginDecisionRef.current = null;
     setEnterpriseLoginPrompt(null);
+    const attemptId = enterpriseLoginAttemptIdRef.current;
+    if (attemptId !== null) {
+      void cancelEnterpriseAuthLogin({ attemptId }).catch(() => {
+        // Best-effort cleanup for a browser login this hook invocation owns.
+      });
+      enterpriseLoginAttemptIdRef.current = null;
+    }
     resolve?.(false);
   }, []);
 
@@ -408,19 +420,28 @@ export function useCommunityInit(
                 setEnterpriseLoginPrompt({
                   communityName: activeCommunity.name,
                   error: null,
+                  isPending: false,
                 });
               });
             },
             onBrowserLoginStarted: () => {
               ownedEnterpriseLoginAttemptId = enterpriseLoginAttemptId;
+              enterpriseLoginAttemptIdRef.current = enterpriseLoginAttemptId;
             },
           },
         );
         enterpriseProfileForResult =
           authoritativeEnterpriseProfile(enterpriseAuth);
         ownedEnterpriseLoginAttemptId = null;
+        if (enterpriseLoginAttemptIdRef.current === enterpriseLoginAttemptId) {
+          enterpriseLoginAttemptIdRef.current = null;
+        }
+        setEnterpriseLoginPrompt(null);
       } catch (error) {
         ownedEnterpriseLoginAttemptId = null;
+        if (enterpriseLoginAttemptIdRef.current === enterpriseLoginAttemptId) {
+          enterpriseLoginAttemptIdRef.current = null;
+        }
         const errorMessage =
           error instanceof Error
             ? error.message
@@ -428,7 +449,9 @@ export function useCommunityInit(
         console.error("Enterprise login gate failed:", error);
         if (!cancelled) {
           setEnterpriseLoginPrompt((prompt) =>
-            prompt ? { ...prompt, error: errorMessage } : prompt,
+            prompt
+              ? { ...prompt, error: errorMessage, isPending: false }
+              : prompt,
           );
           setResult({
             isReady: false,
@@ -546,6 +569,11 @@ export function useCommunityInit(
         }).catch(() => {
           // Best-effort cleanup for a browser login this hook invocation owns.
         });
+        if (
+          enterpriseLoginAttemptIdRef.current === ownedEnterpriseLoginAttemptId
+        ) {
+          enterpriseLoginAttemptIdRef.current = null;
+        }
         ownedEnterpriseLoginAttemptId = null;
       }
     };

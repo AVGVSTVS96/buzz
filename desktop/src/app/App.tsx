@@ -692,6 +692,7 @@ function CommunityApp({
       <EnterpriseBrowserLoginGate
         communityName={enterpriseLoginGate.communityName}
         error={enterpriseLoginGate.error}
+        isPending={enterpriseLoginGate.isPending}
         onCancel={() => {
           enterpriseLoginGate.onCancel();
           if (transaction) void handleCommunityOnboardingCancel();

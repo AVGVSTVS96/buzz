@@ -7,6 +7,7 @@ import { useSystemColorScheme } from "@/shared/theme/useSystemColorScheme";
 type EnterpriseBrowserLoginGateProps = {
   communityName: string;
   error?: string | null;
+  isPending?: boolean;
   onCancel: () => void;
   onContinue: () => void;
 };
@@ -14,6 +15,7 @@ type EnterpriseBrowserLoginGateProps = {
 export function EnterpriseBrowserLoginGate({
   communityName,
   error,
+  isPending = false,
   onCancel,
   onContinue,
 }: EnterpriseBrowserLoginGateProps) {
@@ -33,9 +35,9 @@ export function EnterpriseBrowserLoginGate({
           Sign in with your company account
         </h1>
         <p className="mt-3 text-sm leading-6 text-muted-foreground">
-          {communityName} requires enterprise sign-in. Buzz will open your
-          system browser so your identity provider can handle SSO, passkeys, and
-          device-trust checks outside the app.
+          {isPending
+            ? "Finish sign-in in your browser, then return to Buzz. If the browser flow was closed or is stuck, cancel here to recover."
+            : `${communityName} requires enterprise sign-in. Buzz will open your system browser so your identity provider can handle SSO, passkeys, and device-trust checks outside the app.`}
         </p>
         {error ? (
           <p
@@ -49,10 +51,11 @@ export function EnterpriseBrowserLoginGate({
           <Button
             className="h-10 w-full"
             data-testid="enterprise-browser-login-continue"
+            disabled={isPending}
             onClick={onContinue}
             type="button"
           >
-            Continue in browser
+            {isPending ? "Waiting for browser sign-in…" : "Continue in browser"}
           </Button>
           <Button
             className="h-10 w-full"
@@ -61,7 +64,7 @@ export function EnterpriseBrowserLoginGate({
             type="button"
             variant="secondary"
           >
-            Cancel
+            {isPending ? "Cancel sign-in" : "Cancel"}
           </Button>
         </div>
       </div>

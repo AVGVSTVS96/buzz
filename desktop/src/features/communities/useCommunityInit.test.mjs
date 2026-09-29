@@ -301,6 +301,88 @@ test("useCommunityInit cancels an owned pending enterprise authentication login 
   }
 });
 
+test("useCommunityInit keeps cancellation visible while browser enterprise login is pending", async () => {
+  const { cleanup, renderHook, waitFor, act } = await import(
+    "@testing-library/react"
+  );
+  const { useCommunityInit } = await import("./useCommunityInit.ts");
+  const calls = [];
+  let rejectLogin;
+  const restore = installTauriInvoke(async (command, args) => {
+    calls.push([command, args]);
+    if (command === "get_identity") {
+      return { pubkey: "pubkey-1", display_name: "Tester" };
+    }
+    if (command === "set_agent_avatar_communities") return null;
+    if (command === "enterprise_login_gate") return { status: "required" };
+    if (command === "get_enterprise_auth") return null;
+    if (command === "start_enterprise_auth_login") {
+      return new Promise((_, reject) => {
+        rejectLogin = reject;
+      });
+    }
+    if (command === "cancel_enterprise_auth_login") return null;
+    if (command === "apply_workspace") {
+      throw new Error("apply_workspace must not run while login is pending");
+    }
+    throw new Error(`unexpected command: ${command}`);
+  });
+
+  try {
+    const hook = renderHook(() =>
+      useCommunityInit(testCommunity(), "community-key", false, true),
+    );
+
+    await waitFor(() => assert.ok("enterpriseLogin" in hook.result.current));
+    assert.equal(hook.result.current.enterpriseLogin.isPending, false);
+
+    await act(async () => {
+      hook.result.current.enterpriseLogin.onContinue();
+    });
+
+    await waitFor(() => {
+      assert.equal(
+        calls.some(([command]) => command === "start_enterprise_auth_login"),
+        true,
+      );
+    });
+    assert.ok("enterpriseLogin" in hook.result.current);
+    assert.equal(hook.result.current.enterpriseLogin.isPending, true);
+    assert.equal(hook.result.current.enterpriseLogin.error, null);
+
+    await act(async () => {
+      hook.result.current.enterpriseLogin.onCancel();
+      rejectLogin(new Error("Enterprise sign-in canceled"));
+    });
+
+    await waitFor(() =>
+      assert.deepEqual(
+        calls.find(([command]) => command === "cancel_enterprise_auth_login"),
+        [
+          "cancel_enterprise_auth_login",
+          {
+            attemptId: calls.find(
+              ([command]) => command === "start_enterprise_auth_login",
+            )[1].attemptId,
+          },
+        ],
+      ),
+    );
+    await waitFor(() =>
+      assert.equal(hook.result.current.error, "Enterprise sign-in canceled"),
+    );
+    assert.equal(
+      calls.some(([command]) => command === "apply_workspace"),
+      false,
+    );
+    hook.unmount();
+  } finally {
+    restore();
+    cleanup();
+    mock.reset();
+  }
+});
+
 test("useCommunityInit waits for explicit enterprise browser consent", async () => {
   const { cleanup, renderHook, waitFor, act } = await import(
     "@testing-library/react"

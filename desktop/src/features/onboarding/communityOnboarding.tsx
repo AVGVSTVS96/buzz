@@ -284,7 +284,25 @@ export function isTransactionStillConnecting(
   live: CommunityOnboardingTransaction | null | undefined,
   transactionId: string,
 ): boolean {
-  return live?.id === transactionId && live.stage === "connecting";
+  return isTransactionCurrentStage(live, transactionId, "connecting");
+}
+
+/**
+ * Returns true when a live transaction snapshot still represents the same
+ * owner at a specific stage.
+ *
+ * Async completions that intentionally move the transaction out of their
+ * launching stage can use this instead of the connecting-only guard. That keeps
+ * delayed success/failure actionable after an intermediate UI transition while
+ * still ignoring canceled, replaced, or retried work.
+ */
+export function isTransactionCurrentStage(
+  live: CommunityOnboardingTransaction | null | undefined,
+  transactionId: string,
+  stage: CommunityOnboardingStage | readonly CommunityOnboardingStage[],
+): boolean {
+  const stages = Array.isArray(stage) ? stage : [stage];
+  return live?.id === transactionId && stages.includes(live.stage);
 }
 
 /**

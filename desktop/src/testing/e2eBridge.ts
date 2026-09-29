@@ -452,7 +452,8 @@ type E2eConfig = {
     /** Override whether get_profile reports a real kind:0 event. */
     profileHasEvent?: boolean;
     profileUpdateError?: string;
-    profileUpdateErrors?: string[];
+    profileUpdateErrors?: (string | null)[];
+    profileUpdateDelayMs?: number;
     linkPreviewMetadata?: {
       title: string;
       siteName: string | null;
@@ -6891,21 +6892,26 @@ async function handleUpdateProfile(
   config: E2eConfig | undefined,
 ) {
   const identity = getIdentity(config);
+  const profileUpdateErrors = config?.mock?.profileUpdateErrors;
+  const nextProfileUpdateError = profileUpdateErrors?.shift();
+  if (config?.mock?.profileUpdateDelayMs) {
+    await new Promise((resolve) =>
+      window.setTimeout(resolve, config.mock?.profileUpdateDelayMs),
+    );
+  }
+  if (nextProfileUpdateError) {
+    throw new Error(nextProfileUpdateError);
+  }
+
+  const profileUpdateError = config?.mock?.profileUpdateError;
+  if (profileUpdateError) {
+    if (config?.mock) {
+      config.mock.profileUpdateError = undefined;
+    }
+    throw new Error(profileUpdateError);
+  }
+
   if (!identity) {
-    const profileUpdateError = config?.mock?.profileUpdateError;
-    const profileUpdateErrors = config?.mock?.profileUpdateErrors;
-    const nextProfileUpdateError = profileUpdateErrors?.shift();
-    if (nextProfileUpdateError) {
-      throw new Error(nextProfileUpdateError);
-    }
-
-    if (profileUpdateError) {
-      if (config?.mock) {
-        config.mock.profileUpdateError = undefined;
-      }
-      throw new Error(profileUpdateError);
-    }
-
     const profile = ensureMockProfile(config);
     const hasDisplayNameUpdate = typeof args.displayName === "string";
     const hasNameUpdate = typeof args.name === "string";

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   clearCommunityOnboardingTransaction,
+  isTransactionCurrentStage,
   isTransactionStillConnecting,
   loadCommunityOnboardingTransaction,
   markCommunityOnboardingComplete,
@@ -331,7 +332,7 @@ test("resolveProfileCheckAction_lateSuccessAfterTimeout_doesNotSkip", async () =
   );
 });
 
-// ── isTransactionStillConnecting — stale-transaction guard ───────────────────
+// ── transaction stage guards ─────────────────────────────────────────────────
 
 /**
  * Builds a minimal transaction stub for testing the guard predicate.
@@ -348,6 +349,75 @@ function makeTransaction(id, stage) {
     updatedAt: new Date().toISOString(),
   };
 }
+
+test("isTransactionCurrentStage_matchingIdAndStage_returnsTrue", () => {
+  assert.equal(
+    isTransactionCurrentStage(
+      makeTransaction("tx-a", "corporate-profile"),
+      "tx-a",
+      "corporate-profile",
+    ),
+    true,
+    "same id + requested stage → guard passes",
+  );
+});
+
+test("isTransactionCurrentStage_sameIdDifferentStage_returnsFalse", () => {
+  assert.equal(
+    isTransactionCurrentStage(
+      makeTransaction("tx-a", "connecting"),
+      "tx-a",
+      "corporate-profile",
+    ),
+    false,
+    "same id + different stage → guard rejects stale completion",
+  );
+});
+
+test("isTransactionCurrentStage_replacedTransaction_returnsFalse", () => {
+  assert.equal(
+    isTransactionCurrentStage(
+      makeTransaction("tx-b", "corporate-profile"),
+      "tx-a",
+      "corporate-profile",
+    ),
+    false,
+    "different id → guard rejects stale completion",
+  );
+});
+
+test("isTransactionCurrentStage_matchingIdInOneOfStages_returnsTrue", () => {
+  assert.equal(
+    isTransactionCurrentStage(makeTransaction("tx-a", "connecting"), "tx-a", [
+      "connecting",
+      "corporate-profile",
+    ]),
+    true,
+    "same id + one requested stage → guard passes",
+  );
+});
+
+test("isTransactionCurrentStage_matchingIdOutsideAllowedStages_returnsFalse", () => {
+  assert.equal(
+    isTransactionCurrentStage(makeTransaction("tx-a", "profile"), "tx-a", [
+      "connecting",
+      "corporate-profile",
+    ]),
+    false,
+    "same id + unrelated stage → guard rejects stale completion",
+  );
+});
+
+test("isTransactionCurrentStage_cancelWithNoReplacement_returnsFalse", () => {
+  assert.equal(
+    isTransactionCurrentStage(null, "tx-a", [
+      "connecting",
+      "corporate-profile",
+    ]),
+    false,
+    "null ref (cancel without replacement) → guard rejects stale completion",
+  );
+});
 
 test("isTransactionStillConnecting_matchingIdAndStage_returnsTrue", () => {
   assert.equal(

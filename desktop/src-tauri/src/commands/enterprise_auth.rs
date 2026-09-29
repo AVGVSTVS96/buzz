@@ -19,10 +19,28 @@ pub async fn enterprise_login_gate(
     relay_url: String,
     state: State<'_, AppState>,
 ) -> Result<EnterpriseLoginGateStatus, String> {
-    let http_url = crate::relay::relay_http_base_url(&relay_url);
+    discover_enterprise_login_gate(
+        &relay_url,
+        &state.http_client,
+        option_env!("BUZZ_DESKTOP_BUILD_ENTERPRISE_AUTH_RELAYS"),
+    )
+    .await
+}
+
+async fn discover_enterprise_login_gate(
+    relay_url: &str,
+    http_client: &reqwest::Client,
+    trusted_relays: Option<&str>,
+) -> Result<EnterpriseLoginGateStatus, String> {
+    let trusted = trusted_enterprise_relays(trusted_relays)?;
+    let relay_is_trusted = relay_matches_any_trusted(relay_url, &trusted)?;
+    if !relay_is_trusted {
+        return Ok(EnterpriseLoginGateStatus::NotRequired);
+    }
+
+    let http_url = crate::relay::relay_http_base_url(relay_url);
     let url = format!("{}/info", http_url.trim_end_matches('/'));
-    let response = state
-        .http_client
+    let response = http_client
         .get(url)
         .header("Accept", "application/nostr+json")
         .timeout(Duration::from_secs(30))
@@ -35,11 +53,7 @@ pub async fn enterprise_login_gate(
     }
 
     let document = parse_json_response::<serde_json::Value>(response).await?;
-    evaluate_enterprise_login_gate(
-        &relay_url,
-        &document,
-        option_env!("BUZZ_DESKTOP_BUILD_ENTERPRISE_AUTH_RELAYS"),
-    )
+    evaluate_trusted_enterprise_login_gate(&document)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -100,42 +114,38 @@ fn federated_identity_advertisement(
     }
 }
 
-fn evaluate_enterprise_login_gate(
-    relay_url: &str,
+fn evaluate_trusted_enterprise_login_gate(
     document: &serde_json::Value,
-    trusted_relays: Option<&'static str>,
 ) -> Result<EnterpriseLoginGateStatus, String> {
-    let advertisement = federated_identity_advertisement(document);
-    let trusted = trusted_enterprise_relays(trusted_relays)?;
-    let relay_is_trusted = relay_matches_any_trusted(relay_url, &trusted)?;
-
-    match (advertisement, relay_is_trusted, trusted.is_empty()) {
-        (FederatedIdentityAdvertisement::NotAdvertised, true, _) => Err(
+    match federated_identity_advertisement(document) {
+        FederatedIdentityAdvertisement::NotAdvertised => Err(
             "This trusted enterprise community did not advertise supported enterprise login. Update the relay or choose another community."
                 .to_owned(),
         ),
-        (FederatedIdentityAdvertisement::NotAdvertised, false, _) => {
-            Ok(EnterpriseLoginGateStatus::NotRequired)
-        }
-        (FederatedIdentityAdvertisement::Malformed, _, _) => Err(
+        FederatedIdentityAdvertisement::Malformed => Err(
             "This community advertised unsupported enterprise login requirements. Update Buzz or choose another community."
                 .to_owned(),
         ),
-        (FederatedIdentityAdvertisement::Required, true, _) => {
-            Ok(EnterpriseLoginGateStatus::Required)
-        }
-        (FederatedIdentityAdvertisement::Required, false, true) => Err(
-            "This community requires enterprise login, but this Buzz build does not include trusted enterprise authentication configuration."
-                .to_owned(),
-        ),
-        (FederatedIdentityAdvertisement::Required, false, false) => Err(
-            "This community requires enterprise login, but it does not match this Buzz build's trusted enterprise relay configuration."
-                .to_owned(),
-        ),
+        FederatedIdentityAdvertisement::Required => Ok(EnterpriseLoginGateStatus::Required),
     }
 }
 
-fn trusted_enterprise_relays(raw: Option<&'static str>) -> Result<Vec<String>, String> {
+#[cfg(test)]
+fn evaluate_enterprise_login_gate(
+    relay_url: &str,
+    document: &serde_json::Value,
+    trusted_relays: Option<&str>,
+) -> Result<EnterpriseLoginGateStatus, String> {
+    let trusted = trusted_enterprise_relays(trusted_relays)?;
+    let relay_is_trusted = relay_matches_any_trusted(relay_url, &trusted)?;
+    if !relay_is_trusted {
+        return Ok(EnterpriseLoginGateStatus::NotRequired);
+    }
+
+    evaluate_trusted_enterprise_login_gate(document)
+}
+
+fn trusted_enterprise_relays(raw: Option<&str>) -> Result<Vec<String>, String> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(Vec::new());
     };
@@ -247,6 +257,23 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_relay_malformed_discovery_is_not_required() {
+        let mut document = discovery_document();
+        document["federated_identity"]["assertion_freshness"]["class"] =
+            serde_json::Value::String("current-status".to_owned());
+
+        assert_eq!(
+            evaluate_enterprise_login_gate(
+                "wss://community.example",
+                &document,
+                Some("wss://buzz.block.builderlab.xyz"),
+            )
+            .unwrap(),
+            EnterpriseLoginGateStatus::NotRequired,
+        );
+    }
+
+    #[test]
     fn trusted_relay_missing_discovery_fails_closed() {
         let error = evaluate_enterprise_login_gate(
             "wss://buzz.block.builderlab.xyz",
@@ -257,31 +284,141 @@ mod tests {
         assert!(error.contains("did not advertise supported enterprise login"));
     }
 
-    #[test]
-    fn advertised_enterprise_without_trusted_config_fails_closed() {
-        let error = evaluate_enterprise_login_gate(
-            "wss://buzz.block.builderlab.xyz",
-            &discovery_document(),
-            None,
-        )
-        .unwrap_err();
-        assert!(error.contains("does not include trusted enterprise authentication configuration"));
+    async fn spawn_nip11_relay(
+        status: axum::http::StatusCode,
+        body: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use axum::{http::StatusCode, response::IntoResponse, routing::get, Router};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let route_hits = hits.clone();
+        let router = Router::new().route(
+            "/info",
+            get(move || {
+                let route_hits = route_hits.clone();
+                async move {
+                    route_hits.fetch_add(1, Ordering::SeqCst);
+                    if status == StatusCode::NO_CONTENT {
+                        StatusCode::NO_CONTENT.into_response()
+                    } else {
+                        (status, body).into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.ok();
+        });
+        (format!("ws://{addr}"), hits)
     }
 
-    #[test]
-    fn advertised_enterprise_on_untrusted_relay_fails_closed() {
-        let error = evaluate_enterprise_login_gate(
-            "wss://evil.example",
-            &discovery_document(),
+    #[tokio::test]
+    async fn ordinary_relay_skips_discovery_fetch() {
+        let (relay_url, hits) =
+            spawn_nip11_relay(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "unavailable").await;
+        let status = discover_enterprise_login_gate(
+            &relay_url,
+            &reqwest::Client::new(),
             Some("wss://buzz.block.builderlab.xyz"),
         )
-        .unwrap_err();
-        assert!(error
-            .contains("does not match this Buzz build's trusted enterprise relay configuration"));
+        .await
+        .unwrap();
+
+        assert_eq!(status, EnterpriseLoginGateStatus::NotRequired);
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "ordinary relays must not be blocked on /info availability",
+        );
+    }
+
+    #[tokio::test]
+    async fn default_build_skips_discovery_fetch() {
+        let (relay_url, hits) = spawn_nip11_relay(axum::http::StatusCode::OK, "not json").await;
+        let status = discover_enterprise_login_gate(&relay_url, &reqwest::Client::new(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(status, EnterpriseLoginGateStatus::NotRequired);
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a build with no trusted enterprise relays must not fetch /info before startup",
+        );
+    }
+
+    #[tokio::test]
+    async fn trusted_relay_non_success_discovery_fails_closed() {
+        let (relay_url, hits) =
+            spawn_nip11_relay(axum::http::StatusCode::SERVICE_UNAVAILABLE, "maintenance").await;
+        let error =
+            discover_enterprise_login_gate(&relay_url, &reqwest::Client::new(), Some(&relay_url))
+                .await
+                .unwrap_err();
+
+        assert!(error.contains("relay returned 503 Service Unavailable"));
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn trusted_relay_malformed_discovery_fails_closed() {
+        let (relay_url, hits) = spawn_nip11_relay(axum::http::StatusCode::OK, "not json").await;
+        let error =
+            discover_enterprise_login_gate(&relay_url, &reqwest::Client::new(), Some(&relay_url))
+                .await
+                .unwrap_err();
+
+        assert!(error.contains("malformed response"));
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn trusted_relay_missing_discovery_fails_closed_after_fetch() {
+        let (relay_url, hits) =
+            spawn_nip11_relay(axum::http::StatusCode::OK, r#"{"supported_nips":[1,11]}"#).await;
+        let error =
+            discover_enterprise_login_gate(&relay_url, &reqwest::Client::new(), Some(&relay_url))
+                .await
+                .unwrap_err();
+
+        assert!(error.contains("did not advertise supported enterprise login"));
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn malformed_discovery_fails_closed() {
+    fn advertised_enterprise_without_trusted_config_is_not_required() {
+        assert_eq!(
+            evaluate_enterprise_login_gate(
+                "wss://buzz.block.builderlab.xyz",
+                &discovery_document(),
+                None,
+            )
+            .unwrap(),
+            EnterpriseLoginGateStatus::NotRequired,
+        );
+    }
+
+    #[test]
+    fn advertised_enterprise_on_untrusted_relay_is_not_required() {
+        assert_eq!(
+            evaluate_enterprise_login_gate(
+                "wss://evil.example",
+                &discovery_document(),
+                Some("wss://buzz.block.builderlab.xyz"),
+            )
+            .unwrap(),
+            EnterpriseLoginGateStatus::NotRequired,
+        );
+    }
+
+    #[test]
+    fn malformed_discovery_fails_closed_for_trusted_relay() {
         let mut document = discovery_document();
         document["federated_identity"]["assertion_freshness"]["class"] =
             serde_json::Value::String("current-status".to_owned());

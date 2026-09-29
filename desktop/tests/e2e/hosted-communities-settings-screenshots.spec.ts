@@ -9,7 +9,12 @@ const OUTDIR = "test-results/hosted-communities";
 const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
 /** A second valid identity key, used only as a contradictory hosted npub. */
 const OTHER_HEX = "b".repeat(64);
-const DELETION_COMMUNITIES = [
+const DELETION_COMMUNITIES: Array<{
+  id: string;
+  name: string;
+  normalized_host: string;
+  archived_at?: string | null;
+}> = [
   {
     id: "11111111-1111-4111-8111-111111111111",
     name: "Active team",
@@ -627,7 +632,7 @@ test("ambiguous check not_owner settles the same request UUID", async ({
     capability: true,
     errorSequence: [{ code: "acceptance_unknown" }, { code: "not_owner" }],
     capabilitySequence: [true, true, true],
-    communitiesSequence: [DELETION_COMMUNITIES, DELETION_COMMUNITIES],
+    communitiesSequence: [DELETION_COMMUNITIES, []],
   });
   const archived = page
     .getByTestId("hosted-community-row")
@@ -650,6 +655,16 @@ test("ambiguous check not_owner settles the same request UUID", async ({
   await expect(page.getByText(requestId, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Check deletion status" }).click();
   await expect(page.getByText(/Only the community owner/)).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__BUZZ_E2E_COMMAND_PAYLOADS__?.filter(
+            ({ command }) => command === "delete_builderlab_community",
+          ).length,
+      ),
+    )
+    .toBe(2);
   await expect(page.getByText(requestId, { exact: true })).toHaveCount(0);
   await expect
     .poll(() =>
@@ -704,42 +719,85 @@ test("check rechecks capability after the fresh owner list", async ({
     .toBe(1);
 });
 
-test("check fails closed when the fresh owner list misses", async ({
+test("check resends the saved UUID even when the fresh owner list omits it", async ({
   page,
 }) => {
   await openDeletionFixture(page, {
     capability: true,
-    errorSequence: [{ code: "acceptance_unknown" }],
+    errorSequence: [{ code: "acceptance_unknown" }, null],
     capabilitySequence: [true, true, true],
     communitiesSequence: [DELETION_COMMUNITIES, []],
   });
-  const exactHost = "Exact-Host.communities.buzz.xyz";
-  await page
-    .getByTestId("hosted-community-row")
-    .filter({ hasText: "Archived team" })
-    .getByRole("button", { name: "Delete", exact: true })
-    .click();
-  await page
-    .getByLabel(`Type the exact host to continue: ${exactHost}`)
-    .fill(exactHost);
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page
-    .getByRole("button", { name: "Delete community permanently" })
-    .click();
+  await startArchivedDeletion(page);
+  const requestId = await storedDeletionRequestId(page);
+  expect(requestId).not.toBeNull();
+  const firstCalls = await page.evaluate(() =>
+    window.__BUZZ_E2E_COMMAND_PAYLOADS__
+      ?.filter(({ command }) => command === "delete_builderlab_community")
+      .map(({ payload }) => payload),
+  );
+  expect(firstCalls).toEqual([
+    {
+      communityId: DELETION_COMMUNITIES[1].id,
+      host: DELETION_COMMUNITIES[1].normalized_host,
+      requestId,
+      acknowledgementVersion: 1,
+    },
+  ]);
+  await page.getByRole("button", { name: "Check deletion status" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__BUZZ_E2E_COMMAND_PAYLOADS__
+          ?.filter(({ command }) => command === "delete_builderlab_community")
+          .map(({ payload }) => payload),
+      ),
+    )
+    .toEqual([firstCalls?.[0], firstCalls?.[0]]);
+  await expect.poll(() => storedDeletionRequestId(page)).toBeNull();
+  await expect(
+    page.getByText("Deletion started", { exact: true }),
+  ).toBeVisible();
+});
+
+test("check settles must_archive and offers Archive after the owner row is unarchived", async ({
+  page,
+}) => {
+  const unarchived = DELETION_COMMUNITIES.map((community) =>
+    community.id === DELETION_COMMUNITIES[1].id
+      ? { ...community, archived_at: null }
+      : community,
+  );
+  await openDeletionFixture(page, {
+    capability: true,
+    errorSequence: [{ code: "acceptance_unknown" }, { code: "must_archive" }],
+    capabilitySequence: [true, true, true],
+    communitiesSequence: [DELETION_COMMUNITIES, unarchived],
+  });
+  await startArchivedDeletion(page);
+  const requestId = await storedDeletionRequestId(page);
+  expect(requestId).not.toBeNull();
   await page.getByRole("button", { name: "Check deletion status" }).click();
   await expect(
-    page.getByText(/not present in the fresh owner list/),
+    page.getByText(/Archive this community before deleting it/),
   ).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(
         () =>
-          window.__BUZZ_E2E_COMMANDS__?.filter(
-            (command) => command === "delete_builderlab_community",
-          ).length ?? 0,
+          window.__BUZZ_E2E_COMMAND_PAYLOADS__?.filter(
+            ({ command }) => command === "delete_builderlab_community",
+          ).length,
       ),
     )
-    .toBe(1);
+    .toBe(2);
+  await expect.poll(() => storedDeletionRequestId(page)).toBeNull();
+  await expect(
+    page
+      .getByTestId("hosted-community-row")
+      .filter({ hasText: "Archived team" })
+      .getByRole("button", { name: "Archive", exact: true }),
+  ).toBeVisible();
 });
 
 test("identity: mismatch rows follow pubkey_hex, never the hosted npub or raw hex", async ({

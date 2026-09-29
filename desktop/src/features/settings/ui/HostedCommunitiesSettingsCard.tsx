@@ -68,11 +68,6 @@ function relayHost(url: string | null | undefined) {
   }
 }
 
-type LoadedHostedAccount = {
-  communities: HostedCommunity[];
-  owner: string | null;
-};
-
 export function HostedCommunitiesSettingsCard() {
   const onboarding = useCommunityOnboarding();
   const { activeCommunity } = useCommunities();
@@ -110,82 +105,77 @@ export function HostedCommunitiesSettingsCard() {
     setStatusMessage(null);
   }, []);
 
-  const loadAccount =
-    React.useCallback(async (): Promise<LoadedHostedAccount> => {
-      setError(null);
-      const [identityResponse, communitiesResponse] = await Promise.all([
-        invoke<IdentityResponse>("get_builderlab_nostr_identity"),
-        invoke<CommunitiesResponse>("list_builderlab_communities"),
-      ]);
-      if (
-        identityResponse.error &&
-        identityResponse.error.code !== "unauthorized" &&
-        // `missing_mapping` (setup_needed) just means this account hasn't linked a
-        // Buzz identity yet — that's the connect-card empty state, not an error to
-        // surface at the top of the page.
-        !identityResponse.error.setup_needed
-      ) {
-        throw new Error(
-          errorMessage(
-            identityResponse.error,
-            identityResponse.correlation_id,
-            "Could not load the connected Buzz identity.",
-          ),
-        );
-      }
-      if (
-        communitiesResponse.error &&
-        !communitiesResponse.error.setup_needed
-      ) {
-        throw new Error(
-          errorMessage(
-            communitiesResponse.error,
-            communitiesResponse.correlation_id,
-            "Could not load communities.",
-          ),
-        );
-      }
-      const nextOwner = normalizedBoundKeyHex(
-        identityResponse.identity?.pubkey_hex,
+  const loadAccount = React.useCallback(async (): Promise<void> => {
+    setError(null);
+    const [identityResponse, communitiesResponse] = await Promise.all([
+      invoke<IdentityResponse>("get_builderlab_nostr_identity"),
+      invoke<CommunitiesResponse>("list_builderlab_communities"),
+    ]);
+    if (
+      identityResponse.error &&
+      identityResponse.error.code !== "unauthorized" &&
+      // `missing_mapping` (setup_needed) just means this account hasn't linked a
+      // Buzz identity yet — that's the connect-card empty state, not an error to
+      // surface at the top of the page.
+      !identityResponse.error.setup_needed
+    ) {
+      throw new Error(
+        errorMessage(
+          identityResponse.error,
+          identityResponse.correlation_id,
+          "Could not load the connected Buzz identity.",
+        ),
       );
-      adoptAccountOwner(nextOwner);
-      const storedDeletion = loadPendingCommunityDeletion();
-      if (!nextOwner) {
-        // Missing/unauthorized identity is not proof of an account change.
-        // Fence the old generation and hide its controls, but retain the
-        // durable recovery envelope until a known owner can be compared.
+    }
+    if (communitiesResponse.error && !communitiesResponse.error.setup_needed) {
+      throw new Error(
+        errorMessage(
+          communitiesResponse.error,
+          communitiesResponse.correlation_id,
+          "Could not load communities.",
+        ),
+      );
+    }
+    const nextOwner = normalizedBoundKeyHex(
+      identityResponse.identity?.pubkey_hex,
+    );
+    adoptAccountOwner(nextOwner);
+    const storedDeletion = loadPendingCommunityDeletion();
+    if (!nextOwner) {
+      // Missing/unauthorized identity is not proof of an account change.
+      // Fence the old generation and hide its controls, but retain the
+      // durable recovery envelope until a known owner can be compared.
+      setPendingDeletion(null);
+    } else if (storedDeletion) {
+      if (
+        pendingCommunityDeletionMatchesAccount(
+          storedDeletion,
+          nextOwner,
+          BUILDERLAB_BACKEND_ORIGIN,
+        )
+      ) {
+        setPendingDeletion(storedDeletion);
+      } else {
+        clearPendingCommunityDeletion(storedDeletion);
         setPendingDeletion(null);
-      } else if (storedDeletion) {
-        if (
-          pendingCommunityDeletionMatchesAccount(
-            storedDeletion,
-            nextOwner,
-            BUILDERLAB_BACKEND_ORIGIN,
-          )
-        ) {
-          setPendingDeletion(storedDeletion);
-        } else {
-          clearPendingCommunityDeletion(storedDeletion);
-          setPendingDeletion(null);
-        }
       }
-      setIdentity(identityResponse.identity ?? null);
-      const nextCommunities = (communitiesResponse.communities ?? []).filter(
-        (community) =>
-          !community.id || !hiddenCommunityIds.current.has(community.id),
-      );
-      setCommunities(nextCommunities);
-      setQuota({
-        used: Number.isInteger(communitiesResponse.quota_used)
-          ? (communitiesResponse.quota_used as number)
-          : null,
-        limit: Number.isInteger(communitiesResponse.quota_limit)
-          ? (communitiesResponse.quota_limit as number)
-          : null,
-        canCreate: hostedCommunityCreateAvailable(communitiesResponse),
-      });
-      return { communities: nextCommunities, owner: nextOwner };
-    }, [adoptAccountOwner]);
+    }
+    setIdentity(identityResponse.identity ?? null);
+    const nextCommunities = (communitiesResponse.communities ?? []).filter(
+      (community) =>
+        !community.id || !hiddenCommunityIds.current.has(community.id),
+    );
+    setCommunities(nextCommunities);
+    setQuota({
+      used: Number.isInteger(communitiesResponse.quota_used)
+        ? (communitiesResponse.quota_used as number)
+        : null,
+      limit: Number.isInteger(communitiesResponse.quota_limit)
+        ? (communitiesResponse.quota_limit as number)
+        : null,
+      canCreate: hostedCommunityCreateAvailable(communitiesResponse),
+    });
+  }, [adoptAccountOwner]);
 
   React.useEffect(() => {
     let active = true;
@@ -621,7 +611,7 @@ export function HostedCommunitiesSettingsCard() {
               "Community deletion is no longer enabled for this account. The existing request remains pending.",
             );
           }
-          const refreshedAccount = await loadAccount();
+          await loadAccount();
           if (!deletionContextMatches(envelope, generation)) return;
           const confirmedAuth = await invoke<BuilderlabAuth | null>(
             "get_builderlab_auth",
@@ -640,17 +630,6 @@ export function HostedCommunitiesSettingsCard() {
           if (confirmedAuth.canDeleteBuzzCommunities !== true) {
             throw new Error(
               "Community deletion is no longer enabled for this account. The existing request remains pending.",
-            );
-          }
-          const current = refreshedAccount.communities.find(
-            (community) =>
-              community.id === envelope.community_id &&
-              community.normalized_host === envelope.host &&
-              Boolean(community.archived_at),
-          );
-          if (!current) {
-            throw new Error(
-              "The exact archived community is not present in the fresh owner list. The existing request remains pending; check its deletion status.",
             );
           }
           await invokeDeletion(envelope, "check", generation);

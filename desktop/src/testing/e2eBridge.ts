@@ -454,6 +454,8 @@ type E2eConfig = {
     profileUpdateError?: string;
     profileUpdateErrors?: (string | null)[];
     profileUpdateDelayMs?: number;
+    /** Hold `update_profile_at_relay` responses until the E2E release seam is invoked. */
+    deferProfileUpdates?: boolean;
     linkPreviewMetadata?: {
       title: string;
       siteName: string | null;
@@ -1634,6 +1636,10 @@ declare global {
     __BUZZ_E2E_RELEASE_PROFILE_READS__?: () => number;
     /** Number of `get_profile` responses currently held. */
     __BUZZ_E2E_PROFILE_READS_PENDING__?: () => number;
+    /** Release every `update_profile_at_relay` response held by `deferProfileUpdates`. */
+    __BUZZ_E2E_RELEASE_PROFILE_UPDATES__?: () => number;
+    /** Number of `update_profile_at_relay` responses currently held. */
+    __BUZZ_E2E_PROFILE_UPDATES_PENDING__?: () => number;
     /** Uploads that passed mock-native registration and began relay work. */
     __BUZZ_E2E_LINK_PREVIEW_UPLOAD_STARTS__?: number;
     /** Hold renderer-owned media fetches until their cancellation command. */
@@ -1764,8 +1770,15 @@ type DeferredProfileRead = {
   resolve: (value: unknown) => void;
   run: () => Promise<unknown>;
 };
+type DeferredProfileUpdate = {
+  reject: (reason: unknown) => void;
+  resolve: (value: unknown) => void;
+  run: () => Promise<unknown>;
+};
 let deferredProfileReadQueue: DeferredProfileRead[] = [];
 let profileReadsReleased = false;
+let deferredProfileUpdateQueue: DeferredProfileUpdate[] = [];
+let profileUpdatesReleased = false;
 // ── get_users_batch hold seam ───────────────────────────────────────────────
 // Toggled at runtime by `__BUZZ_E2E_HOLD_USERS_BATCH__(hold)` rather than fixed
 // at boot by a mock-config flag, because a mention-identity spec needs both
@@ -6881,7 +6894,7 @@ async function handleGetProfile(config: E2eConfig | undefined) {
   });
 }
 
-async function handleUpdateProfile(
+async function runUpdateProfile(
   args: {
     displayName?: string;
     name?: string;
@@ -6975,6 +6988,23 @@ async function handleUpdateProfile(
     owner_pubkey: null,
     has_profile_event: true,
   };
+}
+
+async function handleUpdateProfileAtRelay(
+  args: Parameters<typeof runUpdateProfile>[0],
+  config: E2eConfig | undefined,
+) {
+  if (!config?.mock?.deferProfileUpdates || profileUpdatesReleased) {
+    return runUpdateProfile(args, config);
+  }
+
+  return new Promise<unknown>((resolve, reject) => {
+    deferredProfileUpdateQueue.push({
+      resolve,
+      reject,
+      run: () => runUpdateProfile(args, config),
+    });
+  });
 }
 
 async function handleGetUserProfile(
@@ -11465,6 +11495,8 @@ export function maybeInstallE2eTauriMocks() {
   deferredThreadRepliesQueue = [];
   deferredProfileReadQueue = [];
   profileReadsReleased = false;
+  deferredProfileUpdateQueue = [];
+  profileUpdatesReleased = false;
   holdUsersBatch = false;
   heldUsersBatchReleases = [];
   cancelledMediaUploadIds = new Set<string>();
@@ -11503,6 +11535,16 @@ export function maybeInstallE2eTauriMocks() {
   };
   window.__BUZZ_E2E_PROFILE_READS_PENDING__ = () =>
     deferredProfileReadQueue.length;
+  window.__BUZZ_E2E_RELEASE_PROFILE_UPDATES__ = () => {
+    profileUpdatesReleased = true;
+    const queued = deferredProfileUpdateQueue.splice(0);
+    for (const deferred of queued) {
+      void deferred.run().then(deferred.resolve, deferred.reject);
+    }
+    return queued.length;
+  };
+  window.__BUZZ_E2E_PROFILE_UPDATES_PENDING__ = () =>
+    deferredProfileUpdateQueue.length;
   window.__BUZZ_E2E_HOLD_USERS_BATCH__ = (hold: boolean) => {
     holdUsersBatch = hold;
     // Releasing on the way out of the hold, not on the way in, is what lets a
@@ -12990,8 +13032,8 @@ export function maybeInstallE2eTauriMocks() {
       case "get_profile":
         return handleGetProfile(activeConfig);
       case "update_profile":
-        return handleUpdateProfile(
-          payload as Parameters<typeof handleUpdateProfile>[0],
+        return runUpdateProfile(
+          payload as Parameters<typeof runUpdateProfile>[0],
           activeConfig,
         );
       case "update_profile_at_relay": {
@@ -13000,14 +13042,16 @@ export function maybeInstallE2eTauriMocks() {
           displayName?: string | null;
           name?: string | null;
         };
-        return handleUpdateProfile(
+        return handleUpdateProfileAtRelay(
           {
             avatarUrl: input.avatarUrl ?? undefined,
             displayName: input.displayName ?? undefined,
             name: input.name ?? undefined,
           },
           activeConfig,
-        );
+        ).finally(() => {
+          window.__BUZZ_E2E_COMMANDS__?.push("update_profile_at_relay:settled");
+        });
       }
       case "get_user_profile":
         return handleGetUserProfile(

@@ -363,6 +363,10 @@ type MockBridgeOptions = {
   profileHasEvent?: boolean;
   profileUpdateError?: string;
   profileUpdateErrors?: string[];
+  /** Delay mock profile updates by this many milliseconds. */
+  profileUpdateDelayMs?: number;
+  /** Hold `update_profile_at_relay` responses until `__BUZZ_E2E_RELEASE_PROFILE_UPDATES__()`. */
+  deferProfileUpdates?: boolean;
   linkPreviewMetadata?: {
     title: string;
     siteName: string | null;

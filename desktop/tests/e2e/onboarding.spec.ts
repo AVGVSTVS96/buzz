@@ -133,6 +133,128 @@ async function seedCommunityProfileStage(page: Page, id: string) {
   );
 }
 
+async function seedConnectingCorporateProfileTransaction(
+  page: Page,
+  {
+    communityId = "e2e-enterprise-community",
+    communityName = "Enterprise",
+    pubkey = BLANK_TYLER_IDENTITY.pubkey,
+    relayUrl,
+    transactionId,
+  }: {
+    communityId?: string;
+    communityName?: string;
+    pubkey?: string;
+    relayUrl: string;
+    transactionId: string;
+  },
+) {
+  await seedActiveIdentity(page, { ...BLANK_TYLER_IDENTITY, pubkey });
+  await page.addInitScript(
+    ({ communityId, communityName, pubkey, relayUrl, transactionId }) => {
+      window.localStorage.setItem(
+        `buzz-machine-onboarding-complete.v2:${pubkey}`,
+        "true",
+      );
+      const timestamp = new Date().toISOString();
+      window.localStorage.setItem(
+        "buzz-communities",
+        JSON.stringify([
+          {
+            id: communityId,
+            name: communityName,
+            relayUrl,
+            addedAt: timestamp,
+            pubkey,
+          },
+        ]),
+      );
+      window.localStorage.setItem("buzz-active-community-id", communityId);
+      window.localStorage.setItem(
+        "buzz-community-onboarding-transaction.v1",
+        JSON.stringify({
+          id: transactionId,
+          source: "first-community",
+          stage: "connecting",
+          relayUrl,
+          communityName,
+          communityId,
+          addedCommunity: true,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        }),
+      );
+    },
+    { communityId, communityName, pubkey, relayUrl, transactionId },
+  );
+}
+
+async function readCommunityOnboardingTransaction(page: Page) {
+  return page.evaluate((key) => {
+    const raw = window.localStorage.getItem(key);
+    return raw
+      ? (JSON.parse(raw) as {
+          id: string;
+          relayUrl: string;
+          stage: string;
+          error?: string;
+        })
+      : null;
+  }, COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY);
+}
+
+async function waitForScopedProfileUpdatePending(page: Page) {
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__BUZZ_E2E_PROFILE_UPDATES_PENDING__
+          ? window.__BUZZ_E2E_PROFILE_UPDATES_PENDING__()
+          : 0,
+      ),
+    )
+    .toBeGreaterThan(0);
+}
+
+async function releaseScopedProfileUpdateAndWaitForSettlement(page: Page) {
+  const settledBefore = await page.evaluate(
+    () =>
+      (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+        (command) => command === "update_profile_at_relay:settled",
+      ).length,
+  );
+  const released = await page.evaluate(() => {
+    const release = window.__BUZZ_E2E_RELEASE_PROFILE_UPDATES__;
+    if (!release) {
+      throw new Error("Profile update release helper is not installed.");
+    }
+    return release();
+  });
+  expect(released).toBeGreaterThan(0);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+            (command) => command === "update_profile_at_relay:settled",
+          ).length,
+      ),
+    )
+    .toBeGreaterThan(settledBefore);
+}
+
+async function expectNoCorporateProfileStaleCompletion(
+  page: Page,
+  staleText?: string,
+) {
+  await expect(
+    page.getByRole("heading", { name: "Meet your starter team" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Saving your company profile…")).toHaveCount(0);
+  if (staleText) {
+    await expect(page.getByText(staleText)).toHaveCount(0);
+  }
+}
+
 async function uploadCommunityAvatar(page: Page, filename: string) {
   await page.getByTestId("community-avatar-open").click();
   await page.getByTestId("community-avatar-input").setInputFiles({
@@ -1627,59 +1749,10 @@ test("delayed corporate profile save success advances beyond corporate profile",
 }) => {
   const relayUrl = "wss://enterprise-delayed-success.example";
   const transactionId = "txn-corporate-profile-delayed-success";
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript(
-    ({
-      pubkey,
-      storageKey,
-      transactionStorageKey,
-      relayUrl,
-      transactionId,
-    }) => {
-      window.localStorage.setItem(
-        `buzz-machine-onboarding-complete.v2:${pubkey}`,
-        "true",
-      );
-      window.localStorage.setItem(
-        storageKey,
-        JSON.stringify([
-          {
-            id: "e2e-enterprise-community",
-            name: "Enterprise",
-            relayUrl,
-            addedAt: "2026-09-18T00:00:00.000Z",
-            pubkey,
-          },
-        ]),
-      );
-      window.localStorage.setItem(
-        "buzz-active-community-id",
-        "e2e-enterprise-community",
-      );
-      const timestamp = new Date().toISOString();
-      window.localStorage.setItem(
-        transactionStorageKey,
-        JSON.stringify({
-          id: transactionId,
-          source: "first-community",
-          stage: "connecting",
-          relayUrl,
-          communityName: "Enterprise",
-          communityId: "e2e-enterprise-community",
-          addedCommunity: true,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        }),
-      );
-    },
-    {
-      pubkey: BLANK_TYLER_IDENTITY.pubkey,
-      storageKey: "buzz-communities",
-      transactionStorageKey: COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY,
-      relayUrl,
-      transactionId,
-    },
-  );
+  await seedConnectingCorporateProfileTransaction(page, {
+    relayUrl,
+    transactionId,
+  });
   await installMockBridge(
     page,
     {
@@ -1707,13 +1780,8 @@ test("delayed corporate profile save success advances beyond corporate profile",
     page.getByRole("heading", { name: "Meet your starter team" }),
   ).toBeVisible();
   await expect
-    .poll(() =>
-      page.evaluate((key) => {
-        const raw = window.localStorage.getItem(key);
-        return raw ? JSON.parse(raw).stage : null;
-      }, COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY),
-    )
-    .toBe("team-intro");
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({ id: transactionId, stage: "team-intro" });
 });
 
 test("delayed corporate profile save failure stays retryable", async ({
@@ -1721,59 +1789,10 @@ test("delayed corporate profile save failure stays retryable", async ({
 }) => {
   const relayUrl = "wss://enterprise-delayed-failure.example";
   const transactionId = "txn-corporate-profile-delayed-failure";
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript(
-    ({
-      pubkey,
-      storageKey,
-      transactionStorageKey,
-      relayUrl,
-      transactionId,
-    }) => {
-      window.localStorage.setItem(
-        `buzz-machine-onboarding-complete.v2:${pubkey}`,
-        "true",
-      );
-      window.localStorage.setItem(
-        storageKey,
-        JSON.stringify([
-          {
-            id: "e2e-enterprise-community",
-            name: "Enterprise",
-            relayUrl,
-            addedAt: "2026-09-18T00:00:00.000Z",
-            pubkey,
-          },
-        ]),
-      );
-      window.localStorage.setItem(
-        "buzz-active-community-id",
-        "e2e-enterprise-community",
-      );
-      const timestamp = new Date().toISOString();
-      window.localStorage.setItem(
-        transactionStorageKey,
-        JSON.stringify({
-          id: transactionId,
-          source: "first-community",
-          stage: "connecting",
-          relayUrl,
-          communityName: "Enterprise",
-          communityId: "e2e-enterprise-community",
-          addedCommunity: true,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        }),
-      );
-    },
-    {
-      pubkey: BLANK_TYLER_IDENTITY.pubkey,
-      storageKey: "buzz-communities",
-      transactionStorageKey: COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY,
-      relayUrl,
-      transactionId,
-    },
-  );
+  await seedConnectingCorporateProfileTransaction(page, {
+    relayUrl,
+    transactionId,
+  });
   await installMockBridge(
     page,
     {
@@ -1803,13 +1822,167 @@ test("delayed corporate profile save failure stays retryable", async ({
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
   await expect
-    .poll(() =>
-      page.evaluate((key) => {
-        const raw = window.localStorage.getItem(key);
-        return raw ? JSON.parse(raw).stage : null;
-      }, COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY),
-    )
-    .toBe("corporate-profile");
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({ id: transactionId, stage: "corporate-profile" });
+});
+
+test("cancel ignores late corporate profile save success", async ({ page }) => {
+  const relayUrl = "wss://enterprise-cancel-late-success.example";
+  const transactionId = "txn-corporate-profile-cancel-late-success";
+  await seedConnectingCorporateProfileTransaction(page, {
+    relayUrl,
+    transactionId,
+  });
+  await installMockBridge(
+    page,
+    {
+      enterpriseLoginGate: { status: "required" },
+      enterpriseAuth: {
+        email: "brad@example.com",
+        expiresAt: "2099-01-01T00:00:00Z",
+        profileProjection: {
+          username: "seiler",
+          displayName: "Brad Seiler",
+        },
+      },
+      deferProfileUpdates: true,
+    },
+    {
+      relayWsUrl: relayUrl,
+      skipOnboardingSeed: true,
+      skipCommunitySeed: true,
+    },
+  );
+  await page.goto("/");
+
+  await expect(page.getByText("Saving your company profile…")).toBeVisible();
+  await waitForScopedProfileUpdatePending(page);
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect.poll(() => readCommunityOnboardingTransaction(page)).toBeNull();
+
+  await releaseScopedProfileUpdateAndWaitForSettlement(page);
+
+  await expect.poll(() => readCommunityOnboardingTransaction(page)).toBeNull();
+  await expectNoCorporateProfileStaleCompletion(page);
+});
+
+test("cancel ignores late corporate profile save rejection", async ({
+  page,
+}) => {
+  const staleError = "Stale corporate profile sync failure.";
+  const relayUrl = "wss://enterprise-cancel-late-rejection.example";
+  const transactionId = "txn-corporate-profile-cancel-late-rejection";
+  await seedConnectingCorporateProfileTransaction(page, {
+    relayUrl,
+    transactionId,
+  });
+  await installMockBridge(
+    page,
+    {
+      enterpriseLoginGate: { status: "required" },
+      enterpriseAuth: {
+        email: "brad@example.com",
+        expiresAt: "2099-01-01T00:00:00Z",
+        profileProjection: {
+          username: "seiler",
+          displayName: "Brad Seiler",
+        },
+      },
+      deferProfileUpdates: true,
+      profileUpdateErrors: [staleError],
+    },
+    {
+      relayWsUrl: relayUrl,
+      skipOnboardingSeed: true,
+      skipCommunitySeed: true,
+    },
+  );
+  await page.goto("/");
+
+  await expect(page.getByText("Saving your company profile…")).toBeVisible();
+  await waitForScopedProfileUpdatePending(page);
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect.poll(() => readCommunityOnboardingTransaction(page)).toBeNull();
+
+  await releaseScopedProfileUpdateAndWaitForSettlement(page);
+
+  await expect.poll(() => readCommunityOnboardingTransaction(page)).toBeNull();
+  await expectNoCorporateProfileStaleCompletion(page, staleError);
+});
+
+test("replacement ignores old corporate profile save completion", async ({
+  page,
+}) => {
+  const oldRelayUrl = "wss://enterprise-replaced-old.example";
+  const replacementRelayUrl = "wss://enterprise-replaced-new.example";
+  const oldTransactionId = "txn-corporate-profile-replaced-old";
+  await seedConnectingCorporateProfileTransaction(page, {
+    relayUrl: oldRelayUrl,
+    transactionId: oldTransactionId,
+  });
+  await installMockBridge(
+    page,
+    {
+      enterpriseLoginGate: { status: "required" },
+      enterpriseAuth: {
+        email: "brad@example.com",
+        expiresAt: "2099-01-01T00:00:00Z",
+        profileProjection: {
+          username: "seiler",
+          displayName: "Brad Seiler",
+        },
+      },
+      deferProfileUpdates: true,
+    },
+    {
+      relayWsUrl: oldRelayUrl,
+      skipOnboardingSeed: true,
+      skipCommunitySeed: true,
+    },
+  );
+  await page.goto("/");
+
+  await expect(page.getByText("Saving your company profile…")).toBeVisible();
+  await waitForScopedProfileUpdatePending(page);
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect.poll(() => readCommunityOnboardingTransaction(page)).toBeNull();
+  await expect(
+    page.getByRole("heading", { name: "Join a community" }),
+  ).toBeVisible();
+
+  await page.evaluate(() => {
+    if (window.__BUZZ_E2E__?.mock?.enterpriseAuth) {
+      window.__BUZZ_E2E__.mock.enterpriseAuth.profileProjection = null;
+    }
+  });
+  await page.getByTestId("invite-redeem-input").fill(replacementRelayUrl);
+  await page.getByTestId("invite-redeem-submit").click();
+  await expect
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({
+      relayUrl: replacementRelayUrl,
+    });
+  await expect
+    .poll(async () => (await readCommunityOnboardingTransaction(page))?.id)
+    .not.toBe(oldTransactionId);
+  const replacementBeforeRelease =
+    await readCommunityOnboardingTransaction(page);
+  expect(replacementBeforeRelease?.id).toBeTruthy();
+  expect(replacementBeforeRelease?.id).not.toBe(oldTransactionId);
+  expect(replacementBeforeRelease?.relayUrl).toBe(replacementRelayUrl);
+  const replacementId = replacementBeforeRelease?.id;
+  const replacementStage = replacementBeforeRelease?.stage;
+
+  await releaseScopedProfileUpdateAndWaitForSettlement(page);
+
+  const replacementTransaction = await readCommunityOnboardingTransaction(page);
+  expect(replacementTransaction?.id).toBe(replacementId);
+  expect(replacementTransaction?.stage).toBe(replacementStage);
+  expect(replacementTransaction?.relayUrl).toBe(replacementRelayUrl);
+  await expectNoCorporateProfileStaleCompletion(page);
 });
 
 test("authoritative corporate profile save failure stays non-editable and retries exact values", async ({
@@ -1817,59 +1990,10 @@ test("authoritative corporate profile save failure stays non-editable and retrie
 }) => {
   const relayUrl = "wss://enterprise.communities.buzz.xyz";
   const transactionId = "txn-corporate-profile-retry";
-  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
-  await page.addInitScript(
-    ({
-      pubkey,
-      storageKey,
-      transactionStorageKey,
-      relayUrl,
-      transactionId,
-    }) => {
-      window.localStorage.setItem(
-        `buzz-machine-onboarding-complete.v2:${pubkey}`,
-        "true",
-      );
-      window.localStorage.setItem(
-        storageKey,
-        JSON.stringify([
-          {
-            id: "e2e-enterprise-community",
-            name: "Enterprise",
-            relayUrl,
-            addedAt: "2026-09-18T00:00:00.000Z",
-            pubkey,
-          },
-        ]),
-      );
-      window.localStorage.setItem(
-        "buzz-active-community-id",
-        "e2e-enterprise-community",
-      );
-      const timestamp = new Date().toISOString();
-      window.localStorage.setItem(
-        transactionStorageKey,
-        JSON.stringify({
-          id: transactionId,
-          source: "first-community",
-          stage: "connecting",
-          relayUrl,
-          communityName: "Enterprise",
-          communityId: "e2e-enterprise-community",
-          addedCommunity: true,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        }),
-      );
-    },
-    {
-      pubkey: BLANK_TYLER_IDENTITY.pubkey,
-      storageKey: "buzz-communities",
-      transactionStorageKey: COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY,
-      relayUrl,
-      transactionId,
-    },
-  );
+  await seedConnectingCorporateProfileTransaction(page, {
+    relayUrl,
+    transactionId,
+  });
   await installMockBridge(
     page,
     {
@@ -1900,13 +2024,8 @@ test("authoritative corporate profile save failure stays non-editable and retrie
   ).toHaveCount(0);
   await expect(page.getByTestId("community-profile-name-key")).toHaveCount(0);
   await expect
-    .poll(() =>
-      page.evaluate((key) => {
-        const raw = window.localStorage.getItem(key);
-        return raw ? JSON.parse(raw).stage : null;
-      }, COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY),
-    )
-    .toBe("corporate-profile");
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({ id: transactionId, stage: "corporate-profile" });
 
   await page.getByRole("button", { name: "Retry" }).click();
   await expect(

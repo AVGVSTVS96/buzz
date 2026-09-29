@@ -41,7 +41,7 @@ pub(super) async fn run_agent_models_command(
             .env("BUZZ_ACP_AGENT_COMMAND", &agent_command)
             .env("BUZZ_ACP_AGENT_ARGS", agent_args.join(","));
         if let Some(meta) = known_acp_runtime(&agent_command) {
-            for (key, value) in meta.default_env {
+            for (key, value) in meta.process_defaults() {
                 if std::env::var(key).is_err() {
                     cmd.env(key, value);
                 }

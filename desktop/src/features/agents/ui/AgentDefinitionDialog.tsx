@@ -404,7 +404,7 @@ export function AgentDefinitionDialog({
     provider: globalConfig.provider,
     model: globalConfig.model,
     file: runtimeFileConfig,
-    defaults: selectedRuntime?.definitionEnv,
+    defaults: selectedRuntime?.configurationDefaults,
   });
   const effectiveInheritedProvider =
     runtime === "goose" ? gooseInherited.provider : inheritedProviderDefault;
@@ -415,7 +415,7 @@ export function AgentDefinitionDialog({
     provider: provider || globalConfig.provider,
     model: model || globalConfig.model,
     file: runtimeFileConfig,
-    defaults: selectedRuntime?.definitionEnv,
+    defaults: selectedRuntime?.configurationDefaults,
   });
   function handleAiConfigurationModeChange(nextMode: AgentAiConfigurationMode) {
     setHasUserChanges(true);
@@ -578,7 +578,7 @@ export function AgentDefinitionDialog({
   const providerOptions = getPersonaProviderOptions(
     trimmedProvider,
     runtime,
-    inheritedProviderDefault.source === "global"
+    effectiveInheritedProvider.source === "global"
       ? effectiveInheritedProvider.value
       : "",
     hideProviderIds,

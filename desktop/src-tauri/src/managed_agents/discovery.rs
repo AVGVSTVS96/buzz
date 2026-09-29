@@ -1095,7 +1095,8 @@ fn discover_acp_runtime_phase1(runtime: &'static KnownAcpRuntime, force: bool) -
             auth_status: AuthStatus::Unknown,
             login_hint: None,
             source: HarnessSource::Builtin,
-            definition_env: runtime.configuration_defaults(),
+            definition_env: Default::default(),
+            configuration_defaults: runtime.configuration_defaults(),
             max_parallelism: super::parallelism::harness_max_parallelism(runtime.id),
         },
     }
@@ -1237,6 +1238,7 @@ pub fn discover_acp_runtimes_from(
                 login_hint: None,
                 source: HarnessSource::Custom,
                 definition_env: def.env.clone(), // preserve for edit round-trip
+                configuration_defaults: Default::default(),
                 max_parallelism: super::parallelism::harness_max_parallelism(&def.command),
             });
         }

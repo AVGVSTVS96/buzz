@@ -14,15 +14,6 @@ use crate::{
     relay::relay_ws_url_with_override,
 };
 
-fn ensure_remote_harness_supported(command: &str) -> Result<(), String> {
-    if crate::managed_agents::known_acp_runtime(command)
-        .is_some_and(|rt| rt.commands == ["goose-acp"])
-    {
-        return Err("This build includes Goose for local use only. Remote Goose deployment is not supported.".into());
-    }
-    Ok(())
-}
-
 /// Effective projection fields for the deploy payload — all derived from the
 /// resolved descriptor and effective config so that the serialised payload and
 /// the `launch` block are always internally consistent.
@@ -74,9 +65,8 @@ fn build_launch_block_for_policy(
     if let Some(runtime) = runtime {
         policy_env.extend(
             runtime
-                .default_env
-                .iter()
-                .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
+                .process_defaults()
+                .map(|(key, value)| (key.to_string(), value.to_string())),
         );
         if runtime.mcp_hooks {
             policy_env.insert("MCP_HOOK_SERVERS".into(), "*".into());
@@ -221,10 +211,10 @@ pub(crate) fn build_deploy_payload<R: tauri::Runtime>(
 
     ensure_remote_provider_supported(effective.provider.value.as_deref())?;
 
-    let descriptor =
-        crate::managed_agents::resolve_effective_harness_descriptor(record, &personas, &global)
-            .map_err(|error| crate::managed_agents::user_facing_harness_error(&error))?;
-    ensure_remote_harness_supported(&descriptor.command)?;
+    let descriptor = crate::managed_agents::readiness::resolve_remote_harness_descriptor(
+        record, &personas, &global,
+    )
+    .map_err(|error| crate::managed_agents::user_facing_harness_error(&error))?;
     let owner_pubkey = super::workspace_owner_hex(state)?;
     let launch = build_launch_block_for_policy(
         record,
@@ -299,19 +289,6 @@ mod tests {
     use super::*;
     use crate::managed_agents::{readiness::EffectiveHarnessDescriptor, RespondTo, TeamRecord};
 
-    #[test]
-    fn remote_goose_requires_an_external_runtime_build() {
-        assert!(ensure_remote_harness_supported("buzz-agent").is_ok());
-        assert!(ensure_remote_harness_supported("claude-agent-acp").is_ok());
-        assert_eq!(
-            ensure_remote_harness_supported("goose").is_err(),
-            cfg!(all(feature = "bundled-goose", target_os = "macos"))
-        );
-        if cfg!(all(feature = "bundled-goose", target_os = "macos")) {
-            assert!(ensure_remote_harness_supported("goose-acp").is_err());
-        }
-    }
-
     fn record() -> ManagedAgentRecord {
         serde_json::from_value(serde_json::json!({
             "pubkey": "abcd1234",
@@ -334,6 +311,57 @@ mod tests {
             "updated_at": "2026-01-01T00:00:00Z"
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn remote_goose_preserves_external_command_and_user_configuration() {
+        for pin in [None, Some("goose"), Some("/opt/homebrew/bin/goose")] {
+            let mut record = record();
+            record.runtime = Some("goose".into());
+            record.agent_command_override = pin.map(str::to_string);
+            let resolve = |record: &ManagedAgentRecord| {
+                crate::managed_agents::readiness::resolve_remote_harness_descriptor(
+                    record,
+                    &[],
+                    &Default::default(),
+                )
+                .unwrap()
+            };
+            let descriptor = resolve(&record);
+            let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner");
+            assert_eq!(launch["command"], pin.unwrap_or("goose"));
+            assert_eq!(launch["args"], serde_json::json!(["acp"]));
+            for key in ["GOOSE_PROVIDER", "GOOSE_MODEL"] {
+                assert!(launch["env"].get(key).is_none());
+                assert!(launch["policy_env"].get(key).is_none());
+            }
+            // Preserve explicit values even when they equal the build defaults;
+            // removing defaults after assembly would incorrectly erase these.
+            let defaults = crate::managed_agents::known_acp_runtime("goose")
+                .unwrap()
+                .configuration_defaults();
+            record.env_vars.insert(
+                "GOOSE_PROVIDER".into(),
+                defaults
+                    .get("GOOSE_PROVIDER")
+                    .cloned()
+                    .unwrap_or("openai".into()),
+            );
+            record.env_vars.insert(
+                "GOOSE_MODEL".into(),
+                defaults
+                    .get("GOOSE_MODEL")
+                    .cloned()
+                    .unwrap_or("user-model".into()),
+            );
+            let descriptor = resolve(&record);
+            let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner");
+            assert_eq!(
+                launch["env"]["GOOSE_PROVIDER"],
+                record.env_vars["GOOSE_PROVIDER"]
+            );
+            assert_eq!(launch["env"]["GOOSE_MODEL"], record.env_vars["GOOSE_MODEL"]);
+        }
     }
 
     #[test]

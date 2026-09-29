@@ -18,12 +18,16 @@ export function resolveGooseConfig({
     key: string,
     structured?: string | null,
     fromFile?: string | null,
+    useBuildDefault = true,
   ): InheritedDefault => {
     const candidates: InheritedDefault[] = [
       { value: env[key]?.trim() ?? "", source: "environment" },
       { value: structured?.trim() ?? "", source: "global" },
       { value: fromFile?.trim() ?? "", source: "file" },
-      { value: defaults[key]?.trim() ?? "", source: "build" },
+      {
+        value: useBuildDefault ? (defaults[key]?.trim() ?? "") : "",
+        source: "build",
+      },
     ];
     return (
       candidates.find(({ value }) => value.length > 0) ?? {
@@ -32,8 +36,15 @@ export function resolveGooseConfig({
       }
     );
   };
+  const resolvedProvider = resolve("GOOSE_PROVIDER", provider, file?.provider);
   return {
-    provider: resolve("GOOSE_PROVIDER", provider, file?.provider),
-    model: resolve("GOOSE_MODEL", model, file?.model),
+    provider: resolvedProvider,
+    model: resolve(
+      "GOOSE_MODEL",
+      model,
+      file?.model,
+      !!resolvedProvider.value &&
+        resolvedProvider.value === defaults.GOOSE_PROVIDER?.trim(),
+    ),
   };
 }

@@ -1,5 +1,4 @@
 import { expect, test } from "@playwright/test";
-import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge } from "../helpers/bridge";
 import { passThroughBackupStep } from "../helpers/onboarding";
 
@@ -190,14 +189,7 @@ test("setup filters the bundled harnesses by connection method", async ({
     page.getByRole("heading", { name: "Choose a harness" }),
   ).toBeVisible();
   await expect(page.getByTestId("onboarding-runtime-goose")).toBeVisible();
-  await expect(
-    page.getByTestId("onboarding-runtime-goose-bundled"),
-  ).toHaveCount(0);
   await expect(page.getByTestId("onboarding-runtime-buzz-agent")).toBeVisible();
-  await waitForAnimations(page);
-  await page.getByTestId("onboarding-page-2").screenshot({
-    path: "test-results/screenshots/bundled-goose.png",
-  });
   await expect(page.getByTestId("onboarding-runtime-claude")).toHaveCount(0);
   await expect(page.getByTestId("onboarding-runtime-codex")).toHaveCount(0);
   await expect(page.getByRole("checkbox")).toHaveCount(0);
@@ -1233,7 +1225,7 @@ test("baked build config keeps Finish enabled without manual provider setup", as
   await expect(page.getByTestId("onboarding-finish")).toBeEnabled();
 });
 
-test("bundled Goose preserves its defaults after model discovery", async ({
+test("bundled Goose preserves defaults and selects a compatible model after provider change", async ({
   page,
 }) => {
   await installMockBridge(
@@ -1251,7 +1243,7 @@ test("bundled Goose preserves its defaults after model discovery", async ({
             requires_external_cli: false,
             provider_env_var: "GOOSE_PROVIDER",
             model_env_var: "GOOSE_MODEL",
-            definition_env: {
+            configuration_defaults: {
               GOOSE_PROVIDER: "databricks_v2",
               GOOSE_MODEL: "bundled-pilot-model",
             },
@@ -1292,6 +1284,17 @@ test("bundled Goose preserves its defaults after model discovery", async ({
   await expect(page.getByTestId("global-agent-model")).toContainText(
     "bundled-pilot-model",
   );
+  await page.getByTestId("global-agent-provider").click();
+  await page.getByTestId("global-agent-provider-option-anthropic").click();
+  await page
+    .getByRole("textbox", { name: "Anthropic API Key" })
+    .fill("test-anthropic-key");
+  await expect(page.getByTestId("global-agent-model")).toContainText(
+    "Discovered Model",
+  );
+  await expect(page.getByTestId("global-agent-model")).not.toContainText(
+    "bundled-pilot-model",
+  );
 });
 
 function bundledGooseRuntime() {
@@ -1304,7 +1307,7 @@ function bundledGooseRuntime() {
       requires_external_cli: false,
       provider_env_var: "GOOSE_PROVIDER",
       model_env_var: "GOOSE_MODEL",
-      definition_env: {
+      configuration_defaults: {
         GOOSE_PROVIDER: "databricks_v2",
         GOOSE_MODEL: "bundled-model",
       },

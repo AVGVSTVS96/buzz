@@ -616,6 +616,7 @@ fn update_time_override_preserves_pin_for_persona_less_agent() {
 
 // ── probe_codex_acp_version ───────────────────────────────────────────────────
 
+mod catalog;
 mod effort_clear;
 mod forced_discovery;
 mod managed_path_resolution;
@@ -1630,19 +1631,6 @@ fn custom_catalog_entry_carries_definition_env_for_edit_roundtrip() {
         entry.definition_env, expected,
         "catalog entry must carry definition env vars so the edit form can read them back"
     );
-}
-
-/// Builtin catalog defaults come from runtime metadata, not user-editable JSON.
-#[test]
-fn builtin_catalog_entries_expose_runtime_configuration_defaults() {
-    use crate::managed_agents::custom_harnesses::registry_test_lock;
-    let _path_guard = crate::managed_agents::lock_path_mutex();
-    let _lock = registry_test_lock();
-    let entries = discover_acp_runtimes_from(None, true);
-    for runtime in KNOWN_ACP_RUNTIMES {
-        let entry = entries.iter().find(|entry| entry.id == runtime.id).unwrap();
-        assert_eq!(entry.definition_env, runtime.configuration_defaults());
-    }
 }
 
 // ── Discovery publish via the PRODUCTION call path (stale-snapshot regression) ─

@@ -442,10 +442,14 @@ entry with its existing icon. Builds without the feature use external `goose acp
 Buzz Agent remains the default. Existing Goose runtime selections use the bundled
 executable on their next local launch. Saved unpublished `goose-bundled` pilot
 selections deserialize to `goose` in definitions, records, and global defaults.
-Bundled provider/model defaults belong to the runtime's catalog metadata and
+Bundled provider/model defaults use the catalog's `configurationDefaults` field,
+separate from custom harness `definitionEnv` overrides. Launch and discovery use
+the same file-aware fallback layer. A bundled model applies only when the
+effective provider matches the bundled provider. These defaults
 are below explicit structured settings, user environment settings, and existing
 Goose file values. `GOOSE_PROVIDER` and `GOOSE_MODEL` environment overrides win
 over structured values, as at launch; global settings and create-agent validation
 use that same precedence. File configuration and credentials follow Goose's
 existing configuration paths. The bundled runtime
-is local only; remote images do not yet contain this executable.
+is local only; remote deployments retain `goose acp` and explicit user settings
+without bundled provider/model fallbacks. Absolute external Goose pins stay intact.

@@ -279,7 +279,7 @@ export function AgentConfigFields({
   const gooseDefaults = resolveGooseConfig({
     env: config.env_vars,
     file: runtimeFileConfig,
-    defaults: selectedRuntime?.definitionEnv,
+    defaults: selectedRuntime?.configurationDefaults,
   });
   const inheritedProvider =
     selectedRuntimeId === "goose"
@@ -306,7 +306,12 @@ export function AgentConfigFields({
     : "";
   const fallbackModel =
     selectedRuntimeId === "goose"
-      ? gooseDefaults.model.value || null
+      ? resolveGooseConfig({
+          env: config.env_vars,
+          provider: effectiveProvider,
+          file: runtimeFileConfig,
+          defaults: selectedRuntime?.configurationDefaults,
+        }).model.value || null
       : ((selectedRuntime?.modelEnvVar &&
         selectedRuntime.providerEnvVar &&
         selectedRuntime.definitionEnv?.[selectedRuntime.providerEnvVar] ===

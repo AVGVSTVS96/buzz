@@ -3,8 +3,7 @@
 //! Two entry points, one per call shape: [`agent_model_discovery_config`]
 //! resolves a *saved* agent through the same descriptor/model resolvers spawn
 //! uses, and [`draft_agent_model_discovery_env`] derives the env for an unsaved
-//! form. Both are pure so the regression tests can bind the exact values the
-//! commands consume.
+//! form. Both use the same Goose file-aware fallback layer as local launch.
 //!
 //! Included from `agent_models.rs` via `#[path]`, so `super::*` resolves
 //! against that module (the `agent_models_tests.rs` convention).
@@ -108,5 +107,12 @@ pub(super) fn draft_agent_model_discovery_env(
     }
     let merged_with_def =
         crate::managed_agents::merged_user_env(&derived_env, &filtered_definition_env);
-    crate::managed_agents::merged_user_env(&merged_with_def, env_vars)
+    let mut env = crate::managed_agents::discovery_env_with_baked_floor(
+        crate::managed_agents::merged_user_env(&merged_with_def, env_vars),
+    );
+    crate::managed_agents::config_bridge::apply_bundled_goose_defaults(
+        &mut env,
+        known_acp_runtime(agent_command),
+    );
+    env
 }

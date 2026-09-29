@@ -229,7 +229,6 @@ pub async fn discover_agent_models(
         &input.definition_env,
         &input.env_vars,
     );
-    let merged_env = discovery_env_with_baked_floor(merged_env);
     // Recover a build-provided provider when the form has none, so the create
     // dialog discovers live models instead of falling through to the subprocess.
     let effective_provider = effective_discovery_provider(
@@ -786,3 +785,7 @@ pub(super) fn normalize_agent_models(
 #[cfg(test)]
 #[path = "agent_models_tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "bundled-goose", target_os = "macos"))]
+#[path = "agent_models_goose_tests.rs"]
+mod goose_tests;

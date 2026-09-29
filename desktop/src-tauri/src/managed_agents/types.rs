@@ -728,6 +728,10 @@ pub struct AcpRuntimeCatalogEntry {
     /// Absent for builtin/preset entries. Skipped when empty in serialization.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub definition_env: BTreeMap<String, String>,
+    /// Build-supplied provider/model fallbacks, below explicit and file settings.
+    /// Display metadata only; never forward these as definition env overrides.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub configuration_defaults: BTreeMap<String, String>,
     /// Spawn-time parallelism cap; absent for uncapped harnesses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallelism: Option<u32>,

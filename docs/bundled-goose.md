@@ -4,7 +4,8 @@ Internal macOS builds may enable the desktop `bundled-goose` Cargo feature.
 This makes the single **Goose** (`goose`) runtime use the pinned executable
 included with Buzz. Buzz Agent remains the default. Existing Goose agents use
 the bundled executable on their next launch; builds without this feature keep
-using the external Goose CLI. The bundled runtime supports local agents only.
+using the external Goose CLI. Remote deployment retains the external `goose acp`
+command and user configuration; it receives no bundled provider/model defaults.
 Saved `goose-bundled` pilot selections load as `goose`.
 
 ## Build and package
@@ -36,7 +37,8 @@ it to its Tauri release configuration, and enables `bundled-goose`. It supplies
 `BUZZ_BUILD_BUNDLED_GOOSE_PROVIDER` and `BUZZ_BUILD_BUNDLED_GOOSE_MODEL` together.
 These are defaults only for the bundled runtime; structured agent/persona/global
 selections, user environment values, and existing Goose file settings take
-precedence. `GOOSE_PROVIDER` and `GOOSE_MODEL` environment overrides are
+precedence. The bundled model applies only when the effective provider matches
+the bundled provider. `GOOSE_PROVIDER` and `GOOSE_MODEL` environment overrides are
 honored in launch, settings display, and create-agent validation. OSS builds don't enable
 the feature or require the additional artifact. The internal pipeline must
 select a Buzz desktop tag containing this support.
@@ -47,6 +49,10 @@ installed apps use the executable beside Buzz, never an external PATH match.
 `goose-acp` takes no `acp` subcommand. Builds without bundling continue to use `goose acp`.
 Both use Goose's existing configuration and credential locations; incompatible
 extensions in an existing Goose config can still cause startup errors.
+
+To keep using an external Goose in a bundled build, add a custom harness with
+an absolute executable path (for example `/opt/homebrew/bin/goose`) and `acp`
+as its argument. Bare `goose` and `goose-acp` commands select the bundled binary.
 
 ## Qualification
 

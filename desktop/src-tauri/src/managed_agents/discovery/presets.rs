@@ -96,6 +96,7 @@ pub(super) fn preset_catalog_entry(
         login_hint: None,
         source: HarnessSource::Preset,
         definition_env: Default::default(),
+        configuration_defaults: Default::default(),
         // Derived from the static preset command (`def.command`). This ensures
         // unavailable entries (command: null in JSON, None here) still carry
         // the cap — the harness cap is command-keyed, not availability-gated.

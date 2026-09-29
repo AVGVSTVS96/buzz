@@ -73,6 +73,30 @@ pub(crate) fn read_config_surface(
 
     let model_overridden = session_cache.is_some_and(|c| c.model_overridden);
 
+    let provider = build_provider_field(
+        record,
+        &file_config.provider,
+        provider_env_var,
+        provider_locked,
+        required_fields.contains(&"provider"),
+        tiers,
+        provider_env_var
+            .and_then(|key| defaults.get(key))
+            .map(String::as_str),
+    );
+    // Only the bundled model is provider-scoped; existing user/file values keep
+    // their established precedence, even when the user changes providers.
+    let bundled_model = defaults.get("GOOSE_MODEL").filter(|_| {
+        provider
+            .as_ref()
+            .and_then(|field| field.value.as_deref())
+            .is_some_and(|value| {
+                defaults
+                    .get("GOOSE_PROVIDER")
+                    .is_some_and(|expected| expected == value)
+            })
+    });
+
     let normalized = NormalizedConfig {
         model: Some(build_model_field(
             record,
@@ -85,21 +109,9 @@ pub(crate) fn read_config_surface(
             required_fields.contains(&"model"),
             model_overridden,
             tiers,
-            model_env_var
-                .and_then(|key| defaults.get(key))
-                .map(String::as_str),
+            bundled_model.map(String::as_str),
         )),
-        provider: build_provider_field(
-            record,
-            &file_config.provider,
-            provider_env_var,
-            provider_locked,
-            required_fields.contains(&"provider"),
-            tiers,
-            provider_env_var
-                .and_then(|key| defaults.get(key))
-                .map(String::as_str),
-        ),
+        provider,
         mode: build_mode_field(&file_config.mode, &acp_mode, is_pre_spawn, session_cache),
         thinking_effort: build_thinking_field(
             record,

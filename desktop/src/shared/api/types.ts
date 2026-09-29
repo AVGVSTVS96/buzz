@@ -531,6 +531,8 @@ export type AcpRuntimeCatalogEntry = {
    * builtin/preset entries.
    */
   definitionEnv?: Record<string, string>;
+  /** Build fallbacks below explicit configuration and harness file settings. */
+  configurationDefaults?: Record<string, string>;
   /** Spawn-time parallelism cap; absent for uncapped harnesses. */
   maxParallelism?: number;
 };

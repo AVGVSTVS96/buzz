@@ -203,6 +203,25 @@ fn bundled_goose_file_and_env_precedence() {
             Some(expected_model)
         );
     }
+    // A provider-only choice must not inherit the bundled provider's model.
+    std::fs::write(&path, "GOOSE_PROVIDER: anthropic\n").unwrap();
+    let env = resolve_effective_agent_env(&record, &[], Some(&runtime), &global);
+    assert!(!env.env.contains_key("GOOSE_MODEL"));
+    let surface = read_config_surface(&record, Some(&runtime), None, &tiers, None);
+    assert_eq!(surface.normalized.model.unwrap().value, None);
+
+    std::fs::write(&path, "{}\n").unwrap();
+    record.provider = Some("anthropic".into());
+    let env = resolve_effective_agent_env(&record, &[], Some(&runtime), &global);
+    assert!(!env.env.contains_key("GOOSE_MODEL"));
+    let surface = read_config_surface(&record, Some(&runtime), None, &tiers, None);
+    assert_eq!(surface.normalized.model.unwrap().value, None);
+    record.provider = None;
+    std::env::set_var("GOOSE_PROVIDER", "anthropic");
+    let env = resolve_effective_agent_env(&record, &[], Some(&runtime), &global);
+    assert!(!env.env.contains_key("GOOSE_MODEL"));
+    std::env::remove_var("GOOSE_PROVIDER");
+
     // Existing exported settings must remain inherited by the child.
     std::fs::write(&path, "{}\n").unwrap();
     std::env::set_var("GOOSE_PROVIDER", "exported-provider");

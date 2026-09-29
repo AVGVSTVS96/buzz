@@ -194,6 +194,7 @@ export type RawAcpRuntimeCatalogEntry = {
   source: "builtin" | "preset" | "custom";
   /** Definition-level env vars for `source: custom` entries; absent for builtin/preset. */
   definition_env?: Record<string, string>;
+  configuration_defaults?: Record<string, string>;
   max_parallelism?: number;
   effort_canonical_values?: string[] | null;
 };
@@ -660,6 +661,7 @@ export function fromRawAcpRuntimeCatalogEntry(
     loginHint: entry.login_hint ?? null,
     source: entry.source,
     definitionEnv: entry.definition_env ?? {},
+    configurationDefaults: entry.configuration_defaults ?? {},
     effortCanonicalValues: entry.effort_canonical_values ?? null,
     ...(entry.max_parallelism !== undefined && {
       maxParallelism: entry.max_parallelism,

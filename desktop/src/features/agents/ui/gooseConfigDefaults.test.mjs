@@ -76,3 +76,15 @@ test("Goose falls back independently for missing fields", () => {
   assert.equal(resolveGooseConfig({}).provider.value, "");
   assert.equal(resolveGooseConfig({}).model.value, "");
 });
+
+for (const input of [
+  { provider: "anthropic" },
+  { file: { provider: "anthropic" } },
+  { env: { GOOSE_PROVIDER: "anthropic" } },
+]) {
+  test(`Goose does not inherit a model for another provider: ${JSON.stringify(input)}`, () => {
+    const result = resolveGooseConfig({ defaults, ...input });
+    assert.equal(result.provider.value, "anthropic");
+    assert.deepEqual(result.model, { value: "", source: null });
+  });
+}

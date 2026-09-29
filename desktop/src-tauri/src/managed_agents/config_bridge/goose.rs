@@ -21,7 +21,19 @@ pub(crate) fn apply_bundled_defaults(
         return;
     }
     let file = read_config_file();
+    let inherited_provider = std::env::var("GOOSE_PROVIDER").ok();
+    let effective_provider = env
+        .get("GOOSE_PROVIDER")
+        .map(String::as_str)
+        .or(inherited_provider.as_deref())
+        .or_else(|| file.as_ref().and_then(|f| f.provider.as_deref()))
+        .or_else(|| defaults.get("GOOSE_PROVIDER").map(String::as_str));
+    let model_matches_provider = effective_provider.is_some()
+        && effective_provider == defaults.get("GOOSE_PROVIDER").map(String::as_str);
     for (key, value) in defaults {
+        if key == "GOOSE_MODEL" && !model_matches_provider {
+            continue;
+        }
         let file_value = match key.as_str() {
             "GOOSE_PROVIDER" => file.as_ref().and_then(|f| f.provider.as_deref()),
             "GOOSE_MODEL" => file.as_ref().and_then(|f| f.model.as_deref()),

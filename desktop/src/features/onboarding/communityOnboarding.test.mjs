@@ -6,6 +6,7 @@ import {
   isTransactionStillConnecting,
   loadCommunityOnboardingTransaction,
   markCommunityOnboardingComplete,
+  nextCommunityOnboardingInitAttempt,
   resolveProfileCheckAction,
   shouldSkipCommunityOnboarding,
   startCommunityOnboarding,
@@ -130,6 +131,48 @@ test("acknowledgment persists but resets when the same-relay link reopens", () =
   assert.equal(reopened.acknowledged, undefined);
 });
 
+test("retry generation advances before stale same-community results can match", () => {
+  const storage = createMemoryStorage();
+  const transaction = startCommunityOnboarding(
+    { source: "first-community", relayUrl: "wss://relay.example" },
+    storage,
+  );
+  assert.equal(transaction.initAttempt, 0);
+
+  const retryAttempt = nextCommunityOnboardingInitAttempt(transaction);
+  const retried = updateCommunityOnboardingTransaction(
+    transaction,
+    { stage: "connecting", initAttempt: retryAttempt, error: undefined },
+    storage,
+  );
+
+  assert.equal(retryAttempt, 1);
+  assert.equal(retried.initAttempt, 1);
+  assert.equal(loadCommunityOnboardingTransaction(storage)?.initAttempt, 1);
+  assert.notEqual(retried.initAttempt, transaction.initAttempt);
+});
+
+test("same-relay ingress resumes with a fresh init generation", () => {
+  const storage = createMemoryStorage();
+  const transaction = startCommunityOnboarding(
+    { source: "deep-link-connect", relayUrl: "wss://relay.example" },
+    storage,
+  );
+  updateCommunityOnboardingTransaction(
+    transaction,
+    { stage: "corporate-profile", error: "Browser login was rejected" },
+    storage,
+  );
+
+  const reopened = startCommunityOnboarding(
+    { source: "deep-link-connect", relayUrl: "wss://relay.example" },
+    storage,
+  );
+
+  assert.equal(reopened.id, transaction.id);
+  assert.equal(reopened.initAttempt, 1);
+  assert.equal(reopened.error, undefined);
+});
 test("malformed persisted state is ignored and can be cleared", () => {
   const storage = createMemoryStorage({
     "buzz-community-onboarding-transaction.v1": '{"stage":"profile"}',

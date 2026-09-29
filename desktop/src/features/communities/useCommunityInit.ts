@@ -114,6 +114,7 @@ type CommunityInitResult =
       isReady: true;
       needsSetup: false;
       appliedKey: string;
+      initAttempt: number | null;
       identityPubkey: string | null;
       enterpriseProfile: EnterpriseProfileSeed | null;
     }
@@ -122,11 +123,17 @@ type CommunityInitResult =
       needsSetup: true;
       defaultRelayUrl: string;
     }
-  | { isReady: false; needsSetup: false; appliedKey: string | null }
   | {
       isReady: false;
       needsSetup: false;
       appliedKey: string | null;
+      initAttempt: number | null;
+    }
+  | {
+      isReady: false;
+      needsSetup: false;
+      appliedKey: string | null;
+      initAttempt: number | null;
       enterpriseLogin: {
         communityName: string;
         error: string | null;
@@ -138,6 +145,7 @@ type CommunityInitResult =
       isReady: false;
       needsSetup: false;
       appliedKey: string | null;
+      initAttempt: number | null;
       error: string;
     };
 
@@ -152,6 +160,7 @@ type CommunityInitResult =
 export function useCommunityInit(
   activeCommunity: Community | null,
   communityKey: string,
+  initAttempt: number | null,
   isSharedIdentity: boolean,
   suppressAutoConnect = false,
   communities: readonly Community[] = [],
@@ -161,6 +170,7 @@ export function useCommunityInit(
     isReady: false,
     needsSetup: false,
     appliedKey: null,
+    initAttempt: null,
   });
   const [enterpriseLoginPrompt, setEnterpriseLoginPrompt] = useState<{
     communityName: string;
@@ -200,6 +210,7 @@ export function useCommunityInit(
         isReady: false,
         needsSetup: false,
         appliedKey: null,
+        initAttempt: null,
         error: "Could not refresh avatar source permissions. Reload to retry.",
       });
     });
@@ -242,6 +253,7 @@ export function useCommunityInit(
                 isReady: false,
                 needsSetup: false,
                 appliedKey: null,
+                initAttempt: null,
                 error:
                   error instanceof Error
                     ? `Could not safely leave community: ${error.message}`
@@ -317,11 +329,14 @@ export function useCommunityInit(
       // Mark this community config as pending while it is applied to the
       // backend. App.tsx also checks appliedKey against the active communityKey,
       // which prevents rendering community-scoped UI for a new community until
-      // that exact config has finished applying.
+      // that exact config has finished applying. The init attempt is captured
+      // from the visible onboarding transaction so retry generations can fence
+      // stale completions for the same community config.
       setResult({
         isReady: false,
         needsSetup: false,
         appliedKey: communityKey,
+        initAttempt,
       });
 
       // Resolve the active signer before resetting singletons so
@@ -367,6 +382,7 @@ export function useCommunityInit(
               isReady: false,
               needsSetup: false,
               appliedKey: null,
+              initAttempt: null,
               error:
                 error instanceof Error
                   ? `Could not safely switch communities: ${error.message}`
@@ -418,6 +434,7 @@ export function useCommunityInit(
             isReady: false,
             needsSetup: false,
             appliedKey: communityKey,
+            initAttempt,
             error: errorMessage,
           });
         }
@@ -470,6 +487,7 @@ export function useCommunityInit(
             isReady: false,
             needsSetup: false,
             appliedKey: null,
+            initAttempt: null,
             error:
               error instanceof Error
                 ? error.message
@@ -506,6 +524,7 @@ export function useCommunityInit(
           isReady: true,
           needsSetup: false,
           appliedKey: communityKey,
+          initAttempt,
           identityPubkey,
           enterpriseProfile: enterpriseProfileForResult,
         });
@@ -538,6 +557,7 @@ export function useCommunityInit(
     isSharedIdentity,
     suppressAutoConnect,
     communityKey,
+    initAttempt,
   ]);
 
   if (enterpriseLoginPrompt !== null) {
@@ -545,6 +565,7 @@ export function useCommunityInit(
       isReady: false,
       needsSetup: false,
       appliedKey: activeCommunity ? communityKey : null,
+      initAttempt: activeCommunity ? initAttempt : null,
       enterpriseLogin: {
         ...enterpriseLoginPrompt,
         onCancel: cancelEnterpriseLogin,

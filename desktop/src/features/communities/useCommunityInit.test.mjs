@@ -93,9 +93,12 @@ function neverSettles() {
 }
 
 function mount(communities) {
-  return renderHook((list) => useCommunityInit(b, "b", false, false, list), {
-    initialProps: communities,
-  });
+  return renderHook(
+    (list) => useCommunityInit(b, "b", null, false, false, list),
+    {
+      initialProps: communities,
+    },
+  );
 }
 
 test("useCommunityInit gates enterprise login before applying the community", async () => {
@@ -122,7 +125,7 @@ test("useCommunityInit gates enterprise login before applying the community", as
   try {
     const community = testCommunity();
     const hook = renderHook(() =>
-      useCommunityInit(community, "community-key", false, true),
+      useCommunityInit(community, "community-key", null, false, true),
     );
 
     await waitFor(() => assert.equal(hook.result.current.isReady, true));
@@ -182,7 +185,7 @@ test("useCommunityInit blocks community apply when enterprise login gate fails",
 
   try {
     const hook = renderHook(() =>
-      useCommunityInit(testCommunity(), "community-key", false, true),
+      useCommunityInit(testCommunity(), "community-key", null, false, true),
     );
 
     await waitFor(() =>
@@ -244,7 +247,8 @@ test("useCommunityInit cancels an owned pending enterprise authentication login 
 
   try {
     const hook = renderHook(
-      ({ community, key }) => useCommunityInit(community, key, false, true),
+      ({ community, key }) =>
+        useCommunityInit(community, key, null, false, true),
       { initialProps: { community: communityA, key: "community-a-key" } },
     );
 
@@ -321,7 +325,7 @@ test("useCommunityInit waits for explicit enterprise browser consent", async () 
   try {
     const community = testCommunity({ name: "Block Buzz" });
     const hook = renderHook(() =>
-      useCommunityInit(community, "community-key", false, true),
+      useCommunityInit(community, "community-key", null, false, true),
     );
 
     await waitFor(() => assert.ok("enterpriseLogin" in hook.result.current));
@@ -392,7 +396,7 @@ test("useCommunityInit exposes authoritative enterprise profile when both identi
 
   try {
     const hook = renderHook(() =>
-      useCommunityInit(testCommunity(), "community-key", false, true),
+      useCommunityInit(testCommunity(), "community-key", null, false, true),
     );
     await waitFor(() => assert.ok("enterpriseLogin" in hook.result.current));
     await act(async () => {

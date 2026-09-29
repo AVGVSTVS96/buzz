@@ -36,6 +36,12 @@ export type CommunityOnboardingTransaction = {
   /** First-run screen that launched this transaction, restored on cancel. */
   firstCommunityPage?: FirstCommunityPage;
   stage: CommunityOnboardingStage;
+  /**
+   * Frontend-owned init generation. Incremented before a retry becomes a
+   * visible connecting transaction so late results from the previous init
+   * cannot mutate the retried transaction.
+   */
+  initAttempt?: number;
   relayUrl: string;
   inviteCode?: string;
   communityName: string;
@@ -62,6 +68,7 @@ export type CommunityOnboardingTransactionPatch = Partial<
   Pick<
     CommunityOnboardingTransaction,
     | "stage"
+    | "initAttempt"
     | "relayUrl"
     | "communityId"
     | "previousCommunityId"
@@ -167,6 +174,7 @@ export function startCommunityOnboarding(
       policyReceipt: input.policyReceipt ?? existing.policyReceipt,
       updatedAt: now.toISOString(),
       error: undefined,
+      initAttempt: (existing.initAttempt ?? 0) + 1,
       // A freshly opened link deserves fresh feedback — re-present the gate
       // even if a previous link for this relay was already dismissed.
       acknowledged: undefined,
@@ -189,9 +197,16 @@ export function startCommunityOnboarding(
     policyReceipt: input.policyReceipt,
     createdAt: timestamp,
     updatedAt: timestamp,
+    initAttempt: 0,
   };
   saveCommunityOnboardingTransaction(transaction, storage);
   return transaction;
+}
+
+export function nextCommunityOnboardingInitAttempt(
+  transaction: CommunityOnboardingTransaction,
+): number {
+  return (transaction.initAttempt ?? 0) + 1;
 }
 
 export function updateCommunityOnboardingTransaction(

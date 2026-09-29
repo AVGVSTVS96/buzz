@@ -4,6 +4,7 @@ import { Plus, Users } from "lucide-react";
 
 import {
   markCommunityOnboardingComplete,
+  nextCommunityOnboardingInitAttempt,
   type CommunityOnboardingStage,
   useCommunityOnboarding,
 } from "@/features/onboarding/communityOnboarding";
@@ -274,11 +275,10 @@ export function CommunityOnboardingFlow({
   }, [clear, isEnteringStage]);
 
   const retry = () => {
+    if (!transaction) return;
     update({
-      stage: nextRetryStage(
-        transaction?.stage,
-        Boolean(transaction?.inviteCode),
-      ),
+      stage: nextRetryStage(transaction.stage, Boolean(transaction.inviteCode)),
+      initAttempt: nextCommunityOnboardingInitAttempt(transaction),
       error: undefined,
     });
     onRetry?.();

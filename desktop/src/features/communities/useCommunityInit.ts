@@ -152,6 +152,7 @@ type CommunityInitResult =
 
 type EnterpriseLoginController = {
   attemptId: string;
+  initAttempt: number | null;
   browserStarted: boolean;
   resolve: ((allowed: boolean) => void) | null;
   retired: boolean;
@@ -211,6 +212,7 @@ export function useCommunityInit(
       isReady: false,
       needsSetup: false,
       appliedKey: null,
+      initAttempt: controller?.initAttempt ?? null,
       error: "Enterprise sign-in canceled",
     });
     if (controller?.browserStarted) {
@@ -428,6 +430,7 @@ export function useCommunityInit(
       }`;
       const enterpriseLoginController: EnterpriseLoginController = {
         attemptId: enterpriseLoginAttemptId,
+        initAttempt,
         browserStarted: false,
         resolve: null,
         retired: false,

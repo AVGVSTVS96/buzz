@@ -330,7 +330,7 @@ test("useCommunityInit keeps cancellation visible while browser enterprise login
 
   try {
     const hook = renderHook(() =>
-      useCommunityInit(testCommunity(), "community-key", false, true),
+      useCommunityInit(testCommunity(), "community-key", null, false, true),
     );
 
     await waitFor(() => assert.ok("enterpriseLogin" in hook.result.current));
@@ -408,7 +408,7 @@ test("useCommunityInit surfaces recovery after rejected enterprise browser login
 
   try {
     const hook = renderHook(() =>
-      useCommunityInit(testCommunity(), "community-key", false, true),
+      useCommunityInit(testCommunity(), "community-key", null, false, true),
     );
 
     await waitFor(() => assert.ok("enterpriseLogin" in hook.result.current));
@@ -466,7 +466,7 @@ test("useCommunityInit ignores successful enterprise login completion after canc
 
   try {
     const hook = renderHook(() =>
-      useCommunityInit(testCommunity(), "community-key", false, true),
+      useCommunityInit(testCommunity(), "community-key", 7, false, true),
     );
 
     await waitFor(() => assert.ok("enterpriseLogin" in hook.result.current));
@@ -488,6 +488,7 @@ test("useCommunityInit ignores successful enterprise login completion after canc
     await waitFor(() =>
       assert.equal(hook.result.current.error, "Enterprise sign-in canceled"),
     );
+    assert.equal(hook.result.current.initAttempt, 7);
     assert.equal("enterpriseLogin" in hook.result.current, false);
     assert.equal(
       calls.some(([command]) => command === "apply_workspace"),
@@ -540,7 +541,8 @@ test("useCommunityInit keeps a newer community prompt when stale enterprise logi
 
   try {
     const hook = renderHook(
-      ({ community, key }) => useCommunityInit(community, key, false, true),
+      ({ community, key }) =>
+        useCommunityInit(community, key, null, false, true),
       { initialProps: { community: communityA, key: "community-a-key" } },
     );
 

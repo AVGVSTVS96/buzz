@@ -18,8 +18,9 @@ Deployment-root community management uses operator-signed NIP-98 HTTP requests.
 `POST /operator/communities/delete` accepts only an exact normalized, archived
 community whose asserted pubkey is still its owner. The caller supplies the
 request UUID as the stable correlation/idempotency identity; the durable row
-records owner intent, mediating operator, and acknowledgement version. Admission
-returns `202` at the `submitted` stage and performs no inventory, approval,
+records operator-attested owner intent, mediating operator, and acknowledgement
+version. Admission returns `202` at the `submitted` stage and performs no
+inventory, approval,
 quiescing, object-store access, or deletion execution synchronously. While that
 non-aborted request exists, unarchive and ownership transfer conflict and owner
 management lists suppress the archived row. Replaying the same UUID converges
@@ -46,11 +47,12 @@ the operator's own pubkey does not converge — it conflicts with the existing
 one-active-request invariant instead.
 
 The privileged one-shot `buzz-admin deletions drain` process gives already-
-approved work priority. When none is ready, it may claim only an authenticated
-owner-origin `submitted` request under the same durable generation lease used
-for execution, inventory it with lease-loss cancellation, and atomically freeze
-the inventory plus a digest-bound `owner_automatic` approval. The mediating
-operator remains the approval actor; the owner acknowledgement is pre-inventory
+approved work priority. When none is ready, it may claim only an
+operator-attested owner-origin `submitted` request under the same durable
+generation lease used for execution, inventory it with lease-loss cancellation,
+and atomically freeze the inventory plus a digest-bound `owner_automatic`
+approval. The mediating operator remains the approval actor; the owner
+acknowledgement is pre-inventory
 intent, not a claim that the owner reviewed the digest. The retained lease then
 enters the unchanged approved-request executor. Operator-origin requests never
 auto-progress and still require explicit inventory and approval. Owner

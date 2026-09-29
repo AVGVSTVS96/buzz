@@ -6,7 +6,7 @@ that command as a Kubernetes CronJob; it does not call relay HTTP and it does
 not add another queue or retry service.
 
 Postgres remains the handoff and source of truth. A run gives already-approved
-work priority. When none is ready, it may claim an authenticated owner-origin
+work priority. When none is ready, it may claim an operator-attested owner-origin
 request at `submitted`, build the existing bounded inventory, and atomically
 freeze that inventory with a digest-bound `owner_automatic` approval. The same
 lease then enters the unchanged executor and resumes from durable checkpoints.
@@ -144,7 +144,7 @@ handoff.
 
 Owner self-serve relay admission still records only a `submitted` row and does
 no inventory, approval, S3 work, or execution synchronously. A successful drain
-has no human approval step or cooling-off period: authenticated owner intent is
+has no human approval step or cooling-off period: operator-attested owner intent is
 prepared automatically under privileged policy and becomes immediately
 eligible for execution. Transient preparation failures use the existing retry
 schedule; permanent or exhausted failures block durably. Owner-facing

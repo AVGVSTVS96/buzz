@@ -1877,6 +1877,18 @@ test("joining enterprise login retry reruns init for the active community", asyn
       page.evaluate(() => window.__BUZZ_E2E__?.mock?.enterpriseAuth?.email),
     )
     .toBe("employee@example.com");
+  await expect(
+    page.getByRole("heading", { name: "Build your profile" }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate((key) => {
+        const raw = window.localStorage.getItem(key);
+        return raw ? JSON.parse(raw).stage : null;
+      }, COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY),
+    )
+    .toBe("profile");
+  await expect(page.getByText("Browser login was rejected")).toHaveCount(0);
 });
 
 test("first-community owner can replace a mismatched account identity", async ({

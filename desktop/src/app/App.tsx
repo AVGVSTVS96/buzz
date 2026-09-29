@@ -553,8 +553,9 @@ function CommunityApp({
   const identityPubkey = community.isReady ? community.identityPubkey : null;
   useEffect(() => {
     if (
-      !transaction ||
-      transaction.stage !== "connecting" ||
+      transaction?.stage !== "connecting" ||
+      !("appliedKey" in community) ||
+      community.appliedKey !== communityKey ||
       !("error" in community) ||
       !community.error
     ) {
@@ -564,7 +565,7 @@ function CommunityApp({
       { stage: "corporate-profile", error: community.error },
       transaction.id,
     );
-  }, [community, communityOnboarding, transaction]);
+  }, [community, communityKey, communityOnboarding, transaction]);
   useEffect(() => {
     if (transaction?.stage !== "connecting" || !targetIsReady) return;
     const transactionId = transaction.id;

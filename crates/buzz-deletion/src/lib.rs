@@ -290,7 +290,7 @@ pub enum Command {
         #[arg(long)]
         executor_id: Option<String>,
     },
-    /// Drain runnable work, preparing authenticated owner submissions when idle.
+    /// Drain runnable work, preparing operator-attested owner submissions when idle.
     Drain {
         /// Executor identity (defaults to hostname/pid).
         #[arg(long)]

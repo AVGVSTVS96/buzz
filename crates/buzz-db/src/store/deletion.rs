@@ -241,11 +241,11 @@ pub struct DeletionRequest {
     pub retry_stage: Option<DeletionStage>,
     /// Legacy display identity that submitted the request.
     pub requested_by: String,
-    /// Whether the request originated from an operator or authenticated owner intent.
+    /// Whether the request originated from an operator or operator-attested owner intent.
     pub request_origin: DeletionRequestOrigin,
-    /// Current owner identity authenticated at owner-request admission.
+    /// Current owner identity asserted by the mediating operator at admission.
     pub owner_pubkey: Option<String>,
-    /// Deployment operator that mediated the authenticated owner intent.
+    /// Deployment operator that attested to the owner intent.
     pub mediating_operator_pubkey: Option<String>,
     /// Owner-facing destructive-action acknowledgement contract version.
     pub acknowledgement_version: Option<i32>,
@@ -303,7 +303,7 @@ pub struct DeletionRequest {
 pub enum DeletionRequestOrigin {
     /// Request was submitted directly by a deployment operator.
     Operator,
-    /// Request records authenticated owner intent mediated by an operator.
+    /// Request records operator-attested owner intent.
     Owner,
 }
 
@@ -321,7 +321,7 @@ impl FromStr for DeletionRequestOrigin {
     }
 }
 
-/// Result of atomically admitting authenticated owner deletion intent.
+/// Result of atomically admitting operator-attested owner deletion intent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OwnerDeletionAdmission {
     /// A new request was created or the stable request UUID converged to its row.
@@ -624,7 +624,7 @@ pub struct DeletionApproval {
 pub enum DeletionApprovalOrigin {
     /// A deployment operator explicitly approved the inventory.
     Operator,
-    /// Privileged policy approved authenticated owner intent automatically.
+    /// Privileged policy approved operator-attested owner intent automatically.
     OwnerAutomatic,
 }
 
@@ -1308,7 +1308,7 @@ impl DeletionStore {
         self.claim(None, owner, lease_duration).await
     }
 
-    /// Claim the oldest due authenticated owner submission for preparation.
+    /// Claim the oldest due operator-attested owner submission for preparation.
     pub async fn claim_next_owner_submission(
         &self,
         owner: &str,
@@ -1318,7 +1318,7 @@ impl DeletionStore {
             .await
     }
 
-    /// Claim one due authenticated owner submission by request id.
+    /// Claim one due operator-attested owner submission by request id.
     pub async fn claim_specific_owner_submission(
         &self,
         request_id: Uuid,
@@ -1407,7 +1407,7 @@ impl DeletionStore {
         Ok(())
     }
 
-    /// Atomically freeze inventory and approve authenticated owner intent.
+    /// Atomically freeze inventory and approve operator-attested owner intent.
     pub async fn complete_owner_preparation(
         &self,
         token: &LeaseToken,

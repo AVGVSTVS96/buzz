@@ -721,6 +721,10 @@ mod postgres_tests {
             .as_str()
             .contains("community_deletion_owner_provenance"));
         assert!(migrations[52].sql.as_str().contains("approval_origin"));
+        assert!(migrations[52]
+            .sql
+            .as_str()
+            .contains("community_deletion_requests_owner_preparable"));
         assert!(migrations[53]
             .sql
             .as_str()

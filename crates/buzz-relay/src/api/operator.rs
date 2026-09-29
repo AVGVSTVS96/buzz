@@ -1305,12 +1305,6 @@ mod postgres_tests {
                 "request_id": request_id,
                 "acknowledgement_version": 1,
             }),
-            serde_json::json!({
-                "host": host,
-                "owner_pubkey": owner.public_key().to_hex(),
-                "request_id": request_id,
-                "acknowledgement_version": 2,
-            }),
         ] {
             let response = signed_operator_request(
                 Arc::clone(&state),
@@ -1326,6 +1320,30 @@ mod postgres_tests {
                 "deletion_request_conflict"
             );
         }
+
+        // Version validation precedes the UUID lookup, so a changed version is
+        // rejected as unsupported rather than as a request conflict.
+        let changed_version = signed_operator_request(
+            Arc::clone(&state),
+            &operator,
+            "POST",
+            "/operator/communities/delete",
+            Some(
+                serde_json::json!({
+                    "host": host,
+                    "owner_pubkey": owner.public_key().to_hex(),
+                    "request_id": request_id,
+                    "acknowledgement_version": 2,
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+        assert_eq!(changed_version.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            read_json(changed_version).await["code"],
+            "unsupported_acknowledgement_version"
+        );
 
         let outsider_response = signed_operator_request(
             Arc::clone(&state),

@@ -193,6 +193,27 @@ test("deletion is default-off and identity mismatch preserves the gate", async (
   ).toHaveCount(0);
 });
 
+test("explicit quota false hides Create and shows the limit copy", async ({
+  page,
+}) => {
+  await openDeletionFixture(page);
+  await page.evaluate(() => {
+    if (window.__BUZZ_E2E__?.mock)
+      window.__BUZZ_E2E__.mock.builderlabQuota = {
+        used: 5,
+        limit: 5,
+        canCreate: false,
+      };
+  });
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(
+    page.getByText(/reached the limit of 5 hosted communities/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Create and connect" }),
+  ).toHaveCount(0);
+});
+
 test("archived deletion requires exact host and two confirmations, then removes the row", async ({
   page,
 }) => {

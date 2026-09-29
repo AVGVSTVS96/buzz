@@ -814,11 +814,10 @@ mod tests {
                 "acknowledgement_version": 1,
             })
         );
-        for path in ["/v1/buzz/communities/delete"] {
-            let url = api_url(path).expect("deletion URL");
-            assert_eq!(url.origin().ascii_serialization(), BUILDERLAB_ORIGIN);
-            assert_eq!(url.path(), format!("/api/goose{path}"));
-        }
+        let path = "/v1/buzz/communities/delete";
+        let url = api_url(path).expect("deletion URL");
+        assert_eq!(url.origin().ascii_serialization(), BUILDERLAB_ORIGIN);
+        assert_eq!(url.path(), format!("/api/goose{path}"));
     }
 
     #[test]
@@ -836,13 +835,12 @@ mod tests {
     #[test]
     fn community_deletion_commands_are_registered_on_the_native_boundary() {
         let lib = include_str!("lib.rs");
-        for command in ["delete_builderlab_community,"] {
-            assert_eq!(
-                lib.matches(command).count(),
-                1,
-                "{command} must be registered exactly once"
-            );
-        }
+        let command = "delete_builderlab_community,";
+        assert_eq!(
+            lib.matches(command).count(),
+            1,
+            "{command} must be registered exactly once"
+        );
         assert!(!lib.contains("get_builderlab_community_deletion_receipt"));
         let source = include_str!("builderlab.rs");
         assert!(source.contains(".header(reqwest::header::ORIGIN, BUILDERLAB_ORIGIN)"));

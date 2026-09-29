@@ -1106,23 +1106,24 @@ export function HostedCommunitiesSettingsCard() {
                 That address is available.
               </p>
             ) : null}
-            <Button
-              disabled={
-                !usableBoundIdentity ||
-                identityMismatch ||
-                !validName ||
-                availability === false ||
-                checkingName ||
-                busy ||
-                atCommunityLimit
-              }
-              type="submit"
-            >
-              {action ? (
-                <LoaderCircle className="h-4 w-4 animate-spin" />
-              ) : null}
-              {action ?? "Create and connect"}
-            </Button>
+            {!atCommunityLimit ? (
+              <Button
+                disabled={
+                  !usableBoundIdentity ||
+                  identityMismatch ||
+                  !validName ||
+                  availability === false ||
+                  checkingName ||
+                  busy
+                }
+                type="submit"
+              >
+                {action ? (
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                ) : null}
+                {action ?? "Create and connect"}
+              </Button>
+            ) : null}
           </form>
         </>
       )}

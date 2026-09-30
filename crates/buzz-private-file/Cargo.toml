@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "Owner-only files on Windows, keeping Win32 security FFI out of buzz-agent"
 
+[features]
+# `assert_owner_only`, for other crates' tests.
+test-support = []
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",

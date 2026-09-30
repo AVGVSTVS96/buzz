@@ -2731,25 +2731,7 @@ mod tests {
             assert_eq!(mode, 0o600, "{why}: got {mode:o}");
         }
         #[cfg(windows)]
-        {
-            // SDDL, unlike `icacls` output, is not localized.
-            let out = std::process::Command::new("powershell")
-                .args([
-                    "-NoProfile",
-                    "-Command",
-                    "(Get-Acl -LiteralPath $env:ACL_PATH).Sddl",
-                ])
-                .env("ACL_PATH", path)
-                .output()
-                .unwrap();
-            let sddl = String::from_utf8_lossy(&out.stdout);
-            let dacl = sddl.trim().split_once("D:").map_or("", |(_, dacl)| dacl);
-            let (flags, aces) = dacl.split_once('(').unwrap_or_default();
-            assert!(
-                flags.contains('P') && aces == "A;;FA;;;OW)",
-                "{why}: got {sddl}"
-            );
-        }
+        buzz_private_file::assert_owner_only(&fs::File::open(path).unwrap(), why);
     }
 
     #[tokio::test]

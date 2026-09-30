@@ -237,62 +237,68 @@ fn verbatim(path: &Path) -> io::Result<Vec<u16>> {
     Ok(prefix.encode_utf16().chain(wide).chain(Some(0)).collect())
 }
 
+/// The file's DACL as SDDL, such as `D:P(A;;FA;;;OW)`.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(unsafe_code)]
+fn dacl(file: &File) -> String {
+    use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+
+    let mut descriptor = null_mut();
+    // SAFETY: the handle is open; on success Windows allocates `descriptor`.
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    win32(status).unwrap();
+    let descriptor = Local(descriptor);
+    let (mut sddl, mut len) = (null_mut(), 0);
+    // SAFETY: `descriptor` is valid; on success Windows allocates `sddl`
+    // holding `len` UTF-16 units.
+    let ok = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor.0,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &mut sddl,
+            &mut len,
+        )
+    };
+    assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+    let _sddl = Local(sddl.cast());
+    // SAFETY: `sddl` holds `len` UTF-16 units.
+    let units = unsafe { std::slice::from_raw_parts(sddl, len as usize) };
+    String::from_utf16_lossy(units)
+        .trim_end_matches('\0')
+        .to_owned()
+}
+
+/// Test support: panic with `why` unless `file` has the owner-only DACL
+/// [`create_new`] sets. Reads the DACL in-process, so tests need no shell.
+#[cfg(any(test, feature = "test-support"))]
+#[track_caller]
+pub fn assert_owner_only(file: &File, why: &str) {
+    let sddl = dacl(file);
+    let (flags, aces) = sddl
+        .strip_prefix("D:")
+        .and_then(|rest| rest.split_once('('))
+        .unwrap_or_else(|| panic!("{why}: unexpected DACL {sddl}"));
+    assert!(flags.contains('P'), "{why}: DACL is not protected: {sddl}");
+    assert_eq!(aces, "A;;FA;;;OW)", "{why}: DACL is not owner-only: {sddl}");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::process::Command;
-    use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
-
-    /// The file's DACL as SDDL, such as `D:P(A;;FA;;;OW)`.
-    #[allow(unsafe_code)]
-    fn dacl(file: &File) -> String {
-        let mut descriptor = null_mut();
-        // SAFETY: the handle is open; on success Windows allocates `descriptor`.
-        let status = unsafe {
-            GetSecurityInfo(
-                file.as_raw_handle(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                null_mut(),
-                null_mut(),
-                null_mut(),
-                null_mut(),
-                &mut descriptor,
-            )
-        };
-        win32(status).unwrap();
-        let descriptor = Local(descriptor);
-        let (mut sddl, mut len) = (null_mut(), 0);
-        // SAFETY: `descriptor` is valid; on success Windows allocates `sddl`
-        // holding `len` UTF-16 units.
-        let ok = unsafe {
-            ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                descriptor.0,
-                SDDL_REVISION_1,
-                DACL_SECURITY_INFORMATION,
-                &mut sddl,
-                &mut len,
-            )
-        };
-        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
-        let _sddl = Local(sddl.cast());
-        // SAFETY: `sddl` holds `len` UTF-16 units.
-        let units = unsafe { std::slice::from_raw_parts(sddl, len as usize) };
-        String::from_utf16_lossy(units)
-            .trim_end_matches('\0')
-            .to_owned()
-    }
-
-    fn assert_owner_only(file: &File) {
-        let sddl = dacl(file);
-        let (flags, aces) = sddl
-            .strip_prefix("D:")
-            .and_then(|rest| rest.split_once('('))
-            .unwrap_or_else(|| panic!("unexpected DACL {sddl}"));
-        assert!(flags.contains('P'), "DACL is not protected: {sddl}");
-        assert_eq!(aces, "A;;FA;;;OW)", "DACL is not owner-only: {sddl}");
-    }
 
     fn read(mut file: File) -> String {
         let mut body = String::new();
@@ -306,7 +312,7 @@ mod tests {
         let path = dir.path().join("token.json");
         let mut file = create_new(&path).unwrap();
         file.write_all(b"secret").unwrap();
-        assert_owner_only(&file);
+        assert_owner_only(&file, "new file");
         drop(file);
 
         let err = create_new(&path).unwrap_err();
@@ -321,7 +327,7 @@ mod tests {
         std::fs::create_dir_all(&parent).unwrap();
         let path = parent.join("token.json");
         create_new(&path).unwrap();
-        assert_owner_only(&open_owned(&path).unwrap());
+        assert_owner_only(&open_owned(&path).unwrap(), "long path");
     }
 
     #[test]
@@ -330,7 +336,7 @@ mod tests {
         let path = dir.path().join("token.json");
         std::fs::write(&path, "legacy").unwrap();
         let file = open_owned(&path).unwrap();
-        assert_owner_only(&file);
+        assert_owner_only(&file, "tightened file");
         assert_eq!(read(file), "legacy");
     }
 

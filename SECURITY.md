@@ -123,9 +123,6 @@ controllers.
 ### Dependency Management
 
 We use `cargo audit` in CI to scan for known vulnerabilities in dependencies.
-`#![deny(unsafe_code)]` is enforced across all crates. The only exceptions are
-individually allowed Windows-only Win32 calls in `buzz-dev-mcp` and
-`buzz-private-file`.
 
 ---
 

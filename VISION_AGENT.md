@@ -54,7 +54,7 @@ Two pipes. Two protocols. Each session gets its own MCP server instances — ful
 
 - **Minimal.** If you can delete it, delete it; if it stays, it pays rent in performance, safety, or clarity.
 
-- **Hardened.** No unsafe beyond audited OS calls. Zero panics. Bounded process lifetime, bounded output sizes, bounded history. Process-group kill on every exit path. File edits resolve against the working directory. The shell runs at the operator's trust level, like bash itself. History validity is maintained on every cancellation path. The system degrades gracefully, with bounded failure modes.
+- **Hardened.** No unsafe beyond audited OS/FFI integration. Zero panics. Bounded process lifetime, bounded output sizes, bounded history. Process-group kill on every exit path. File edits resolve against the working directory. The shell runs at the operator's trust level, like bash itself. History validity is maintained on every cancellation path. The system degrades gracefully, with bounded failure modes.
 
 - **Protocol-native.** ACP is the only interface to the agent. MCP is the only interface to the tools. No runtime coupling. No shared state. No custom wire formats.
 

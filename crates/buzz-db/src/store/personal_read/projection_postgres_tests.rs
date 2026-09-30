@@ -24,7 +24,7 @@ async fn sidebar_sql_eligibility_matches_selector_classifier() {
     }];
     let now = chrono::Utc::now().timestamp_millis();
     let horizon = i64::from(DEFAULT_RETENTION_SECONDS) * 1000;
-    for kind in [9, 40002, 45001, 45003, 1, 7, 39002] {
+    for kind in [9, 40002, 45001, 45003, 1, 7, 39002, 40008] {
         for own in [false, true] {
             for deleted in [false, true] {
                 // Now, then one minute inside and one minute outside the horizon.

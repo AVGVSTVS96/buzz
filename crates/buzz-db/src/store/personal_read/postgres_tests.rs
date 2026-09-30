@@ -359,6 +359,44 @@ async fn personal_read_intent_does_not_lock_shared_conversation_rows() {
 
 #[tokio::test]
 #[ignore = "requires Postgres"]
+async fn personal_read_diff_alone_leaves_the_sidebar_row_unchanged() {
+    let (db, _, community, channel, actor, _) = fixture().await;
+    let mut rows = Vec::new();
+    for diff in [false, true] {
+        if diff {
+            // Newest in the channel and addressed to the actor: as loud as a
+            // diff can be.
+            let at = nostr::Timestamp::now().as_secs() + 5;
+            let event = EventBuilder::new(Kind::Custom(40008), "a diff")
+                .custom_created_at(nostr::Timestamp::from(at))
+                .tags([nostr::Tag::parse(["p", &actor.public_key().to_hex()]).unwrap()])
+                .sign_with_keys(&Keys::generate())
+                .unwrap();
+            db.insert_event(community, &event, Some(channel))
+                .await
+                .unwrap();
+        }
+        let page = db
+            .personal_read_sidebar(
+                community,
+                &actor.public_key(),
+                DEFAULT_RETENTION_SECONDS,
+                20,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            page.channels[0].unread,
+            ReadCount::Exact { value: 1 }
+        ));
+        rows.push(serde_json::to_value(&page.channels[0]).unwrap());
+    }
+    assert_eq!(rows[0], rows[1], "not unread, not attention, not latest");
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres"]
 async fn personal_read_latest_includes_own_and_excludes_deleted_auxiliary() {
     let (db, pool, community, channel, actor, _) = fixture().await;
     let base = nostr::Timestamp::now().as_secs();

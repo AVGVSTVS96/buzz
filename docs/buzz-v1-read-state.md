@@ -19,8 +19,10 @@ application/nostr+json`, or `GET /info`) includes `buzz_v1` only when enabled:
 Use the requesting origin plus this relative prefix. Discovery is a configured
 capability, not a promise that the next request cannot fail. Unknown hosts and
 disabled deployments omit it, and a disabled deployment does not mount
-`/buzz/v1` at all. A v1 client without the capability has no read state; it
-must not fall back to NIP-RS.
+`/buzz/v1` at all. Absence means read state is unavailable, not that everything
+is read: show no count rather than zero, and keep unsent intents. A client may
+also speak NIP-RS, which the relay still serves, but the two never synchronize;
+buzz-app uses v1 only.
 
 Every API request requires NIP-98, including on development relays. Sign the
 exact externally addressed URL, including the encoded query, and method. POST
@@ -96,9 +98,10 @@ unread/attention, not latest activity, event storage or frontier state. One
 clock has three consequences:
 
 - A message accepted late with an author time beyond the horizon (an import, a
-  backfill, a long-offline sender) is never unread. It can still be latest.
-- Unread expires at author time plus the horizon, however recently the relay
-  accepted the message.
+  backfill, a long-offline sender) is excluded under the current horizon,
+  however recently the relay accepted it. It can still be latest.
+- Unread expires at author time plus the horizon, so a future-dated author
+  time extends how long a message counts.
 - Horizon and frontier order messages identically, so a context's unread set
   is one author-time range: after the frontier and at or after the cutoff.
 

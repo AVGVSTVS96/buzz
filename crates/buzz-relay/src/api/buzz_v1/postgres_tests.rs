@@ -465,3 +465,127 @@ async fn accessory_discovery_is_host_bound_and_opt_in() {
         assert_eq!(statuses[0] == statuses[1], !enabled, "{statuses:?}");
     }
 }
+
+// Exercise the real signed HTTP ingest path, including deletion side effects,
+// rather than directly tombstoning an event in the database.
+async fn signed_sidebar_deletion(deletion_kind: u16) {
+    let fixture = crate::api::bridge::postgres_tests::bridge_handler_test_state()
+        .await
+        .unwrap();
+    let mut state = (*fixture).clone();
+    let config = Arc::make_mut(&mut state.config);
+    config.require_auth_token = true;
+    config.require_relay_membership = true;
+    config.buzz_v1_enabled = true;
+    let state = Arc::new(state);
+    let host = format!("bff-deletion-{}.local", uuid::Uuid::new_v4());
+    let community = state
+        .db
+        .ensure_configured_community(&host)
+        .await
+        .unwrap()
+        .id;
+    let admin = Keys::generate();
+    let author = Keys::generate();
+    let reader = Keys::generate();
+    for key in [&admin, &author, &reader] {
+        state
+            .db
+            .add_relay_member(community, &key.public_key().to_hex(), "member", None)
+            .await
+            .unwrap();
+    }
+    let channel = state
+        .db
+        .create_channel(
+            community,
+            "deletion",
+            buzz_db::channel::ChannelType::Stream,
+            buzz_db::channel::ChannelVisibility::Open,
+            None,
+            &admin.public_key().to_bytes(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    for key in [&author, &reader] {
+        state
+            .db
+            .add_member(
+                community,
+                channel,
+                &key.public_key().to_bytes(),
+                buzz_db::channel::MemberRole::Member,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let message = EventBuilder::new(Kind::Custom(9), "unread message to delete")
+        .tags([Tag::parse(["h", &channel.to_string()]).unwrap()])
+        .sign_with_keys(&author)
+        .unwrap();
+    let mut tags = vec![Tag::parse(["e", &message.id.to_hex()]).unwrap()];
+    let signer = if deletion_kind == 5 {
+        &author
+    } else {
+        tags.push(Tag::parse(["h", &channel.to_string()]).unwrap());
+        &admin
+    };
+    let deletion = EventBuilder::new(Kind::Custom(deletion_kind), "")
+        .tags(tags)
+        .sign_with_keys(signer)
+        .unwrap();
+    let path = format!("/buzz/v1/me/sidebar?channel_ids={channel}");
+    for (event, key, count) in [(&message, &author, 1), (&deletion, signer, 0)] {
+        let body = serde_json::to_vec(event).unwrap();
+        let auth = proof(key, &host, "/events", "POST", Some(&body));
+        // /events has a different response contract from the accessory helper.
+        let response = crate::router::build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/events")
+                    .header("host", &host)
+                    .header("authorization", auth)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let result: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(status, StatusCode::OK, "{result}");
+        assert_eq!(result["accepted"], true, "{result}");
+        assert_eq!(result["event_id"], event.id.to_hex(), "{result}");
+
+        // This distinct member never writes a frontier. Reads alone must not
+        // erase unread state; only the accepted signed deletion changes it.
+        let auth = proof(&reader, &host, &path, "GET", None);
+        let (status, sidebar) = request(state.clone(), &host, &path, "GET", Some(&auth), b"").await;
+        assert_eq!(status, StatusCode::OK, "{sidebar}");
+        let channels = sidebar["channels"].as_array().unwrap();
+        assert_eq!(channels.len(), 1, "{sidebar}");
+        assert_eq!(channels[0]["channel_id"], channel.to_string());
+        assert_eq!(
+            channels[0]["unread"],
+            json!({"status":"exact", "value":count}),
+            "kind {deletion_kind}, after kind {}: {sidebar}",
+            event.kind.as_u16()
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn accessory_signed_kind5_deletion_clears_another_readers_sidebar_count() {
+    signed_sidebar_deletion(5).await;
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn accessory_signed_kind9005_deletion_clears_another_readers_sidebar_count() {
+    signed_sidebar_deletion(9005).await;
+}

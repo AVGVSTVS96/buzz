@@ -518,10 +518,22 @@ test-unit:
                 + test(=handlers::req::tests::p1a_huddle_liveness_req_barrier_expiry_blocks_query_and_emission)
                 + test(=state::tests::f3_cancellation_during_check_terminates_socket_without_waiting_for_check)
                 + test(=state::tests::on_not_run_runs_once_on_each_deny_arm_and_never_on_admit)'
+        # git-sign-nostr is required by the buzz-acp process-level enforcement
+        # suite and the buzz-git-identity lib suite; build it once ahead of both.
+        cargo build -p git-sign-nostr
         # ACP author-gate and queue tests protect the trust boundary between
         # relay events and agent prompts. They are infra-free; ignored lifecycle
         # tests remain excluded and run in their dedicated integration lanes.
         cargo nextest run -p buzz-acp --lib
+        # Process-level installed-wrapper gate: exercises the real git-wrapper
+        # multicall entry path and verifies that push is refused end-to-end
+        # for unsigned commits, builtin-shadowing aliases, and deprecated-builtin
+        # aliases. These tests require unix and run on the CI unit-tests runner.
+        cargo nextest run -p buzz-acp --test git_identity_enforcement
+        # buzz-git-identity git wrapper unit tests: the push/commit author and
+        # signature guards that prevent identity bypass via git-replace,
+        # newline injection, config URL injection, and SSH-command hijack.
+        cargo nextest run -p buzz-git-identity --lib
     else
         ./scripts/run-tests.sh unit
     fi

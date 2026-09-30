@@ -1212,11 +1212,14 @@ pub(crate) async fn ingest_agent_observer_event(
     }
 
     state.mark_local_event(tenant.community(), &event.id);
-    if let Err(e) = state
+    // Observer frames are not persisted, so a failed cross-node publish is
+    // unrecoverable. Still fan out locally, but report the failure so the
+    // sender can retry instead of seeing a successful ack.
+    let publish_result = state
         .pubsub
         .publish_event(tenant, EventTopic::Global, event)
-        .await
-    {
+        .await;
+    if let Err(e) = &publish_result {
         state
             .local_event_ids
             .invalidate(&(tenant.community(), event.id.to_bytes()));
@@ -1232,6 +1235,9 @@ pub(crate) async fn ingest_agent_observer_event(
         "Agent observer fan-out"
     );
     fan_out_event_to_local_subscribers(state, tenant.community(), &stored_event).await;
+    if publish_result.is_err() {
+        return Err(IngestError::Internal("error: internal server error".into()));
+    }
     Ok(())
 }
 

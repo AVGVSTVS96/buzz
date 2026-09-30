@@ -3589,6 +3589,14 @@ mod postgres_tests {
     use nostr::{EventBuilder, Keys, Kind, Timestamp};
 
     async fn observer_ingest_fixture() -> (Arc<AppState>, TenantContext, Keys, Keys) {
+        observer_ingest_fixture_with_pubsub_url(None).await
+    }
+
+    /// `pubsub_redis_url` overrides only the cross-node publish connection so
+    /// tests can force `publish_event` to fail while bans still use Redis.
+    async fn observer_ingest_fixture_with_pubsub_url(
+        pubsub_redis_url: Option<&str>,
+    ) -> (Arc<AppState>, TenantContext, Keys, Keys) {
         let mut config = crate::config::Config::from_env().expect("load test config");
         config.require_relay_membership = false;
         let pool = sqlx::PgPool::connect(&config.database_url)
@@ -3607,8 +3615,12 @@ mod postgres_tests {
         let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
             .create_pool(Some(deadpool_redis::Runtime::Tokio1))
             .expect("redis pool");
+        let pubsub_url = pubsub_redis_url.unwrap_or(&config.redis_url);
+        let pubsub_pool = deadpool_redis::Config::from_url(pubsub_url)
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("pubsub redis pool");
         let pubsub = Arc::new(
-            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
+            buzz_pubsub::PubSubManager::new(pubsub_url, pubsub_pool)
                 .await
                 .expect("pubsub manager"),
         );
@@ -3710,6 +3722,21 @@ mod postgres_tests {
             .await
             .expect("query event")
             .is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres and Redis"]
+    async fn http_observer_frame_is_not_acknowledged_when_publish_fails() {
+        // Nothing listens on port 1, so the cross-node publish fails.
+        let (state, tenant, agent, owner) =
+            observer_ingest_fixture_with_pubsub_url(Some("redis://127.0.0.1:1")).await;
+        let result =
+            ingest_observer_test_event(&state, &tenant, &agent, observer_event(&agent, &owner))
+                .await;
+        assert!(
+            matches!(result, Err(IngestError::Internal(_))),
+            "publish failure must not be acknowledged"
+        );
     }
 
     #[tokio::test]

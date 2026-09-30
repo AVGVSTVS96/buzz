@@ -186,7 +186,7 @@ remains device-local.
   shared eight-second intent-processing deadline after admission. Limits are
   containment, not a production capacity claim.
 
-Apply migration 0054 (or the equivalent desired schema). It creates two empty
+Apply migration 0055 (or the equivalent desired schema). It creates two empty
 private tables and no index on `events`: both sidebar scans are served by the
 existing `idx_events_community_channel_created`. No new per-message ingest write
 path or stored unread counters are introduced.

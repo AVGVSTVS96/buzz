@@ -884,6 +884,8 @@ pub struct AppState {
     pub dependency_sampler_cancel: CancellationToken,
     /// Stops only the completion-epoch publisher during graceful shutdown.
     pub dependency_completion_publisher_cancel: CancellationToken,
+    /// Last completed read-only partition audit, for diagnostics only, never probes.
+    pub partition_audit: Arc<std::sync::RwLock<Option<buzz_db::partition::PartitionAudit>>>,
     /// Process start time — used by `/_status` endpoint.
     pub started_at: Instant,
     /// Shared, community-scoped NIP-98 replay prevention.
@@ -1112,6 +1114,7 @@ impl AppState {
             dependency_diagnostics: Arc::new(crate::readiness::DependencyDiagnostics::default()),
             dependency_sampler_cancel: CancellationToken::new(),
             dependency_completion_publisher_cancel: CancellationToken::new(),
+            partition_audit: Arc::new(std::sync::RwLock::new(None)),
             started_at: Instant::now(),
             nip98_replay,
             gif_http_client,
@@ -1176,6 +1179,27 @@ impl AppState {
     /// must no-op to today's behavior. Set once by `main.rs` after boot.
     pub fn mesh(&self) -> Option<&crate::mesh_boot::MeshHandle> {
         self.mesh.get()
+    }
+
+    /// Publish a completed partition audit for cached diagnostics.
+    pub fn record_partition_audit(&self, audit: buzz_db::partition::PartitionAudit) {
+        match self.partition_audit.write() {
+            Ok(mut cached) => *cached = Some(audit),
+            Err(poisoned) => *poisoned.into_inner() = Some(audit),
+        }
+    }
+
+    /// Snapshot the last completed audit without accessing the database.
+    ///
+    /// Periodic refresh failures retain the last-known-good audit by design;
+    /// operators should alert on staleness of
+    /// `buzz_partition_audit_last_success_timestamp_seconds`.
+    pub fn partition_audit_snapshot(&self) -> Option<buzz_db::partition::PartitionAudit> {
+        let cached = match self.partition_audit.read() {
+            Ok(cached) => cached,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        cached.clone()
     }
 
     /// Record an event ID as locally-published for dedup, scoped to the

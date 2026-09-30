@@ -187,7 +187,6 @@ impl Db {
             let mut unread = 0;
             let mut attention = 0;
             let mut unread_complete = complete;
-            let mut attention_complete = complete;
             let mut threads: HashMap<Vec<u8>, ThreadEvidence> = HashMap::new();
             for e in evidence {
                 let n = e["n"]
@@ -197,14 +196,12 @@ impl Db {
                     as u32;
                 let Some(facts) = e["facts"].as_object() else {
                     unread_complete = false;
-                    attention_complete = false;
                     continue;
                 };
                 // SQL's bounded ancestry fact is parity-tested against the shared
                 // NIP-10 parser; no raw tag payload crosses the DB boundary.
                 if facts.get("reply_marked") == Some(&Value::Bool(true)) && e["root"].is_null() {
                     unread_complete = false;
-                    attention_complete = false;
                     continue;
                 }
                 // Roots are timeline messages; descendants belong exclusively
@@ -222,7 +219,6 @@ impl Db {
                 if is_reply {
                     let Some(root) = e["root"].as_str().and_then(writes::event_id) else {
                         unread_complete = false;
-                        attention_complete = false;
                         continue;
                     };
                     let newest = (
@@ -252,7 +248,7 @@ impl Db {
                     }
                 }
             }
-            pending.push((threads, attention, unread_complete, attention_complete));
+            pending.push((threads, attention, unread_complete));
             channels.push(ChannelReadSummary {
                 channel_id: row.try_get("id")?,
                 name: row.try_get("name")?,
@@ -260,7 +256,7 @@ impl Db {
                 archived: row.try_get("archived")?,
                 hidden: row.try_get("hidden")?,
                 unread: ReadCount::from_evidence(unread, unread_complete),
-                attention: ReadCount::from_evidence(attention, attention_complete),
+                attention: ReadCount::from_evidence(attention, unread_complete),
                 latest_message_id: row.try_get("latest_message_id")?,
                 latest_message_at: row.try_get("latest_message_at")?,
                 latest_message_complete: row.try_get("latest_message_complete")?,
@@ -282,7 +278,7 @@ impl Db {
             .collect();
         let participation =
             participation::resolve(&mut tx, community, &actor_bytes, &targets).await?;
-        for (channel, (threads, mut attention, unread_complete, evidence_complete)) in
+        for (channel, (threads, mut attention, evidence_complete)) in
             channels.iter_mut().zip(pending)
         {
             let mut complete = evidence_complete;
@@ -307,7 +303,7 @@ impl Db {
                 }
                 items.push(ThreadReadSummary {
                     root_id: hex::encode(root),
-                    unread: ReadCount::from_evidence(thread.unread, unread_complete),
+                    unread: ReadCount::from_evidence(thread.unread, evidence_complete),
                     attention: ReadCount::from_evidence(
                         thread_attention,
                         evidence_complete && participating.is_some(),
@@ -317,7 +313,7 @@ impl Db {
                 });
             }
             channel.attention = ReadCount::from_evidence(attention, complete);
-            channel.threads = summarize(items, unread_complete);
+            channel.threads = summarize(items, evidence_complete);
         }
         let next_cursor = if has_more {
             channels.last().map(|c| c.channel_id)

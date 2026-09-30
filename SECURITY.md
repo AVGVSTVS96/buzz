@@ -123,6 +123,7 @@ controllers.
 ### Dependency Management
 
 We use `cargo audit` in CI to scan for known vulnerabilities in dependencies.
+`#![deny(unsafe_code)]` is enforced across all crates — no unsafe Rust.
 
 ---
 

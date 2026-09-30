@@ -194,12 +194,11 @@ CREATE UNIQUE INDEX idx_users_okta ON users (community_id, okta_user_id)
     WHERE okta_user_id IS NOT NULL;
 
 -- Private accessory read progress. Never included in Nostr event queries.
--- Cutoffs are relay acceptance time; frontiers are signed event time. They are
--- deliberately separate clocks. An empty root_id denotes a channel frontier.
+-- Cutoffs and frontiers are both signed event time. An empty root_id denotes a
+-- channel frontier.
 CREATE TABLE personal_read_accounts (
     community_id UUID NOT NULL REFERENCES communities(id),
     actor BYTEA NOT NULL CHECK (octet_length(actor) = 32),
-    imported_at TIMESTAMPTZ,
     PRIMARY KEY (community_id, actor)
 );
 
@@ -291,9 +290,6 @@ CREATE INDEX idx_events_community_pubkey_kind_created
 CREATE INDEX idx_events_community_kind_created
     ON events (community_id, kind, created_at DESC, id);
 CREATE INDEX idx_events_community_deleted ON events (community_id, deleted_at);
--- Sidebar receipt window per channel (0055); key order = its ORDER BY.
-CREATE INDEX idx_events_community_channel_received
-    ON events (community_id, channel_id, received_at DESC, id, created_at);
 -- Addressable (replaceable) and NIP-33 parameterized lookups.
 CREATE INDEX idx_events_addressable
     ON events (community_id, kind, pubkey, channel_id, deleted_at);

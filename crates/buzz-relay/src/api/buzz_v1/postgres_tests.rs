@@ -151,8 +151,32 @@ async fn accessory_router_signed_url_body_replay_and_actor_boundary() {
             assert!(body["next_cursor"].is_null());
         }
     }
+    let channel = state
+        .db
+        .create_channel(
+            community,
+            "boundary",
+            buzz_db::channel::ChannelType::Stream,
+            buzz_db::channel::ChannelVisibility::Open,
+            None,
+            &actor.public_key().to_bytes(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    let event = EventBuilder::new(Kind::Custom(9), "read by one signer only")
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+    state
+        .db
+        .insert_event(community, &event, Some(channel))
+        .await
+        .unwrap();
     let write_path = "/buzz/v1/me/read-state";
-    let body = serde_json::to_vec(&json!({"intents":[{"type":"complete_import"}]})).unwrap();
+    let body = serde_json::to_vec(&json!({"intents":[{"type":"mark_channel_read",
+        "channel_id":channel,"message_id":event.id.to_hex()}]}))
+    .unwrap();
     let missing_hash = proof(&actor, &host, write_path, "POST", None);
     assert_eq!(
         request(
@@ -185,11 +209,19 @@ async fn accessory_router_signed_url_body_replay_and_actor_boundary() {
     let applied = request(state.clone(), &host, write_path, "POST", Some(&auth), &body).await;
     assert_eq!(applied.0, StatusCode::OK, "{}", applied.1);
     assert_eq!(applied.1["outcomes"][0]["status"], "applied");
-    for (key, complete) in [(&actor, true), (&other, false)] {
-        let auth = proof(key, &host, path, "GET", None);
-        let page = request(state.clone(), &host, path, "GET", Some(&auth), b"").await;
-        assert_eq!(page.0, StatusCode::OK);
-        assert_eq!(!page.1["account"]["imported_at_ms"].is_null(), complete);
+    // The frontier belongs to the signer alone.
+    let targets = json!([{"target":{"channel_id":channel},"message_ids":[event.id.to_hex()]}]);
+    let targets: String = targets
+        .to_string()
+        .bytes()
+        .map(|b| format!("%{b:02X}"))
+        .collect();
+    let path = format!("/buzz/v1/me/read-state?targets={targets}");
+    for (key, status) in [(&actor, "read"), (&other, "unread")] {
+        let auth = proof(key, &host, &path, "GET", None);
+        let page = request(state.clone(), &host, &path, "GET", Some(&auth), b"").await;
+        assert_eq!(page.0, StatusCode::OK, "{}", page.1);
+        assert_eq!(page.1["contexts"][0]["messages"][0]["status"], status);
     }
 }
 
@@ -267,7 +299,7 @@ async fn accessory_context_get_signed_query_and_independent_batch_outcomes() {
         {"type":"unknown"},
         {"type":"mark_through","target":{"channel_id":uuid::Uuid::new_v4()},"message_id":event.id.to_hex()},
         {"type":"mark_through","target":{"channel_id":channel},"message_id":event.id.to_hex()},
-        {"type":"legacy_prefix","target":{"channel_id":channel},"through_timestamp":-1}
+        {"type":"mark_through","target":{"channel_id":channel},"message_id":"not an event id"}
     ]})).unwrap();
     let auth = proof(&actor, &host, write_path, "POST", Some(&body));
     let result = request(state.clone(), &host, write_path, "POST", Some(&auth), &body).await;
@@ -305,8 +337,34 @@ async fn accessory_write_revocation_is_terminal_before_persistence() {
         .add_relay_member(community, &actor.public_key().to_hex(), "member", None)
         .await
         .unwrap();
+    let channel = state
+        .db
+        .create_channel(
+            community,
+            "revocation",
+            buzz_db::channel::ChannelType::Stream,
+            buzz_db::channel::ChannelVisibility::Open,
+            None,
+            &actor.public_key().to_bytes(),
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    let event = EventBuilder::new(Kind::Custom(9), "markable before revoke")
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+    state
+        .db
+        .insert_event(community, &event, Some(channel))
+        .await
+        .unwrap();
+    let intent = buzz_db::personal_read::ReadIntent::MarkChannelRead {
+        channel_id: channel,
+        message_id: event.id.to_hex(),
+    };
     let path = "/buzz/v1/me/read-state";
-    let body = br#"{"intents":[{"type":"complete_import"}]}"#;
+    let body = &serde_json::to_vec(&json!({"intents":[intent]})).unwrap()[..];
     let mut headers = axum::http::HeaderMap::new();
     headers.insert("host", host.parse().unwrap());
     headers.insert(
@@ -326,23 +384,15 @@ async fn accessory_write_revocation_is_terminal_before_persistence() {
         .await
         .unwrap();
     // Exercise the same per-item function the batch handler uses after admission.
-    let result = super::handlers::write_intent(
-        &state,
-        &headers,
-        &principal,
-        &buzz_db::personal_read::ReadIntent::CompleteImport,
-    )
-    .await;
+    let result = super::handlers::write_intent(&state, &headers, &principal, &intent).await;
     assert_eq!(result, json!({"status":"blocked"}));
-    let page = state
-        .db
-        .personal_read_sidebar(community, &actor.public_key(), 86400, 1, None)
-        .await
-        .unwrap();
-    assert!(
-        page.account.imported_at_ms.is_none(),
-        "denied intent must not persist"
-    );
+    let persisted: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM personal_read_accounts WHERE community_id=$1")
+            .bind(community.as_uuid())
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(persisted, 0, "denied intent must not persist");
 }
 
 #[tokio::test]
@@ -398,8 +448,20 @@ async fn accessory_discovery_is_host_bound_and_opt_in() {
                         buzz_db::personal_read::MAX_CONTEXT_MESSAGES
                     );
                     assert_eq!(d["max_thread_summaries"], 5);
+                    assert_eq!(d["eligible_kinds"], json!([9, 40002, 45001, 45003]));
                 }
             }
         }
+        // Disabled means unmounted: indistinguishable from a path that never existed.
+        let mut statuses = Vec::new();
+        for path in ["/buzz/v1/me/sidebar", "/buzz/v1-never-existed"] {
+            let request = Request::builder().uri(path).header("host", host.as_str());
+            let response = crate::router::build_router(state.clone())
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            statuses.push(response.status());
+        }
+        assert_eq!(statuses[0] == statuses[1], !enabled, "{statuses:?}");
     }
 }

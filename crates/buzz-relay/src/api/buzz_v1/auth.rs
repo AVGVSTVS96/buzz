@@ -85,9 +85,6 @@ pub(super) async fn authorize(
     let tenant = crate::tenant::bind_community(&state.db, host)
         .await
         .map_err(|_| Error::new(StatusCode::NOT_FOUND, "not_found"))?;
-    if !state.config.buzz_v1_enabled {
-        return Err(Error::new(StatusCode::NOT_FOUND, "not_found"));
-    }
     let path = uri
         .path_and_query()
         .map(|p| p.as_str())

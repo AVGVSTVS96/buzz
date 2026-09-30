@@ -39,7 +39,7 @@ impl Db {
             .await?;
         writes::deadlines(&mut tx).await?;
         let actor_bytes = actor.to_bytes();
-        let account = read_account(&mut tx, community, &actor_bytes, retention_seconds).await?;
+        let account = read_account(&mut tx, retention_seconds).await?;
         let mut contexts = Vec::with_capacity(queries.len());
         for query in queries {
             let root =
@@ -77,7 +77,7 @@ impl Db {
                 .filter_map(|id| writes::event_id(id))
                 .collect();
             let rows = sqlx::query(
-                "SELECT encode(e.id,'hex') AS id,e.kind,e.created_at,e.received_at,
+                "SELECT encode(e.id,'hex') AS id,e.kind,e.created_at,
                     e.deleted_at IS NOT NULL AS deleted,e.pubkey=$3 AS own,
                     CASE WHEN octet_length(e.tags::text)<=8192 THEN e.tags ELSE NULL END AS tags,
                     tm.root_event_id,c.channel_type::text AS channel_type
@@ -117,13 +117,12 @@ impl Db {
                             MessageReadState::Unavailable
                         } else {
                             let created: DateTime<Utc> = row.try_get("created_at")?;
-                            let received: DateTime<Utc> = row.try_get("received_at")?;
                             let kind: i32 = row.try_get("kind")?;
                             if !classification::eligible(
                                 kind,
                                 row.try_get("own")?,
                                 row.try_get("deleted")?,
-                                received.timestamp_millis(),
+                                created.timestamp_millis(),
                                 account.cutoff_ms,
                             ) {
                                 MessageReadState::NotCounted

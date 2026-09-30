@@ -23,7 +23,7 @@ pub(super) async fn deadlines(conn: &mut PgConnection) -> Result<()> {
     Ok(())
 }
 
-/// Serialize private frontier/import writes, never shared conversation rows.
+/// Serialize private frontier writes, never shared conversation rows.
 pub(super) async fn lock_account(
     conn: &mut PgConnection,
     community: CommunityId,
@@ -238,30 +238,6 @@ pub(super) async fn apply(
                     threads_through_timestamp=GREATEST(personal_read_frontiers.threads_through_timestamp, $4)",
             ).bind(community.as_uuid()).bind(actor).bind(channel_id).bind(timestamp)
                 .execute(&mut *conn).await?;
-        }
-        ReadIntent::LegacyPrefix {
-            target,
-            through_timestamp,
-        } => {
-            let latest_allowed: i64 = sqlx::query_scalar(
-                "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint + 900",
-            )
-            .fetch_one(&mut *conn)
-            .await?;
-            if *through_timestamp < 0 || *through_timestamp > latest_allowed {
-                return Ok(IntentOutcome::Invalid);
-            }
-            let Some(root) = valid_target(conn, community, actor, target).await? else {
-                return Ok(IntentOutcome::Blocked);
-            };
-            // Import fixed prefixes only; receipt-time horizon does not alter
-            // the original author-time operand.
-            frontier(conn, community, actor, target, &root, *through_timestamp).await?;
-        }
-        ReadIntent::CompleteImport => {
-            sqlx::query("UPDATE personal_read_accounts SET imported_at=COALESCE(imported_at,clock_timestamp())
-                WHERE community_id=$1 AND actor=$2")
-                .bind(community.as_uuid()).bind(actor).execute(&mut *conn).await?;
         }
     }
     Ok(IntentOutcome::Applied)

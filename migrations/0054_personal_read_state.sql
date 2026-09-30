@@ -6,7 +6,6 @@
 CREATE TABLE personal_read_accounts (
     community_id UUID NOT NULL REFERENCES communities(id),
     actor BYTEA NOT NULL CHECK (octet_length(actor) = 32),
-    imported_at TIMESTAMPTZ,
     PRIMARY KEY (community_id, actor)
 );
 

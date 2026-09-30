@@ -6,10 +6,10 @@ pub(super) fn eligible(
     kind: i32,
     own: bool,
     deleted: bool,
-    received_ms: i64,
+    created_ms: i64,
     cutoff_ms: i64,
 ) -> bool {
-    ELIGIBLE_KINDS.contains(&kind) && !own && !deleted && received_ms >= cutoff_ms
+    ELIGIBLE_KINDS.contains(&kind) && !own && !deleted && created_ms >= cutoff_ms
 }
 
 pub(super) fn directed(channel_type: &str, actor_hex: &str, tags: &[Vec<String>]) -> bool {

@@ -35,22 +35,13 @@ pub enum ReadIntent {
         /// Fixed anchor; retry must not substitute the latest message.
         message_id: String,
     },
-    /// Migration/recovery only: preserve an original legacy timestamp verbatim.
-    LegacyPrefix {
-        /// Original channel or canonical thread scope.
-        target: ReadTarget,
-        /// Original nonnegative second-resolution event timestamp.
-        through_timestamp: i64,
-    },
-    /// The client declares its frozen baseline resolved, including exceptions.
-    CompleteImport,
 }
 
 /// Outcome for one independent transaction, never acknowledged before commit.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum IntentOutcome {
-    /// The fixed frontier/import operand committed.
+    /// The fixed frontier operand committed.
     Applied,
     /// Missing and forbidden contexts deliberately share one outcome.
     Blocked,
@@ -58,15 +49,13 @@ pub enum IntentOutcome {
     Invalid,
 }
 
-/// The tracking boundary and migration status for the authenticated account.
+/// The tracking boundary for the authenticated account.
 #[derive(Clone, Debug, Serialize)]
 pub struct ReadAccount {
     /// Configured tracking duration in seconds.
     pub retention_seconds: u32,
-    /// Read-time relay-receipt cutoff (Unix milliseconds), not a discard boundary.
+    /// Read-time author-time cutoff (Unix milliseconds), not a discard boundary.
     pub cutoff_ms: i64,
-    /// Client-declared baseline completion; null means provisional projections.
-    pub imported_at_ms: Option<i64>,
 }
 
 /// Maximum channel summaries in one sidebar page.
@@ -75,8 +64,8 @@ pub const MAX_CHANNELS: usize = 20;
 pub const MAX_THREAD_SUMMARIES: usize = 5;
 /// Bounded event evidence per channel; exhaustion is never inferred at this cap.
 pub const MAX_CHANNEL_SCAN: usize = 256;
-/// Receipt-window work budget per channel, before eligibility/ancestry joins.
-pub const MAX_RECEIPT_SCAN: usize = 4096;
+/// Unread-window work budget per channel, before eligibility/ancestry joins.
+pub const MAX_UNREAD_SCAN: usize = 4096;
 /// Conversation kinds eligible for ordinary unread state (not edits/reactions).
 pub const ELIGIBLE_KINDS: [i32; 4] = [9, 40002, 45001, 45003];
 
@@ -243,7 +232,7 @@ pub enum ContextState {
 /// Actor-private bounded context response; no cross-request snapshot guarantee.
 #[derive(Debug, Serialize)]
 pub struct ContextPage {
-    /// Receipt-time horizon and import status at this snapshot.
+    /// Effective read-state lifecycle for this response.
     pub account: ReadAccount,
     /// One result per requested context, in request order.
     pub contexts: Vec<ContextState>,

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 const MAX_THREAD_SCAN: i64 = 256;
-// Bound multiplicative work independently of the receipt evidence window.
+// Bound multiplicative work independently of the unread evidence window.
 const MAX_ROOTS: usize = 1024;
 
 /// Positive evidence survives truncation; absence requires exhausting the thread.

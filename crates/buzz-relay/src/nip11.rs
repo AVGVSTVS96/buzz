@@ -88,7 +88,7 @@ pub struct BuzzV1Descriptor {
     pub version: u32,
     /// Relay-relative API prefix; callers retain the requesting origin.
     pub base_path: String,
-    /// Receipt-time unread horizon; does not expire messages or frontiers.
+    /// Author-time unread horizon; does not expire messages or frontiers.
     pub retention_seconds: u32,
     /// Maximum joined channels per sidebar page.
     pub max_channels: usize,
@@ -100,6 +100,9 @@ pub struct BuzzV1Descriptor {
     pub max_context_messages: usize,
     /// Maximum unread-thread summaries per sidebar channel row.
     pub max_thread_summaries: usize,
+    /// Message kinds that count as unread and as latest activity. Clients
+    /// classify live arrivals with this set instead of keeping a copy.
+    pub eligible_kinds: [i32; 4],
 }
 
 /// Public capability descriptor for relay-proxied GIF search.
@@ -386,7 +389,8 @@ pub(crate) async fn nip11_document(state: &crate::state::AppState, raw_host: &st
     if let Ok(tenant) = crate::tenant::bind_community(&state.db, raw_host).await {
         if state.config.buzz_v1_enabled {
             use buzz_db::personal_read::{
-                MAX_CHANNELS, MAX_CONTEXTS, MAX_CONTEXT_MESSAGES, MAX_INTENTS, MAX_THREAD_SUMMARIES,
+                ELIGIBLE_KINDS, MAX_CHANNELS, MAX_CONTEXTS, MAX_CONTEXT_MESSAGES, MAX_INTENTS,
+                MAX_THREAD_SUMMARIES,
             };
             info.buzz_v1 = Some(BuzzV1Descriptor {
                 version: 1,
@@ -397,6 +401,7 @@ pub(crate) async fn nip11_document(state: &crate::state::AppState, raw_host: &st
                 max_contexts: MAX_CONTEXTS,
                 max_context_messages: MAX_CONTEXT_MESSAGES,
                 max_thread_summaries: MAX_THREAD_SUMMARIES,
+                eligible_kinds: ELIGIBLE_KINDS,
             });
         }
         info.read_state_snapshot = Some(serde_json::json!({

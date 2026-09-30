@@ -14,7 +14,7 @@ Channel-content revisions, personal-state revisions and synchronized preferences
 are separate from read frontiers. Future revisions must describe the same
 snapshot as their payload, and are invalidation tokens, not history cursors or
 access grants. Count reuse also needs time/configuration validity because the
-receipt horizon moves without writes. Mutes and manual-unread overrides must not
+unread horizon moves without writes. Mutes and manual-unread overrides must not
 be encoded by advancing or rewinding a read frontier.
 
 These are extension constraints, not implemented capabilities: this version does

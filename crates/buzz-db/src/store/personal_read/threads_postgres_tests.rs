@@ -299,7 +299,14 @@ async fn absent_whole_channel_cut_never_covers_epoch_zero_replies() {
         },
     )
     .await;
-    let row = sidebar(&db, community, &actor).await;
+    // Widen the horizon to reach the epoch, so that only a NULL cut read as
+    // zero could hide this reply.
+    let row = db
+        .personal_read_sidebar(community, &actor.public_key(), u32::MAX, 20, None)
+        .await
+        .unwrap()
+        .channels
+        .remove(0);
     assert_eq!(exact(&row.unread), Some(1), "epoch-zero reply stays unread");
     assert_eq!(row.threads.items[0].latest_reply_at, 0);
 }

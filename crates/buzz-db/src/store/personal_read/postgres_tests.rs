@@ -41,6 +41,16 @@ pub(super) async fn fixture() -> (Db, PgPool, CommunityId, Uuid, Keys, nostr::Ev
     (db, pool, community, channel, actor, event)
 }
 
+/// Move every community message past the default horizon by author time, the
+/// only clock the unread window reads.
+async fn expire(pool: &PgPool, community: CommunityId) {
+    sqlx::query("UPDATE events SET created_at=created_at-interval '31 days' WHERE community_id=$1")
+        .bind(community.as_uuid())
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
 async fn add_history(db: &Db, community: CommunityId, channel: Uuid, count: usize) -> nostr::Event {
     let author = Keys::generate();
     let mut last = None;
@@ -62,7 +72,7 @@ async fn add_history(db: &Db, community: CommunityId, channel: Uuid, count: usiz
 #[ignore = "requires Postgres"]
 async fn personal_read_sidebar_marked_history_keeps_latest_but_unscanned_threads_are_unknown() {
     let (db, _pool, community, channel, actor, _) = fixture().await;
-    let last = add_history(&db, community, channel, MAX_RECEIPT_SCAN + 44).await;
+    let last = add_history(&db, community, channel, MAX_UNREAD_SCAN + 44).await;
     db.apply_personal_read_intent(
         community,
         &actor.public_key(),
@@ -105,16 +115,10 @@ async fn personal_read_sidebar_marked_history_keeps_latest_but_unscanned_threads
 
 #[tokio::test]
 #[ignore = "requires Postgres"]
-async fn personal_read_sidebar_receipt_window_excludes_expired_but_keeps_fresh_backfill() {
+async fn personal_read_sidebar_author_window_excludes_expired_and_late_old_messages() {
     let (db, pool, community, channel, actor, _) = fixture().await;
-    let latest = add_history(&db, community, channel, MAX_RECEIPT_SCAN + 44).await;
-    sqlx::query(
-        "UPDATE events SET received_at=clock_timestamp()-interval '31 days' WHERE community_id=$1",
-    )
-    .bind(community.as_uuid())
-    .execute(&pool)
-    .await
-    .unwrap();
+    let latest = add_history(&db, community, channel, MAX_UNREAD_SCAN + 44).await;
+    expire(&pool, community).await;
     let page = db
         .personal_read_sidebar(
             community,
@@ -127,46 +131,47 @@ async fn personal_read_sidebar_receipt_window_excludes_expired_but_keeps_fresh_b
         .unwrap();
     assert!(
         matches!(page.channels[0].unread, ReadCount::Exact { value: 0 }),
-        "receipt-ordered window proves exhaustion independent of author time"
+        "an empty author-time window proves exhaustion"
     );
     assert_eq!(
         page.channels[0].latest_message_id.as_deref(),
         Some(latest.id.to_hex().as_str())
     );
     assert!(page.channels[0].latest_message_complete);
-    // A fresh receipt with old author time belongs to retention even below
-    // the author-ordered history. The receipt window must find it.
-    let backfill = EventBuilder::new(Kind::Custom(9), "recently imported old message")
-        .custom_created_at(nostr::Timestamp::from(
-            nostr::Timestamp::now().as_secs() - 40 * 86400,
-        ))
-        .sign_with_keys(&Keys::generate())
-        .unwrap();
-    db.insert_event(community, &backfill, Some(channel))
-        .await
-        .unwrap();
-    let page = db
-        .personal_read_sidebar(
-            community,
-            &actor.public_key(),
-            DEFAULT_RETENTION_SECONDS,
-            20,
-            None,
-        )
-        .await
-        .unwrap();
-    assert!(matches!(
-        page.channels[0].unread,
-        ReadCount::Exact { value: 1 }
-    ));
+    // Acceptance time is irrelevant: a message accepted now with an author
+    // time beyond the horizon stays out; one authored now is counted.
+    let now = nostr::Timestamp::now().as_secs();
+    for (age, unread) in [(40 * 86400, 0), (0, 1)] {
+        let event = EventBuilder::new(Kind::Custom(9), "accepted now")
+            .custom_created_at(nostr::Timestamp::from(now - age))
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        db.insert_event(community, &event, Some(channel))
+            .await
+            .unwrap();
+        let page = db
+            .personal_read_sidebar(
+                community,
+                &actor.public_key(),
+                DEFAULT_RETENTION_SECONDS,
+                20,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(page.channels[0].unread, ReadCount::Exact { value } if value == unread),
+            "age={age}"
+        );
+    }
 }
 
 #[tokio::test]
 #[ignore = "requires Postgres"]
-async fn personal_read_sidebar_receipt_budget_counts_boundary_and_ineligible_tail() {
+async fn personal_read_sidebar_window_budget_counts_boundary_and_ineligible_tail() {
     let (db, pool, community, channel, actor, _) = fixture().await;
     // The fixture contributes one event, so this is exactly the evidence budget.
-    add_history(&db, community, channel, MAX_RECEIPT_SCAN - 1).await;
+    add_history(&db, community, channel, MAX_UNREAD_SCAN - 1).await;
     let page = db
         .personal_read_sidebar(
             community,
@@ -178,7 +183,7 @@ async fn personal_read_sidebar_receipt_budget_counts_boundary_and_ineligible_tai
         .await
         .unwrap();
     assert!(
-        matches!(page.channels[0].unread, ReadCount::Exact { value } if value == MAX_RECEIPT_SCAN as u32)
+        matches!(page.channels[0].unread, ReadCount::Exact { value } if value == MAX_UNREAD_SCAN as u32)
     );
     let overflow = EventBuilder::new(Kind::Custom(9), "one beyond the budget")
         .sign_with_keys(&Keys::generate())
@@ -197,12 +202,12 @@ async fn personal_read_sidebar_receipt_budget_counts_boundary_and_ineligible_tai
         .await
         .unwrap();
     assert!(
-        matches!(page.channels[0].unread, ReadCount::AtLeast { value } if value == MAX_RECEIPT_SCAN as u32)
+        matches!(page.channels[0].unread, ReadCount::AtLeast { value } if value == MAX_UNREAD_SCAN as u32)
     );
-    // Expire all but 601 receipts. Of these, 300 are own and 300 deleted.
-    // Eligibility is downstream of the bounded receipt window, not the old 256 cap.
-    sqlx::query("WITH ranked AS (SELECT created_at,id,row_number() OVER (ORDER BY received_at DESC,id) AS n FROM events WHERE community_id=$1 AND channel_id=$2)
-        UPDATE events e SET received_at=CASE WHEN r.n>601 THEN now()-interval '31 days' ELSE e.received_at END,
+    // Expire all but 601 messages. Of these, 300 are own and 300 deleted.
+    // Eligibility is downstream of the bounded unread window, not the old 256 cap.
+    sqlx::query("WITH ranked AS (SELECT created_at,id,row_number() OVER (ORDER BY created_at DESC,id) AS n FROM events WHERE community_id=$1 AND channel_id=$2)
+        UPDATE events e SET created_at=CASE WHEN r.n>601 THEN e.created_at-interval '31 days' ELSE e.created_at END,
           pubkey=CASE WHEN r.n<=300 THEN $3 ELSE e.pubkey END,
           deleted_at=CASE WHEN r.n>300 AND r.n<=600 THEN now() ELSE NULL END
         FROM ranked r WHERE e.community_id=$1 AND e.created_at=r.created_at AND e.id=r.id")
@@ -223,7 +228,7 @@ async fn personal_read_sidebar_receipt_budget_counts_boundary_and_ineligible_tai
     ));
     // Filtering ineligible evidence must not erase the raw-window overflow.
     sqlx::query(
-        "UPDATE events SET received_at=now(),pubkey=$2 WHERE community_id=$1 AND channel_id=$3",
+        "UPDATE events SET created_at=date_trunc('second',now()),pubkey=$2 WHERE community_id=$1 AND channel_id=$3",
     )
     .bind(community.as_uuid())
     .bind(actor.public_key().to_bytes().as_slice())
@@ -247,7 +252,7 @@ async fn personal_read_sidebar_receipt_budget_counts_boundary_and_ineligible_tai
 #[tokio::test]
 #[ignore = "requires Postgres"]
 async fn personal_read_sidebar_is_read_only_and_does_not_wait_for_account() {
-    let (db, pool, community, _channel, actor, _) = fixture().await;
+    let (db, pool, community, channel, actor, event) = fixture().await;
     db.personal_read_sidebar(
         community,
         &actor.public_key(),
@@ -264,7 +269,11 @@ async fn personal_read_sidebar_is_read_only_and_does_not_wait_for_account() {
             .await
             .unwrap();
     assert_eq!(count, 0, "GET must not create private state");
-    db.apply_personal_read_intent(community, &actor.public_key(), &ReadIntent::CompleteImport)
+    let mark = ReadIntent::MarkChannelRead {
+        channel_id: channel,
+        message_id: event.id.to_hex(),
+    };
+    db.apply_personal_read_intent(community, &actor.public_key(), &mark)
         .await
         .unwrap();
     let mut held = pool.begin().await.unwrap();
@@ -283,7 +292,10 @@ async fn personal_read_sidebar_is_read_only_and_does_not_wait_for_account() {
         )
         .await
         .unwrap();
-    assert!(page.account.imported_at_ms.is_some());
+    assert!(matches!(
+        page.channels[0].unread,
+        ReadCount::Exact { value: 0 }
+    ));
     held.rollback().await.unwrap();
 }
 
@@ -391,13 +403,7 @@ async fn personal_read_latest_includes_own_and_excludes_deleted_auxiliary() {
         Some(own.id.to_hex().as_str())
     );
     assert!(page.channels[0].latest_message_complete);
-    sqlx::query(
-        "UPDATE events SET received_at=clock_timestamp()-interval '31 days' WHERE community_id=$1",
-    )
-    .bind(community.as_uuid())
-    .execute(&pool)
-    .await
-    .unwrap();
+    expire(&pool, community).await;
     let page = db
         .personal_read_sidebar(
             community,
@@ -419,13 +425,7 @@ async fn personal_read_latest_includes_own_and_excludes_deleted_auxiliary() {
 #[ignore = "requires Postgres"]
 async fn personal_read_latest_old_message_is_not_an_empty_channel() {
     let (db, pool, community, channel, actor, event) = fixture().await;
-    sqlx::query(
-        "UPDATE events SET received_at=clock_timestamp()-interval '31 days' WHERE community_id=$1",
-    )
-    .bind(community.as_uuid())
-    .execute(&pool)
-    .await
-    .unwrap();
+    expire(&pool, community).await;
     let empty = db
         .create_channel(
             community,
@@ -473,7 +473,7 @@ async fn personal_read_latest_old_message_is_not_an_empty_channel() {
         .execute(&pool)
         .await
         .unwrap();
-    add_history(&db, community, channel, MAX_RECEIPT_SCAN + 44).await;
+    add_history(&db, community, channel, MAX_UNREAD_SCAN + 44).await;
     sqlx::query("UPDATE events SET kind=7 WHERE community_id=$1")
         .bind(community.as_uuid())
         .execute(&pool)
@@ -500,15 +500,15 @@ async fn personal_read_latest_old_message_is_not_an_empty_channel() {
 
 #[tokio::test]
 #[ignore = "requires Postgres"]
-async fn personal_read_frontier_retries_old_anchors_and_rejects_future_imports() {
+async fn personal_read_frontier_is_monotonic_and_rejects_malformed_anchors() {
     let (db, pool, community, channel, actor, event) = fixture().await;
     let target = ReadTarget {
         channel_id: channel,
         root_id: None,
     };
-    let invalid = ReadIntent::LegacyPrefix {
+    let invalid = ReadIntent::MarkThrough {
         target: target.clone(),
-        through_timestamp: i64::MAX,
+        message_id: "not an event id".into(),
     };
     assert_eq!(
         db.apply_personal_read_intent(community, &actor.public_key(), &invalid)
@@ -523,13 +523,6 @@ async fn personal_read_frontier_retries_old_anchors_and_rejects_future_imports()
             .await
             .unwrap();
     assert_eq!(count, 0, "invalid intent rolls back account creation");
-    sqlx::query(
-        "UPDATE events SET received_at=clock_timestamp()-interval '60 days' WHERE community_id=$1",
-    )
-    .bind(community.as_uuid())
-    .execute(&pool)
-    .await
-    .unwrap();
     let intent = ReadIntent::MarkThrough {
         target: target.clone(),
         message_id: event.id.to_hex(),
@@ -542,18 +535,23 @@ async fn personal_read_frontier_retries_old_anchors_and_rejects_future_imports()
             IntentOutcome::Applied
         );
     }
-    assert_eq!(
-        db.apply_personal_read_intent(
-            community,
-            &actor.public_key(),
-            &ReadIntent::LegacyPrefix {
-                target,
-                through_timestamp: 0
-            }
-        )
+    let earlier = EventBuilder::new(Kind::Custom(9), "earlier")
+        .custom_created_at(nostr::Timestamp::from(event.created_at.as_secs() - 10))
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+    db.insert_event(community, &earlier, Some(channel))
         .await
-        .unwrap(),
-        IntentOutcome::Applied
+        .unwrap();
+    let earlier = ReadIntent::MarkThrough {
+        target,
+        message_id: earlier.id.to_hex(),
+    };
+    assert_eq!(
+        db.apply_personal_read_intent(community, &actor.public_key(), &earlier)
+            .await
+            .unwrap(),
+        IntentOutcome::Applied,
+        "an earlier anchor applies without moving the frontier back"
     );
     let frontier: i64 = sqlx::query_scalar(
         "SELECT through_timestamp FROM personal_read_frontiers WHERE community_id=$1 AND actor=$2",
@@ -733,9 +731,9 @@ async fn personal_read_contexts_bound_selectors_and_use_only_matching_frontiers(
     db.apply_personal_read_intent(
         community,
         &actor.public_key(),
-        &ReadIntent::LegacyPrefix {
+        &ReadIntent::MarkThrough {
             target: queries[0].target.clone(),
-            through_timestamp: (base + 10) as i64,
+            message_id: root.id.to_hex(),
         },
     )
     .await
@@ -841,12 +839,9 @@ async fn personal_read_contexts_bound_selectors_and_use_only_matching_frontiers(
 
 #[tokio::test]
 #[ignore = "requires Postgres"]
-async fn personal_read_context_receipt_horizon_unknown_ancestry_and_deletion() {
+async fn personal_read_context_author_horizon_unknown_ancestry_and_deletion() {
     let (db, pool, community, channel, actor, root) = fixture().await;
-    let old = EventBuilder::new(Kind::Custom(9), "old author freshly received")
-        .custom_created_at(nostr::Timestamp::from(
-            root.created_at.as_secs() - 40 * 86400,
-        ))
+    let old = EventBuilder::new(Kind::Custom(9), "directed, about to expire")
         .tags([nostr::Tag::parse(["p", &actor.public_key().to_hex()]).unwrap()])
         .sign_with_keys(&Keys::generate())
         .unwrap();
@@ -882,7 +877,7 @@ async fn personal_read_context_receipt_horizon_unknown_ancestry_and_deletion() {
     assert_eq!(page["contexts"][0]["messages"][0]["attention"], true);
     assert_eq!(page["contexts"][0]["messages"][1]["status"], "unknown");
     sqlx::query(
-        "UPDATE events SET received_at=now()-interval '31 days' WHERE community_id=$1 AND id=$2",
+        "UPDATE events SET created_at=created_at-interval '31 days' WHERE community_id=$1 AND id=$2",
     )
     .bind(community.as_uuid())
     .bind(old.id.as_bytes().as_slice())

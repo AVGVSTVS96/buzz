@@ -1,20 +1,39 @@
 use super::{classification, postgres_tests::fixture, *};
 use serde_json::json;
 
+#[test]
+fn unread_horizon_includes_its_own_cutoff() {
+    for (created_ms, counted) in [(999, false), (1000, true), (1001, true)] {
+        assert_eq!(
+            classification::eligible(9, false, false, created_ms, 1000),
+            counted
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires Postgres"]
 async fn sidebar_sql_eligibility_matches_selector_classifier() {
-    let (db, pool, community, _, actor, event) = fixture().await;
+    let (db, pool, community, channel, actor, event) = fixture().await;
+    let query = [ContextQuery {
+        target: ReadTarget {
+            channel_id: channel,
+            root_id: None,
+        },
+        message_ids: vec![event.id.to_hex()],
+    }];
     let now = chrono::Utc::now().timestamp_millis();
+    let horizon = i64::from(DEFAULT_RETENTION_SECONDS) * 1000;
     for kind in [9, 40002, 45001, 45003, 1, 7, 39002] {
         for own in [false, true] {
             for deleted in [false, true] {
-                for expired in [false, true] {
-                    let received = now - if expired { 31 * 86_400_000 } else { 0 };
-                    sqlx::query("UPDATE events SET kind=$2,pubkey=$3,deleted_at=CASE WHEN $4 THEN now() ELSE NULL END,received_at=to_timestamp($5::double precision/1000) WHERE community_id=$1")
+                // Now, then one minute inside and one minute outside the horizon.
+                for age in [0, horizon - 60_000, horizon + 60_000] {
+                    let created = now - age;
+                    sqlx::query("UPDATE events SET kind=$2,pubkey=$3,deleted_at=CASE WHEN $4 THEN now() ELSE NULL END,created_at=to_timestamp($5::double precision/1000) WHERE community_id=$1")
                         .bind(community.as_uuid()).bind(kind)
                         .bind(if own { actor.public_key().to_bytes() } else { event.pubkey.to_bytes() }.as_slice())
-                        .bind(deleted).bind(received as f64).execute(&pool).await.unwrap();
+                        .bind(deleted).bind(created as f64).execute(&pool).await.unwrap();
                     let page = db
                         .personal_read_sidebar(
                             community,
@@ -29,12 +48,28 @@ async fn sidebar_sql_eligibility_matches_selector_classifier() {
                         kind,
                         own,
                         deleted,
-                        received,
+                        created,
                         page.account.cutoff_ms,
                     ));
                     assert!(
                         matches!(page.channels[0].unread, ReadCount::Exact { value } if value == expected),
-                        "kind={kind} own={own} deleted={deleted} expired={expired}"
+                        "kind={kind} own={own} deleted={deleted} age={age}"
+                    );
+                    // The per-message selector must agree with the aggregate.
+                    let contexts = db
+                        .personal_read_contexts(
+                            community,
+                            &actor.public_key(),
+                            DEFAULT_RETENTION_SECONDS,
+                            &query,
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&contexts).unwrap()["contexts"][0]["messages"][0]
+                            ["status"],
+                        ["not_counted", "unread"][expected as usize],
+                        "kind={kind} own={own} deleted={deleted} age={age}"
                     );
                 }
             }

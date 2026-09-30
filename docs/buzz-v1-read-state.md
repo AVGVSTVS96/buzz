@@ -13,12 +13,14 @@ application/nostr+json`, or `GET /info`) includes `buzz_v1` only when enabled:
 ```json
 {"buzz_v1":{"version":1,"base_path":"/buzz/v1","retention_seconds":2592000,
 "max_channels":20,"max_intents":100,"max_contexts":20,"max_context_messages":100,
-"max_thread_summaries":5}}
+"max_thread_summaries":5,"eligible_kinds":[9,40002,45001,45003]}}
 ```
 
 Use the requesting origin plus this relative prefix. Discovery is a configured
 capability, not a promise that the next request cannot fail. Unknown hosts and
-disabled deployments omit it. Capability loss must not restart NIP-RS writes.
+disabled deployments omit it, and a disabled deployment does not mount
+`/buzz/v1` at all. A v1 client without the capability has no read state; it
+must not fall back to NIP-RS.
 
 Every API request requires NIP-98, including on development relays. Sign the
 exact externally addressed URL, including the encoded query, and method. POST
@@ -65,7 +67,7 @@ Items are canonical roots with unread eligible replies, ordered by
 `latest_reply_at` descending, then `root_id`; at most 5. `latest_reply_id` is the
 newest observed unread reply (equal times prefer the smaller ID) and a valid
 thread `mark_through` anchor. `unread` and `attention` use the row's
-definitions. `complete=true` means the receipt scan was exhausted, no evidence
+definitions. `complete=true` means the unread window was exhausted, no evidence
 had unresolved ancestry or unusable tags, and no thread was omitted; then item
 unread counts sum to the row's unread replies. Otherwise the list is a cut of
 observed evidence and counts may be lower bounds or unknown. Participation
@@ -78,15 +80,28 @@ Counts have exactly three representations:
 ```
 
 Only exact zero proves absence. Unknown has no numeric value. Ordinary unread
-counts eligible non-own, nondeleted conversation kinds 9, 40002, 45001 and 45003
-beyond the matching context frontier. Attention is the unread subset consisting
+counts non-own, nondeleted messages of the advertised `eligible_kinds` beyond
+the matching context frontier. The same kinds alone define latest activity, so
+an edit, reaction or diff (40008) neither makes a channel unread nor moves it.
+Classify live arrivals with the advertised set, not a client copy. Attention is the unread subset consisting
 of DMs, direct actor mentions, `broadcast=1`, and replies in a thread containing
 a live eligible message authored by the actor. Participation is independent of
 read progress and retention. This is not Desktop notification policy: follows,
 mutes and earlier mentions elsewhere in a thread do not affect this count.
 
-The receipt-time horizon defaults to 30 days (`BUZZ_V1_RETENTION_SECONDS`). It
-filters unread/attention, not latest activity, event storage or frontier state.
+The unread horizon defaults to 30 days (`BUZZ_V1_RETENTION_SECONDS`) and, like
+every frontier, is measured in author time (`created_at`): a message counts
+while its author time is at or after `account.cutoff_ms`. It filters
+unread/attention, not latest activity, event storage or frontier state. One
+clock has three consequences:
+
+- A message accepted late with an author time beyond the horizon (an import, a
+  backfill, a long-offline sender) is never unread. It can still be latest.
+- Unread expires at author time plus the horizon, however recently the relay
+  accepted the message.
+- Horizon and frontier order messages identically, so a context's unread set
+  is one author-time range: after the frontier and at or after the cutoff.
+
 A later configuration expansion can change counts without having lost progress.
 Latest activity is independent of actor and frontiers. A null latest ID proves
 an empty eligible history only when `latest_message_complete=true`.
@@ -118,9 +133,8 @@ Conversation bytes must still come from the existing Nostr path.
 ```json
 {"intents":[
  {"type":"mark_through","target":{"channel_id":"<uuid>"},"message_id":"<64-hex-event>"},
- {"type":"mark_channel_read","channel_id":"<uuid>","message_id":"<64-hex-event>"},
- {"type":"legacy_prefix","target":{"channel_id":"<uuid>","root_id":"<64-hex-root>"},"through_timestamp":1700000000},
- {"type":"complete_import"}
+ {"type":"mark_through","target":{"channel_id":"<uuid>","root_id":"<64-hex-root>"},"message_id":"<64-hex-event>"},
+ {"type":"mark_channel_read","channel_id":"<uuid>","message_id":"<64-hex-event>"}
 ]}
 ```
 
@@ -136,9 +150,7 @@ second-resolution author-time prefix. Equal-time messages and later-arriving
 backdated messages at/below it are covered. Channel and thread frontiers never
 inherit in either direction. Opening a view is not itself a reading action;
 client dwell/focus policy determines when to send an actual observed anchor.
-Old or deleted valid anchors may advance a frontier. Legacy prefixes preserve
-the original nonnegative timestamp; more than DB-now + 900 seconds is invalid,
-not clamped.
+Old or deleted valid anchors may advance a frontier.
 
 `mark_channel_read` is the one whole-channel cut: it advances the channel
 timeline and every thread in that channel, including unlisted ones, through the
@@ -148,19 +160,18 @@ reply is read at or below the greater of its thread frontier and this cut. An
 anchor that no longer exists is `blocked`. `latest_message_id` is a natural
 anchor. A null ID with `latest_message_complete=false` does not prove empty
 history; it only leaves the client without an anchor. Thread marks and channel `mark_through`
-never set the cut. Complete-import is a client declaration, not proof that the server
-verified or decrypted a legacy snapshot. Null `imported_at_ms` means provisional.
+never set the cut.
 
-Sparse legacy seen hints must not be converted to the largest timestamp: that
-would acknowledge unseen holes. The client retains recovery data and discloses
-unsupported hints/manual overrides before declaring import complete. Manual
-unread remains device-local. There is no automatic dual-authority rollback.
+There is no import of earlier client read state: an account starts with no
+frontiers, and the horizon bounds what that can show as unread. Manual unread
+remains device-local.
 
 ## Bounds and deployment
 
 - 20 sidebar rows, 100 intents, 20 contexts / 100 selectors per request.
 - 64 KiB write body; 16 KiB context URL; 1 MiB serialized API response.
-- 4096 raw receipts per channel plus one exhaustion sentinel, before eligibility.
+- 4096 raw events per channel inside the horizon plus one exhaustion sentinel,
+  before eligibility.
 - Latest activity probes 256 events plus a sentinel; long ineligible tails may
   leave latest incomplete even when unread is exact.
 - Tag documents over 8192 bytes or malformed relevant tags yield uncertainty.
@@ -172,11 +183,10 @@ unread remains device-local. There is no automatic dual-authority rollback.
   shared eight-second intent-processing deadline after admission. Limits are
   containment, not a production capacity claim.
 
-Apply migrations 0054 and 0055 (or the equivalent desired schema). Brownfield
-operators must prebuild the receipt index using
-[the concurrent deployment procedure](events-channel-received-deployment.md).
-Do not run an unbounded blocking index build on a large events table. No new
-per-message ingest write path or stored unread counters are introduced.
+Apply migration 0054 (or the equivalent desired schema). It creates two empty
+private tables and no index on `events`: both sidebar scans are served by the
+existing `idx_events_community_channel_created`. No new per-message ingest write
+path or stored unread counters are introduced.
 
 Use existing HTTP route/status/latency metrics for `/buzz/v1/me/sidebar` and
 `/buzz/v1/me/read-state`, plus database pool/statement metrics. Inspect exact /
@@ -215,6 +225,6 @@ must use the established authenticated operational process and explicitly scope
 both community and actor; never equate the read-time horizon with data erasure.
 
 Roll out disabled-by-default to controlled accounts after agent and human live
-acceptance. The client migration is separate work. Disabling the API leaves
-migrated clients stale with their pending journal intact; it cannot silently
-restore the old encrypted snapshot as current authority.
+acceptance. Disabling the API unmounts it and leaves both tables in place: v1
+clients lose read state and keep their unsent intents until it returns, and
+NIP-RS clients see no change either way.

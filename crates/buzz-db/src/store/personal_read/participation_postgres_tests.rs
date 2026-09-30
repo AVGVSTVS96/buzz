@@ -69,6 +69,8 @@ async fn personal_read_attention_proves_participation_without_retention_or_front
         } else {
             &other
         };
+        // Root and own reply predate the unread horizon. Participation must not
+        // expire with unread.
         let root = event(
             &db,
             community,
@@ -99,9 +101,6 @@ async fn personal_read_attention_proves_participation_without_retention_or_front
                     .unwrap();
             }
         }
-        // Root and own reply receipts are old. Participation must not expire with unread.
-        sqlx::query("UPDATE events SET received_at=now()-interval '35 days' WHERE community_id=$1 AND channel_id=$2")
-            .bind(community.as_uuid()).bind(channel).execute(&pool).await.unwrap();
         let count = if case >= 5 { 258 } else { 1 };
         let mut last = root.clone();
         for i in 0..count {

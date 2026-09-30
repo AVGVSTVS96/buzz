@@ -69,14 +69,14 @@ impl Db {
         )
         .await?;
         let mut tx = conn.begin().await?;
-        // Import status and frontier evidence share a compatible read-only cut.
+        // The horizon and frontier evidence share one read-only cut.
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await?;
         writes::deadlines(&mut tx).await?;
         sqlx::query("SET LOCAL jit = off").execute(&mut *tx).await?;
         let actor_bytes = actor.to_bytes();
-        let account = read_account(&mut tx, community, &actor_bytes, retention_seconds).await?;
+        let account = read_account(&mut tx, retention_seconds).await?;
         // The inner event LIMIT is deliberately before eligibility filtering.
         // This bounds rows/joins even with long deleted or self-authored runs.
         // Aggregate equivalent eligible evidence before transfer. Multiplicity
@@ -119,9 +119,9 @@ impl Db {
                 AND cf.channel_id=r.id AND cf.root_id=''::bytea
              LEFT JOIN LATERAL (
                 WITH candidates AS MATERIALIZED (
-                    SELECT id,pubkey,created_at,received_at,deleted_at,kind,tags
-                    FROM events WHERE community_id=$1 AND channel_id=r.id AND received_at >= $7
-                    ORDER BY received_at DESC,id,created_at LIMIT $8
+                    SELECT id,pubkey,created_at,deleted_at,kind,tags
+                    FROM events WHERE community_id=$1 AND channel_id=r.id AND created_at >= $7
+                    ORDER BY created_at DESC,id LIMIT $8
                 ), classified AS (
                     SELECT e.*, tm.root_event_id AS root,
                         COALESCE(tm.root_event_id<>e.id,false) AS is_reply,
@@ -129,7 +129,7 @@ impl Db {
                             CASE WHEN tm.root_event_id IS NOT NULL AND tm.root_event_id<>e.id
                                 THEN GREATEST(tf.through_timestamp, cf.threads_through_timestamp)
                                 ELSE cf.through_timestamp END,false) AS covered
-                    FROM (SELECT * FROM candidates ORDER BY received_at DESC,id,created_at LIMIT $8-1) e
+                    FROM (SELECT * FROM candidates ORDER BY created_at DESC,id LIMIT $8-1) e
                     LEFT JOIN thread_metadata tm ON tm.community_id=$1 AND tm.channel_id=r.id
                         AND tm.event_created_at=e.created_at AND tm.event_id=e.id
                     LEFT JOIN personal_read_frontiers tf ON tf.community_id=$1 AND tf.actor=$2
@@ -170,8 +170,8 @@ impl Db {
             .bind((limit+1) as i64).bind((MAX_CHANNEL_SCAN+1) as i64)
             .bind(ELIGIBLE_KINDS.as_slice())
             .bind(DateTime::from_timestamp_millis(account.cutoff_ms)
-                .ok_or_else(|| DbError::InvalidData("invalid receipt cutoff".into()))?)
-            .bind((MAX_RECEIPT_SCAN+1) as i64)
+                .ok_or_else(|| DbError::InvalidData("invalid unread cutoff".into()))?)
+            .bind((MAX_UNREAD_SCAN+1) as i64)
             .bind(only)
             .fetch_all(&mut *tx).await?;
         let has_more = rows.len() > limit;
@@ -182,7 +182,7 @@ impl Db {
             let evidence = evidence
                 .as_array()
                 .ok_or_else(|| DbError::InvalidData("invalid sidebar evidence".into()))?;
-            let complete = row.try_get::<i64, _>("scanned")? <= MAX_RECEIPT_SCAN as i64;
+            let complete = row.try_get::<i64, _>("scanned")? <= MAX_UNREAD_SCAN as i64;
             let channel_type: String = row.try_get("channel_type")?;
             let mut unread = 0;
             let mut attention = 0;
@@ -192,7 +192,7 @@ impl Db {
             for e in evidence {
                 let n = e["n"]
                     .as_u64()
-                    .filter(|n| *n <= MAX_RECEIPT_SCAN as u64)
+                    .filter(|n| *n <= MAX_UNREAD_SCAN as u64)
                     .ok_or_else(|| DbError::InvalidData("invalid evidence multiplicity".into()))?
                     as u32;
                 let Some(facts) = e["facts"].as_object() else {
@@ -365,21 +365,17 @@ pub(super) fn summarize(
 /// Read-time horizon only: frontier state is not discarded on expiry.
 pub(super) async fn read_account(
     conn: &mut PgConnection,
-    community: CommunityId,
-    actor: &[u8],
     retention_seconds: u32,
 ) -> Result<ReadAccount> {
-    let row = sqlx::query(
-        "SELECT date_trunc('milliseconds',transaction_timestamp()-make_interval(secs=>$3::double precision)) AS cutoff,
-            a.imported_at FROM (SELECT 1) singleton LEFT JOIN personal_read_accounts a
-            ON a.community_id=$1 AND a.actor=$2"
-    ).bind(community.as_uuid()).bind(actor).bind(f64::from(retention_seconds)).fetch_one(conn).await?;
-    let cutoff: DateTime<Utc> = row.try_get("cutoff")?;
-    let imported: Option<DateTime<Utc>> = row.try_get("imported_at")?;
+    let cutoff: DateTime<Utc> = sqlx::query_scalar(
+        "SELECT date_trunc('milliseconds',transaction_timestamp()-make_interval(secs=>$1::double precision))",
+    )
+    .bind(f64::from(retention_seconds))
+    .fetch_one(conn)
+    .await?;
     Ok(ReadAccount {
         retention_seconds,
         cutoff_ms: cutoff.timestamp_millis(),
-        imported_at_ms: imported.map(|t| t.timestamp_millis()),
     })
 }
 

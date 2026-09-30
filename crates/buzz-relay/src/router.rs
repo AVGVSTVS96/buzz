@@ -289,8 +289,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let admin_router = admin_enabled
         .then(|| Router::new().nest("/api/admin/v1", api::admin::router(state.clone())));
 
-    let accessory_router =
-        Router::new().nest(api::buzz_v1::BASE_PATH, api::buzz_v1::router(state.clone()));
+    // Unmounted when disabled, so every /buzz/v1 path answers exactly as it
+    // did before the accessory API existed.
+    let accessory_router = state
+        .config
+        .buzz_v1_enabled
+        .then(|| Router::new().nest(api::buzz_v1::BASE_PATH, api::buzz_v1::router(state.clone())));
 
     let api_router = Router::new()
         // WebSocket + NIP-11
@@ -388,11 +392,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // Metrics → Trace → CORS applied once over the combined router.
     let mut merged = api_router
         .merge(media_router)
-        .merge(accessory_router)
         .merge(git_router)
         .merge(git_policy_router);
-    if let Some(admin_router) = admin_router {
-        merged = merged.merge(admin_router);
+    for optional in [accessory_router, admin_router].into_iter().flatten() {
+        merged = merged.merge(optional);
     }
 
     // Serve both bundles from one fallback. The admin host is checked first so

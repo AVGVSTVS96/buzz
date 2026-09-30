@@ -9,6 +9,19 @@ const OUTDIR = "test-results/hosted-communities";
 const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
 /** A second valid identity key, used only as a contradictory hosted npub. */
 const OTHER_HEX = "b".repeat(64);
+const PENDING_KEY = "buzz:hosted-community-delete-pending:v1";
+const OTHER_PENDING = {
+  community_id: "44444444-4444-4444-8444-444444444444",
+  host: "private-other.communities.buzz.xyz",
+  request_id: "55555555-5555-4555-8555-555555555555",
+  acknowledgement_version: 1,
+  bound_owner_pubkey: "a".repeat(64),
+  backend_origin: "https://app.builderlab.xyz",
+};
+const OTHER_PENDING_BYTES = JSON.stringify(OTHER_PENDING);
+const BLOCKED_COPY = `A deletion request from ${npubEncode(OTHER_PENDING.bound_owner_pubkey)} is still pending on this device. Switch to that Buzz identity and use Check deletion status before starting another deletion here. If you no longer have that identity, contact support.`;
+const CAPABILITY_OFF_COPY =
+  "Community deletion is unavailable right now, so this request can't be checked. It stays saved on this device.";
 const DELETION_COMMUNITIES: Array<{
   id: string;
   name: string;
@@ -156,6 +169,101 @@ async function deletionPayloads(page: Page) {
       .map(({ payload }) => payload),
   );
 }
+
+async function seedOtherOwnerPending(page: Page) {
+  await page.evaluate(
+    ({ key, bytes }) => window.localStorage.setItem(key, bytes),
+    { key: PENDING_KEY, bytes: OTHER_PENDING_BYTES },
+  );
+}
+
+test("another Buzz identity's pending slot disables archived Delete without revealing its target", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, { capability: true });
+  await seedOtherOwnerPending(page);
+  await page.getByRole("button", { name: "Refresh" }).click();
+
+  const notice = page.getByText(BLOCKED_COPY, { exact: true });
+  await expect(notice).toBeVisible();
+  await expect(notice).not.toContainText(OTHER_PENDING.host);
+  await expect(notice).not.toContainText(OTHER_PENDING.community_id);
+  await expect(notice).not.toContainText(OTHER_PENDING.request_id);
+  await expect(
+    page
+      .getByTestId("hosted-community-row")
+      .filter({ hasText: "Archived team" })
+      .getByRole("button", { name: "Delete", exact: true }),
+  ).toBeDisabled();
+  expect(await storedDeletionBytes(page)).toBe(OTHER_PENDING_BYTES);
+  expect(await deletionPayloads(page)).toHaveLength(0);
+});
+
+test("an occupied slot discovered during confirmation never sends or overwrites", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, { capability: true });
+  const archived = page
+    .getByTestId("hosted-community-row")
+    .filter({ hasText: "Archived team" });
+  await archived.getByRole("button", { name: "Delete", exact: true }).click();
+  await page
+    .getByLabel(
+      "Type the exact host to continue: Exact-Host.communities.buzz.xyz",
+    )
+    .fill("Exact-Host.communities.buzz.xyz");
+  await page.getByRole("button", { name: "Continue" }).click();
+  await seedOtherOwnerPending(page);
+  await page
+    .getByRole("button", { name: "Delete community permanently" })
+    .click();
+
+  await expect(page.getByText(BLOCKED_COPY, { exact: true })).toBeVisible();
+  await expect(
+    page.getByText(/Could not safely save the pending deletion request/),
+  ).toHaveCount(0);
+  expect(await storedDeletionBytes(page)).toBe(OTHER_PENDING_BYTES);
+  expect(await deletionPayloads(page)).toHaveLength(0);
+});
+
+test("another identity's blocked notice is hidden when deletion capability is off", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, { capability: false });
+  await seedOtherOwnerPending(page);
+  await page.getByRole("button", { name: "Refresh" }).click();
+
+  await expect(page.getByText(BLOCKED_COPY, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/pending deletion on this device/i)).toHaveCount(
+    0,
+  );
+  expect(await storedDeletionBytes(page)).toBe(OTHER_PENDING_BYTES);
+  expect(await deletionPayloads(page)).toHaveLength(0);
+});
+
+test("own pending request explains why Check is disabled when deletion capability is off", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, { capability: false });
+  const ownedBytes = JSON.stringify({
+    ...OTHER_PENDING,
+    bound_owner_pubkey: DEFAULT_MOCK_PUBKEY,
+  });
+  await page.evaluate(
+    ({ key, bytes }) => window.localStorage.setItem(key, bytes),
+    { key: PENDING_KEY, bytes: ownedBytes },
+  );
+  await page.getByRole("button", { name: "Refresh" }).click();
+
+  await expect(
+    page.getByText(CAPABILITY_OFF_COPY, { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Check deletion status" }),
+  ).toBeDisabled();
+  expect(await storedDeletionBytes(page)).toBe(ownedBytes);
+  expect(await deletionPayloads(page)).toHaveLength(0);
+});
 
 test("reopen sends nothing and Check resends the same saved request once", async ({
   page,
@@ -389,7 +497,9 @@ test("A-B-A owner switch retains exact bytes and replays only under A", async ({
     page.getByRole("button", { name: "Check deletion status" }),
   ).toHaveCount(0);
   await expect(
-    page.getByText(/another account has a pending deletion/i),
+    page.getByText(
+      /A deletion request from npub1.* is still pending on this device/,
+    ),
   ).toBeVisible();
   await expect.poll(() => storedDeletionBytes(page)).toBe(bytes);
   expect(await deletionPayloads(page)).toHaveLength(1);

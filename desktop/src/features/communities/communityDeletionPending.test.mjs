@@ -63,11 +63,11 @@ test("single-slot A-B-A view retains exact bytes and blocks another owner", () =
   target.setItem("buzz:hosted-community-delete-pending:v1", bytes);
   assert.deepEqual(pendingCommunityDeletionForAccount("a".repeat(64), target), {
     owned: envelope,
-    blockedByAnotherAccount: false,
+    blockingOwnerPubkey: null,
   });
   assert.deepEqual(pendingCommunityDeletionForAccount("b".repeat(64), target), {
     owned: null,
-    blockedByAnotherAccount: true,
+    blockingOwnerPubkey: "a".repeat(64),
   });
   assert.equal(
     target.getItem("buzz:hosted-community-delete-pending:v1"),
@@ -82,7 +82,7 @@ test("single-slot A-B-A view retains exact bytes and blocks another owner", () =
   );
   assert.deepEqual(pendingCommunityDeletionForAccount("a".repeat(64), target), {
     owned: envelope,
-    blockedByAnotherAccount: false,
+    blockingOwnerPubkey: null,
   });
   assert.deepEqual(publicDeletionRequest(envelope), {
     community_id: envelope.community_id,

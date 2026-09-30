@@ -100,7 +100,10 @@ export function hostedCommunityErrorMessage(
     missing_mapping: "Connect your Buzz identity before creating a community.",
     invalid_name: "Use lowercase letters, numbers, and hyphens.",
     taken: "That Buzz address is already taken.",
-    limit_reached: `You've reached the limit of ${displayedLimit} hosted communities.`,
+    limit_reached:
+      quotaLimit === 0
+        ? "You can't create more communities right now."
+        : `You've reached the limit of ${displayedLimit} hosted communities.`,
     relay_unavailable: "Community provisioning is temporarily unavailable.",
     identity_already_bound:
       "This Builderlab account is connected to another Buzz identity.",

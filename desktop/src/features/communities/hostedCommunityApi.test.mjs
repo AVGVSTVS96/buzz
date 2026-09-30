@@ -126,6 +126,15 @@ test("limit_reached uses the server quota when available and retains the fallbac
       { code: "limit_reached" },
       undefined,
       "fallback",
+      0,
+    ),
+    "You can't create more communities right now.",
+  );
+  assert.equal(
+    hostedCommunityErrorMessage(
+      { code: "limit_reached" },
+      undefined,
+      "fallback",
       7,
     ),
     "You've reached the limit of 7 hosted communities.",

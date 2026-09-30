@@ -89,8 +89,9 @@ export function HostedCommunitiesSettingsCard() {
   } | null>(null);
   const [pendingDeletion, setPendingDeletion] =
     React.useState<PendingCommunityDeletion | null>(null);
-  const [blockedByAnotherAccount, setBlockedByAnotherAccount] =
-    React.useState(false);
+  const [blockingOwnerPubkey, setBlockingOwnerPubkey] = React.useState<
+    string | null
+  >(null);
   const hiddenCommunityIds = React.useRef(new Set<string>());
   const recoveryAccount = React.useRef<string | null>(null);
   const deleteInFlight = React.useRef<symbol | null>(null);
@@ -144,7 +145,7 @@ export function HostedCommunitiesSettingsCard() {
     adoptAccountOwner(nextOwner);
     const deletionView = pendingCommunityDeletionForAccount(nextOwner);
     setPendingDeletion(deletionView.owned);
-    setBlockedByAnotherAccount(deletionView.blockedByAnotherAccount);
+    setBlockingOwnerPubkey(deletionView.blockingOwnerPubkey);
     setIdentity(identityResponse.identity ?? null);
     const nextCommunities = (communitiesResponse.communities ?? []).filter(
       (community) =>
@@ -524,9 +525,9 @@ export function HostedCommunitiesSettingsCard() {
 
   const startCommunityDeletion = (community: HostedCommunity) => {
     const deletionView = pendingCommunityDeletionForAccount(boundHex);
-    if (deletionView.owned || deletionView.blockedByAnotherAccount) {
+    if (deletionView.owned || deletionView.blockingOwnerPubkey) {
       setPendingDeletion(deletionView.owned);
-      setBlockedByAnotherAccount(deletionView.blockedByAnotherAccount);
+      setBlockingOwnerPubkey(deletionView.blockingOwnerPubkey);
       return;
     }
     if (
@@ -558,7 +559,7 @@ export function HostedCommunitiesSettingsCard() {
       return;
     }
     setPendingDeletion(envelope);
-    setBlockedByAnotherAccount(false);
+    setBlockingOwnerPubkey(null);
     void runDeletion("Starting deletion…", envelope, async (generation) => {
       try {
         await invokeDeletion(envelope, "initial", generation);
@@ -639,7 +640,7 @@ export function HostedCommunitiesSettingsCard() {
     recoveryAccount.current = accountKey;
     const deletionView = pendingCommunityDeletionForAccount(boundHex);
     setPendingDeletion(deletionView.owned);
-    setBlockedByAnotherAccount(deletionView.blockedByAnotherAccount);
+    setBlockingOwnerPubkey(deletionView.blockingOwnerPubkey);
   }, [auth, boundHex, loading]);
 
   const normalizedName = name.trim().toLowerCase();
@@ -790,17 +791,24 @@ export function HostedCommunitiesSettingsCard() {
               Check deletion status
             </Button>
           </div>
+          {!deletionCapability ? (
+            <p>
+              Community deletion is unavailable right now, so this request
+              can&apos;t be checked. It stays saved on this device.
+            </p>
+          ) : null}
         </div>
       ) : null}
 
-      {auth && boundHex && blockedByAnotherAccount ? (
+      {auth && boundHex && deletionCapability && blockingOwnerPubkey ? (
         <div
           className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm"
           aria-live="polite"
         >
-          Another account has a pending deletion on this device. Sign in with
-          that account to check deletion status before starting another deletion
-          here.
+          A deletion request from {safeNpub(blockingOwnerPubkey)} is still
+          pending on this device. Switch to that Buzz identity and use Check
+          deletion status before starting another deletion here. If you no
+          longer have that identity, contact support.
         </div>
       ) : null}
 
@@ -980,7 +988,7 @@ export function HostedCommunitiesSettingsCard() {
                         busy || pendingDeletion?.community_id === community.id
                       }
                       deletionPending={
-                        pendingDeletion !== null || blockedByAnotherAccount
+                        pendingDeletion !== null || blockingOwnerPubkey !== null
                       }
                       canDelete={
                         deletionCapability &&

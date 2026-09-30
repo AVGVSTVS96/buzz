@@ -161,11 +161,11 @@ export function pendingCommunityDeletionForAccount(
   storage: StorageLike = defaultStorage(),
 ): {
   owned: PendingCommunityDeletion | null;
-  blockedByAnotherAccount: boolean;
+  blockingOwnerPubkey: string | null;
 } {
   const stored = loadPendingCommunityDeletion(storage);
   if (!stored || !ownerPubkey) {
-    return { owned: null, blockedByAnotherAccount: false };
+    return { owned: null, blockingOwnerPubkey: null };
   }
   if (
     pendingCommunityDeletionMatchesAccount(
@@ -174,9 +174,9 @@ export function pendingCommunityDeletionForAccount(
       BUILDERLAB_BACKEND_ORIGIN,
     )
   ) {
-    return { owned: stored, blockedByAnotherAccount: false };
+    return { owned: stored, blockingOwnerPubkey: null };
   }
-  return { owned: null, blockedByAnotherAccount: true };
+  return { owned: null, blockingOwnerPubkey: stored.bound_owner_pubkey };
 }
 
 export function publicDeletionRequest(

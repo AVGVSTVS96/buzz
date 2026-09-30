@@ -522,10 +522,13 @@ mod tests {
         Submit,
     }
 
+    type ProfileRelayGateState =
+        Arc<tokio::sync::Mutex<Option<(ProfileRelayGate, oneshot::Receiver<()>)>>>;
+
     #[derive(Clone)]
     struct ProfileRelayState {
         current: Arc<tokio::sync::Mutex<Option<nostr::Event>>>,
-        gate: Arc<tokio::sync::Mutex<Option<(ProfileRelayGate, oneshot::Receiver<()>)>>>,
+        gate: ProfileRelayGateState,
         gate_started: mpsc::Sender<()>,
     }
 

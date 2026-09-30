@@ -32,7 +32,6 @@ import {
   markCommunityOnboardingComplete,
   resolveProfileCheckAction,
   isTransactionCurrentStage,
-  isTransactionStillConnecting,
 } from "@/features/onboarding/communityOnboarding";
 import { CommunityOnboardingFlow } from "@/features/onboarding/ui/CommunityOnboardingFlow";
 import {
@@ -92,6 +91,31 @@ const BOOT_SPLASH_FADE_MS = 200;
 const INITIAL_RENDER_READY_EVENT = "initial-render-ready";
 
 type BootSplashPhase = "holding" | "fading" | "done";
+
+type CommunityOnboardingWorkOwner = {
+  transactionId: string;
+  initAttempt: number;
+};
+
+function sameCommunityOnboardingWorkOwner(
+  a: CommunityOnboardingWorkOwner | null,
+  b: CommunityOnboardingWorkOwner,
+): boolean {
+  return (
+    a?.transactionId === b.transactionId && a.initAttempt === b.initAttempt
+  );
+}
+
+function isTransactionCurrentGenerationStage(
+  live: Parameters<typeof isTransactionCurrentStage>[0],
+  owner: CommunityOnboardingWorkOwner,
+  stage: Parameters<typeof isTransactionCurrentStage>[2],
+): boolean {
+  return (
+    (live?.initAttempt ?? 0) === owner.initAttempt &&
+    isTransactionCurrentStage(live, owner.transactionId, stage)
+  );
+}
 
 function useInitialRenderReady() {
   useLayoutEffect(() => {
@@ -384,10 +408,12 @@ function CommunityApp({
   } = useCommunities();
   const communityOnboarding = useCommunityOnboarding();
   const connectingTransactionRef = useRef<string | null>(null);
-  // Tracks the ID of the profile-check request that has been launched for the
-  // current connecting transaction. Prevents the effect from launching a
-  // second request if it re-runs while a fetch is in flight.
-  const profileCheckTransactionRef = useRef<string | null>(null);
+  // Tracks the transaction generation that launched the downstream profile
+  // branch for the current connecting transaction. Same-relay reopen preserves
+  // the transaction id while incrementing initAttempt, so the generation is part
+  // of both launch ownership and async completion ownership.
+  const profileCheckTransactionRef =
+    useRef<CommunityOnboardingWorkOwner | null>(null);
   // Always reflects the live transaction object so async callbacks can perform
   // an atomic check of both ID and stage before mutating state.
   const transactionRef = useRef(communityOnboarding.transaction);
@@ -546,6 +572,11 @@ function CommunityApp({
   useEffect(() => {
     if (transaction?.stage !== "connecting") {
       connectingTransactionRef.current = null;
+    }
+    if (
+      transaction?.stage !== "connecting" &&
+      transaction?.stage !== "corporate-profile"
+    ) {
       profileCheckTransactionRef.current = null;
     }
   }, [transaction?.stage]);
@@ -582,11 +613,23 @@ function CommunityApp({
     transaction,
   ]);
   useEffect(() => {
-    if (transaction?.stage !== "connecting" || !targetIsReady) return;
+    const canLaunchProfileDownstream =
+      transaction?.stage === "connecting" ||
+      (transaction?.stage === "corporate-profile" &&
+        !transaction.error &&
+        Boolean(enterpriseProfile));
+    if (!canLaunchProfileDownstream || !targetIsReady) return;
     const transactionId = transaction.id;
     const relayUrl = transaction.relayUrl;
-    if (profileCheckTransactionRef.current === transactionId) return;
-    profileCheckTransactionRef.current = transactionId;
+    const workOwner = { transactionId, initAttempt: communityInitAttempt };
+    if (
+      sameCommunityOnboardingWorkOwner(
+        profileCheckTransactionRef.current,
+        workOwner,
+      )
+    )
+      return;
+    profileCheckTransactionRef.current = workOwner;
 
     if (enterpriseProfile) {
       if (!identityPubkey) {
@@ -612,10 +655,11 @@ function CommunityApp({
       })
         .then(() => {
           if (
-            !isTransactionCurrentStage(transactionRef.current, transactionId, [
-              "connecting",
-              "corporate-profile",
-            ])
+            !isTransactionCurrentGenerationStage(
+              transactionRef.current,
+              workOwner,
+              ["connecting", "corporate-profile"],
+            )
           )
             return;
           communityOnboarding.update(
@@ -625,10 +669,11 @@ function CommunityApp({
         })
         .catch((error) => {
           if (
-            !isTransactionCurrentStage(transactionRef.current, transactionId, [
-              "connecting",
-              "corporate-profile",
-            ])
+            !isTransactionCurrentGenerationStage(
+              transactionRef.current,
+              workOwner,
+              ["connecting", "corporate-profile"],
+            )
           )
             return;
           profileCheckTransactionRef.current = null;
@@ -649,11 +694,17 @@ function CommunityApp({
     // resolveProfileCheckAction resolves exactly once (Promise.race + timer
     // cleared on settle), so no settled flag is needed here.
     void resolveProfileCheckAction(getProfile, 10_000).then((result) => {
-      // Atomic staleness guard via isTransactionStillConnecting: the
-      // transaction must still be the same one that launched this request
-      // AND still be in connecting. Covers cancel+replacement (B's ID !== A's)
-      // and cancel-without-replacement (transactionRef.current is null).
-      if (!isTransactionStillConnecting(transactionRef.current, transactionId))
+      // Atomic staleness guard: the transaction must still be the same
+      // generation that launched this request and still be in connecting.
+      // Covers same-relay retry (same ID, newer initAttempt), cancel +
+      // replacement (B's ID !== A's), and cancel without replacement.
+      if (
+        !isTransactionCurrentGenerationStage(
+          transactionRef.current,
+          workOwner,
+          "connecting",
+        )
+      )
         return;
 
       if (result.action === "skip") {
@@ -672,8 +723,10 @@ function CommunityApp({
     transaction?.stage,
     transaction?.id,
     transaction?.relayUrl,
+    transaction?.error,
     enterpriseProfile,
     identityPubkey,
+    communityInitAttempt,
   ]);
   // During "entering" the transaction stays alive as a curtain: the app mounts
   // underneath (already pointed at the Welcome channel route) while the

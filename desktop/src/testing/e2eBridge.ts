@@ -449,6 +449,7 @@ type E2eConfig = {
     /** Hold `get_profile` responses until the E2E release seam is invoked. */
     deferProfileReads?: boolean;
     profileReadError?: string;
+    profileReadErrors?: (string | null)[];
     /** Override whether get_profile reports a real kind:0 event. */
     profileHasEvent?: boolean;
     profileUpdateError?: string;
@@ -1632,14 +1633,30 @@ declare global {
     __BUZZ_E2E_HOLD_USERS_BATCH__?: (hold: boolean) => number;
     /** Number of `get_users_batch` calls currently held. */
     __BUZZ_E2E_USERS_BATCH_PENDING__?: () => number;
+    /** Release the oldest `get_profile` response held by `deferProfileReads`. */
+    __BUZZ_E2E_RELEASE_ONE_PROFILE_READ__?: () => number;
+    /** Oldest-to-newest ordinals for `get_profile` responses currently held. */
+    __BUZZ_E2E_PROFILE_READ_PENDING_ORDINALS__?: () => number[];
     /** Release every `get_profile` response held by `deferProfileReads`. */
     __BUZZ_E2E_RELEASE_PROFILE_READS__?: () => number;
     /** Number of `get_profile` responses currently held. */
     __BUZZ_E2E_PROFILE_READS_PENDING__?: () => number;
+    /** Release the oldest `update_profile_at_relay` response held by `deferProfileUpdates`. */
+    __BUZZ_E2E_RELEASE_ONE_PROFILE_UPDATE__?: () => number;
+    /** Oldest-to-newest ordinals for `update_profile_at_relay` responses currently held. */
+    __BUZZ_E2E_PROFILE_UPDATE_PENDING_ORDINALS__?: () => number[];
     /** Release every `update_profile_at_relay` response held by `deferProfileUpdates`. */
     __BUZZ_E2E_RELEASE_PROFILE_UPDATES__?: () => number;
     /** Number of `update_profile_at_relay` responses currently held. */
     __BUZZ_E2E_PROFILE_UPDATES_PENDING__?: () => number;
+    /** Append a mocked Rust-side pending community deep link. */
+    __BUZZ_E2E_ENQUEUE_COMMUNITY_DEEP_LINK__?: (pending: {
+      id: string;
+      kind: "connect" | "join" | "add-community";
+      relayUrl: string;
+      code?: string | null;
+      name?: string | null;
+    }) => number;
     /** Uploads that passed mock-native registration and began relay work. */
     __BUZZ_E2E_LINK_PREVIEW_UPLOAD_STARTS__?: number;
     /** Hold renderer-owned media fetches until their cancellation command. */
@@ -1766,18 +1783,22 @@ let deferredLinkPreviewMetadataQueue: Array<() => void> = [];
 let deferredLinkPreviewUploadQueue: Array<() => void> = [];
 let deferredThreadRepliesQueue: Array<() => void> = [];
 type DeferredProfileRead = {
+  ordinal: number;
   reject: (reason: unknown) => void;
   resolve: (value: unknown) => void;
   run: () => Promise<unknown>;
 };
 type DeferredProfileUpdate = {
+  ordinal: number;
   reject: (reason: unknown) => void;
   resolve: (value: unknown) => void;
   run: () => Promise<unknown>;
 };
 let deferredProfileReadQueue: DeferredProfileRead[] = [];
+let nextProfileReadOrdinal = 1;
 let profileReadsReleased = false;
 let deferredProfileUpdateQueue: DeferredProfileUpdate[] = [];
+let nextProfileUpdateOrdinal = 1;
 let profileUpdatesReleased = false;
 // ── get_users_batch hold seam ───────────────────────────────────────────────
 // Toggled at runtime by `__BUZZ_E2E_HOLD_USERS_BATCH__(hold)` rather than fixed
@@ -6830,6 +6851,11 @@ async function handleGetChannels(
 
 async function runGetProfile(config: E2eConfig | undefined) {
   const identity = getIdentity(config);
+  const profileReadErrors = config?.mock?.profileReadErrors;
+  const nextProfileReadError = profileReadErrors?.shift();
+  if (nextProfileReadError) {
+    throw new Error(nextProfileReadError);
+  }
   const profileReadDelayMs = config?.mock?.profileReadDelayMs ?? 0;
   if (profileReadDelayMs > 0) {
     await new Promise<void>((resolve) => {
@@ -6887,10 +6913,12 @@ async function handleGetProfile(config: E2eConfig | undefined) {
 
   return new Promise<unknown>((resolve, reject) => {
     deferredProfileReadQueue.push({
+      ordinal: nextProfileReadOrdinal,
       resolve,
       reject,
       run: () => runGetProfile(config),
     });
+    nextProfileReadOrdinal += 1;
   });
 }
 
@@ -7000,10 +7028,12 @@ async function handleUpdateProfileAtRelay(
 
   return new Promise<unknown>((resolve, reject) => {
     deferredProfileUpdateQueue.push({
+      ordinal: nextProfileUpdateOrdinal,
       resolve,
       reject,
       run: () => runUpdateProfile(args, config),
     });
+    nextProfileUpdateOrdinal += 1;
   });
 }
 
@@ -11494,8 +11524,10 @@ export function maybeInstallE2eTauriMocks() {
   deferredLinkPreviewUploadQueue = [];
   deferredThreadRepliesQueue = [];
   deferredProfileReadQueue = [];
+  nextProfileReadOrdinal = 1;
   profileReadsReleased = false;
   deferredProfileUpdateQueue = [];
+  nextProfileUpdateOrdinal = 1;
   profileUpdatesReleased = false;
   holdUsersBatch = false;
   heldUsersBatchReleases = [];
@@ -11525,6 +11557,25 @@ export function maybeInstallE2eTauriMocks() {
   };
   window.__BUZZ_E2E_THREAD_REPLIES_PENDING__ = () =>
     deferredThreadRepliesQueue.length;
+  const releaseProfileRead = () => {
+    const deferred = deferredProfileReadQueue.shift();
+    if (!deferred) return 0;
+    window.__BUZZ_E2E_COMMAND_LOG__?.push({
+      command: "get_profile:released",
+      payload: { ordinal: deferred.ordinal },
+    });
+    void deferred
+      .run()
+      .then(deferred.resolve, deferred.reject)
+      .finally(() => {
+        window.__BUZZ_E2E_COMMAND_LOG__?.push({
+          command: "get_profile:settled",
+          payload: { ordinal: deferred.ordinal },
+        });
+      });
+    return deferred.ordinal;
+  };
+  window.__BUZZ_E2E_RELEASE_ONE_PROFILE_READ__ = releaseProfileRead;
   window.__BUZZ_E2E_RELEASE_PROFILE_READS__ = () => {
     profileReadsReleased = true;
     const queued = deferredProfileReadQueue.splice(0);
@@ -11535,6 +11586,27 @@ export function maybeInstallE2eTauriMocks() {
   };
   window.__BUZZ_E2E_PROFILE_READS_PENDING__ = () =>
     deferredProfileReadQueue.length;
+  window.__BUZZ_E2E_PROFILE_READ_PENDING_ORDINALS__ = () =>
+    deferredProfileReadQueue.map(({ ordinal }) => ordinal);
+  const releaseProfileUpdate = () => {
+    const deferred = deferredProfileUpdateQueue.shift();
+    if (!deferred) return 0;
+    window.__BUZZ_E2E_COMMAND_LOG__?.push({
+      command: "update_profile_at_relay:released",
+      payload: { ordinal: deferred.ordinal },
+    });
+    void deferred
+      .run()
+      .then(deferred.resolve, deferred.reject)
+      .finally(() => {
+        window.__BUZZ_E2E_COMMAND_LOG__?.push({
+          command: "update_profile_at_relay:settled-ordinal",
+          payload: { ordinal: deferred.ordinal },
+        });
+      });
+    return deferred.ordinal;
+  };
+  window.__BUZZ_E2E_RELEASE_ONE_PROFILE_UPDATE__ = releaseProfileUpdate;
   window.__BUZZ_E2E_RELEASE_PROFILE_UPDATES__ = () => {
     profileUpdatesReleased = true;
     const queued = deferredProfileUpdateQueue.splice(0);
@@ -11545,6 +11617,16 @@ export function maybeInstallE2eTauriMocks() {
   };
   window.__BUZZ_E2E_PROFILE_UPDATES_PENDING__ = () =>
     deferredProfileUpdateQueue.length;
+  window.__BUZZ_E2E_PROFILE_UPDATE_PENDING_ORDINALS__ = () =>
+    deferredProfileUpdateQueue.map(({ ordinal }) => ordinal);
+  window.__BUZZ_E2E_ENQUEUE_COMMUNITY_DEEP_LINK__ = (pending) => {
+    mockPendingCommunityDeepLinks.push({
+      ...pending,
+      code: pending.code ?? null,
+      name: pending.name ?? null,
+    });
+    return mockPendingCommunityDeepLinks.length;
+  };
   window.__BUZZ_E2E_HOLD_USERS_BATCH__ = (hold: boolean) => {
     holdUsersBatch = hold;
     // Releasing on the way out of the hold, not on the way in, is what lets a

@@ -1,5 +1,11 @@
 import { hexToBytes } from "@noble/hashes/utils.js";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Locator,
+  type Page,
+  type TestInfo,
+} from "@playwright/test";
 import { nsecEncode, npubEncode } from "nostr-tools/nip19";
 
 import {
@@ -197,10 +203,50 @@ async function readCommunityOnboardingTransaction(page: Page) {
           id: string;
           relayUrl: string;
           stage: string;
+          initAttempt?: number;
           error?: string;
         })
       : null;
   }, COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY);
+}
+
+async function reopenSameRelayCommunityLink(page: Page, relayUrl: string) {
+  await page.evaluate(
+    (input) => {
+      const enqueue = window.__BUZZ_E2E_ENQUEUE_COMMUNITY_DEEP_LINK__;
+      const emit = window.__BUZZ_E2E_EMIT_TAURI_EVENT__;
+      if (!enqueue || !emit) {
+        throw new Error("Community deep-link E2E helpers are not installed.");
+      }
+      enqueue({
+        id: `reopen-${Date.now()}`,
+        kind: "connect",
+        relayUrl: input.relayUrl,
+      });
+      void emit("deep-link-connect", null);
+    },
+    { relayUrl },
+  );
+}
+
+async function waitForProfileReadPending(page: Page, expected = 1) {
+  await expect
+    .poll(() =>
+      page.evaluate(() => window.__BUZZ_E2E_PROFILE_READS_PENDING__?.() ?? 0),
+    )
+    .toBeGreaterThanOrEqual(expected);
+}
+
+async function releaseOneProfileRead(page: Page) {
+  const releasedOrdinal = await page.evaluate(() => {
+    const release = window.__BUZZ_E2E_RELEASE_ONE_PROFILE_READ__;
+    if (!release) {
+      throw new Error("Profile read release helper is not installed.");
+    }
+    return release();
+  });
+  expect(releasedOrdinal).toBeGreaterThan(0);
+  return releasedOrdinal;
 }
 
 async function waitForScopedProfileUpdatePending(page: Page) {
@@ -213,6 +259,109 @@ async function waitForScopedProfileUpdatePending(page: Page) {
       ),
     )
     .toBeGreaterThan(0);
+}
+
+async function writeProfileUpdateGenerationArtifact(
+  page: Page,
+  testInfo: TestInfo,
+  label: string,
+  snapshots: unknown[],
+) {
+  const finalState = await page.evaluate(() => ({
+    commandLog: window.__BUZZ_E2E_COMMAND_LOG__ ?? [],
+    pendingUpdateOrdinals:
+      window.__BUZZ_E2E_PROFILE_UPDATE_PENDING_ORDINALS__?.() ?? [],
+    pendingUpdateCount: window.__BUZZ_E2E_PROFILE_UPDATES_PENDING__?.() ?? 0,
+    transactionRaw: window.localStorage.getItem(
+      "buzz-community-onboarding-transaction.v1",
+    ),
+  }));
+  await testInfo.attach(label, {
+    body: JSON.stringify({ snapshots, finalState }, null, 2),
+    contentType: "application/json",
+  });
+}
+
+async function captureProfileUpdateGenerationSnapshot(
+  page: Page,
+  label: string,
+) {
+  return page.evaluate((snapshotLabel) => {
+    const transactionRaw = window.localStorage.getItem(
+      "buzz-community-onboarding-transaction.v1",
+    );
+    const transaction = transactionRaw
+      ? (JSON.parse(transactionRaw) as {
+          id?: string;
+          initAttempt?: number;
+          stage?: string;
+        })
+      : null;
+    return {
+      label: snapshotLabel,
+      pendingUpdateOrdinals:
+        window.__BUZZ_E2E_PROFILE_UPDATE_PENDING_ORDINALS__?.() ?? [],
+      pendingUpdateCount: window.__BUZZ_E2E_PROFILE_UPDATES_PENDING__?.() ?? 0,
+      settledUpdateOrdinals: (window.__BUZZ_E2E_COMMAND_LOG__ ?? [])
+        .filter(
+          (entry) =>
+            entry.command === "update_profile_at_relay:settled-ordinal",
+        )
+        .map(
+          (entry) => (entry.payload as { ordinal?: number } | null)?.ordinal,
+        ),
+      transaction: transaction
+        ? {
+            id: transaction.id,
+            initAttempt: transaction.initAttempt,
+            stage: transaction.stage,
+          }
+        : null,
+    };
+  }, label);
+}
+
+async function attachProfileUpdateGenerationSnapshots(
+  page: Page,
+  testInfo: TestInfo,
+  label: string,
+  snapshots: unknown[],
+) {
+  try {
+    await writeProfileUpdateGenerationArtifact(
+      page,
+      testInfo,
+      label,
+      snapshots,
+    );
+  } catch {
+    // Diagnostic attachment must not mask the primary assertion failure.
+  }
+}
+
+async function releaseOneProfileUpdateAndWaitForSettlement(page: Page) {
+  const releasedOrdinal = await page.evaluate(() => {
+    const release = window.__BUZZ_E2E_RELEASE_ONE_PROFILE_UPDATE__;
+    if (!release) {
+      throw new Error("Profile update release helper is not installed.");
+    }
+    return release();
+  });
+  expect(releasedOrdinal).toBeGreaterThan(0);
+  await expect
+    .poll(() =>
+      page.evaluate((ordinal) => {
+        return (window.__BUZZ_E2E_COMMAND_LOG__ ?? []).some((entry) => {
+          if (entry.command !== "update_profile_at_relay:settled-ordinal") {
+            return false;
+          }
+          const payload = entry.payload as { ordinal?: number } | null;
+          return payload?.ordinal === ordinal;
+        });
+      }, releasedOrdinal),
+    )
+    .toBe(true);
+  return releasedOrdinal;
 }
 
 async function releaseScopedProfileUpdateAndWaitForSettlement(page: Page) {
@@ -2198,6 +2347,342 @@ test("joining enterprise login retry reruns init for the active community", asyn
     )
     .toBe("profile");
   await expect(page.getByText("Browser login was rejected")).toHaveCount(0);
+});
+
+test("same-relay reopen fences stale profile read success by init attempt", async ({
+  page,
+}) => {
+  const relayUrl = "wss://profile-read-generation-success.example";
+  const transactionId = "txn-profile-read-generation-success";
+  await seedConnectingCorporateProfileTransaction(page, {
+    relayUrl,
+    transactionId,
+  });
+  await installMockBridge(
+    page,
+    { deferProfileReads: true, profileHasEvent: false },
+    {
+      relayWsUrl: relayUrl,
+      skipOnboardingSeed: true,
+      skipCommunitySeed: true,
+    },
+  );
+  await page.goto("/");
+
+  await waitForProfileReadPending(page, 1);
+  const generationA = await readCommunityOnboardingTransaction(page);
+  expect(generationA).toMatchObject({
+    id: transactionId,
+    stage: "connecting",
+  });
+  expect(generationA).not.toHaveProperty("initAttempt");
+
+  await reopenSameRelayCommunityLink(page, relayUrl);
+  await expect
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({
+      id: transactionId,
+      stage: "connecting",
+      initAttempt: 1,
+    });
+  await waitForProfileReadPending(page, 2);
+
+  await releaseOneProfileRead(page);
+  await expect
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({
+      id: transactionId,
+      stage: "connecting",
+      initAttempt: 1,
+    });
+  await expect(
+    page.getByRole("heading", { name: "Build your profile" }),
+  ).toHaveCount(0);
+  await expect
+    .poll(() => commandCount(page, "get_profile"))
+    .toBeGreaterThanOrEqual(2);
+  await waitForProfileReadPending(page, 1);
+
+  await releaseOneProfileRead(page);
+  await expect(
+    page.getByRole("heading", { name: "Build your profile" }),
+  ).toBeVisible();
+  await expect
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({ id: transactionId, stage: "profile", initAttempt: 1 });
+});
+
+test("same-relay reopen fences stale profile read rejection by init attempt", async ({
+  page,
+}) => {
+  const relayUrl = "wss://profile-read-generation-rejection.example";
+  const transactionId = "txn-profile-read-generation-rejection";
+  await seedConnectingCorporateProfileTransaction(page, {
+    relayUrl,
+    transactionId,
+  });
+  await installMockBridge(
+    page,
+    {
+      deferProfileReads: true,
+      profileHasEvent: false,
+      profileReadErrors: ["stale profile read failed", null],
+    },
+    {
+      relayWsUrl: relayUrl,
+      skipOnboardingSeed: true,
+      skipCommunitySeed: true,
+    },
+  );
+  await page.goto("/");
+
+  await waitForProfileReadPending(page, 1);
+  await reopenSameRelayCommunityLink(page, relayUrl);
+  await expect
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({
+      id: transactionId,
+      stage: "connecting",
+      initAttempt: 1,
+    });
+  await waitForProfileReadPending(page, 2);
+
+  await releaseOneProfileRead(page);
+  await expect
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({
+      id: transactionId,
+      stage: "connecting",
+      initAttempt: 1,
+    });
+  await expect(page.getByText("stale profile read failed")).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Build your profile" }),
+  ).toHaveCount(0);
+
+  await releaseOneProfileRead(page);
+  await expect(
+    page.getByRole("heading", { name: "Build your profile" }),
+  ).toBeVisible();
+  await expect
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({ id: transactionId, stage: "profile", initAttempt: 1 });
+});
+
+test("same-relay reopen fences stale corporate profile save success by init attempt", async ({
+  page,
+}, testInfo) => {
+  const snapshots: unknown[] = [];
+  try {
+    const relayUrl = "wss://profile-save-generation-success.example";
+    const transactionId = "txn-profile-save-generation-success";
+    await seedConnectingCorporateProfileTransaction(page, {
+      relayUrl,
+      transactionId,
+    });
+    await installMockBridge(
+      page,
+      {
+        enterpriseLoginGate: { status: "required" },
+        enterpriseAuth: {
+          email: "brad@example.com",
+          expiresAt: "2099-01-01T00:00:00Z",
+          profileProjection: {
+            username: "seiler",
+            displayName: "Brad Seiler",
+          },
+        },
+        deferProfileUpdates: true,
+      },
+      {
+        relayWsUrl: relayUrl,
+        skipOnboardingSeed: true,
+        skipCommunitySeed: true,
+      },
+    );
+    await page.goto("/");
+
+    await expect(page.getByText("Saving your company profile…")).toBeVisible();
+    await waitForScopedProfileUpdatePending(page);
+    snapshots.push(
+      await captureProfileUpdateGenerationSnapshot(page, "A queued"),
+    );
+    await reopenSameRelayCommunityLink(page, relayUrl);
+    await expect
+      .poll(() => readCommunityOnboardingTransaction(page))
+      .toMatchObject({
+        id: transactionId,
+        stage: "corporate-profile",
+        initAttempt: 1,
+      });
+    snapshots.push(
+      await captureProfileUpdateGenerationSnapshot(page, "reopen applied"),
+    );
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROFILE_UPDATES_PENDING__?.() ?? 0,
+        ),
+      )
+      .toBeGreaterThanOrEqual(2);
+    snapshots.push(
+      await captureProfileUpdateGenerationSnapshot(page, "B queued"),
+    );
+
+    const releasedA = await releaseOneProfileUpdateAndWaitForSettlement(page);
+    expect(releasedA).toBe(1);
+    snapshots.push(
+      await captureProfileUpdateGenerationSnapshot(page, "A released/settled"),
+    );
+    await expect
+      .poll(() => readCommunityOnboardingTransaction(page))
+      .toMatchObject({
+        id: transactionId,
+        stage: "corporate-profile",
+        initAttempt: 1,
+      });
+    await expect(
+      page.getByRole("heading", { name: "Meet your starter team" }),
+    ).toHaveCount(0);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROFILE_UPDATE_PENDING_ORDINALS__?.() ?? [],
+        ),
+      )
+      .toContain(2);
+
+    const releasedB = await releaseOneProfileUpdateAndWaitForSettlement(page);
+    expect(releasedB).toBe(2);
+    snapshots.push(
+      await captureProfileUpdateGenerationSnapshot(page, "B released/settled"),
+    );
+    await expect(
+      page.getByRole("heading", { name: "Meet your starter team" }),
+    ).toBeVisible();
+    await expect
+      .poll(() => readCommunityOnboardingTransaction(page))
+      .toMatchObject({
+        id: transactionId,
+        stage: "team-intro",
+        initAttempt: 1,
+      });
+  } finally {
+    await attachProfileUpdateGenerationSnapshots(
+      page,
+      testInfo,
+      "profile-save-generation-success-diagnostics",
+      snapshots,
+    );
+  }
+});
+
+test("same-relay reopen fences stale corporate profile save rejection by init attempt", async ({
+  page,
+}, testInfo) => {
+  const snapshots: unknown[] = [];
+  try {
+    const staleError = "Stale generation corporate profile failure.";
+    const relayUrl = "wss://profile-save-generation-rejection.example";
+    const transactionId = "txn-profile-save-generation-rejection";
+    await seedConnectingCorporateProfileTransaction(page, {
+      relayUrl,
+      transactionId,
+    });
+    await installMockBridge(
+      page,
+      {
+        enterpriseLoginGate: { status: "required" },
+        enterpriseAuth: {
+          email: "brad@example.com",
+          expiresAt: "2099-01-01T00:00:00Z",
+          profileProjection: {
+            username: "seiler",
+            displayName: "Brad Seiler",
+          },
+        },
+        deferProfileUpdates: true,
+        profileUpdateErrors: [staleError, null],
+      },
+      {
+        relayWsUrl: relayUrl,
+        skipOnboardingSeed: true,
+        skipCommunitySeed: true,
+      },
+    );
+    await page.goto("/");
+
+    await expect(page.getByText("Saving your company profile…")).toBeVisible();
+    await waitForScopedProfileUpdatePending(page);
+    snapshots.push(
+      await captureProfileUpdateGenerationSnapshot(page, "A queued"),
+    );
+    await reopenSameRelayCommunityLink(page, relayUrl);
+    await expect
+      .poll(() => readCommunityOnboardingTransaction(page))
+      .toMatchObject({
+        id: transactionId,
+        stage: "corporate-profile",
+        initAttempt: 1,
+      });
+    snapshots.push(
+      await captureProfileUpdateGenerationSnapshot(page, "reopen applied"),
+    );
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROFILE_UPDATES_PENDING__?.() ?? 0,
+        ),
+      )
+      .toBeGreaterThanOrEqual(2);
+    snapshots.push(
+      await captureProfileUpdateGenerationSnapshot(page, "B queued"),
+    );
+
+    const releasedA = await releaseOneProfileUpdateAndWaitForSettlement(page);
+    expect(releasedA).toBe(1);
+    snapshots.push(
+      await captureProfileUpdateGenerationSnapshot(page, "A released/settled"),
+    );
+    await expect
+      .poll(() => readCommunityOnboardingTransaction(page))
+      .toMatchObject({
+        id: transactionId,
+        stage: "corporate-profile",
+        initAttempt: 1,
+      });
+    await expect(page.getByText(staleError)).toHaveCount(0);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROFILE_UPDATE_PENDING_ORDINALS__?.() ?? [],
+        ),
+      )
+      .toContain(2);
+
+    const releasedB = await releaseOneProfileUpdateAndWaitForSettlement(page);
+    expect(releasedB).toBe(2);
+    snapshots.push(
+      await captureProfileUpdateGenerationSnapshot(page, "B released/settled"),
+    );
+    await expect(
+      page.getByRole("heading", { name: "Meet your starter team" }),
+    ).toBeVisible();
+    await expect
+      .poll(() => readCommunityOnboardingTransaction(page))
+      .toMatchObject({
+        id: transactionId,
+        stage: "team-intro",
+        initAttempt: 1,
+      });
+  } finally {
+    await attachProfileUpdateGenerationSnapshots(
+      page,
+      testInfo,
+      "profile-save-generation-rejection-diagnostics",
+      snapshots,
+    );
+  }
 });
 
 test("returning enterprise user can cancel pending browser login and retry into the app", async ({

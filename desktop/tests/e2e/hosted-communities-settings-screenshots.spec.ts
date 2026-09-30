@@ -94,6 +94,7 @@ async function openDeletionFixture(
     mismatch?: boolean;
     errorCode?: string;
     errorSequence?: Array<{ code: string; message?: string } | null>;
+    rejectSequence?: boolean[];
     statusSequence?: string[];
     capabilitySequence?: boolean[];
     quota?: { used: number; limit: number; canCreate: boolean };
@@ -124,6 +125,7 @@ async function openDeletionFixture(
       ? { code: options.errorCode, message: "mock deletion error" }
       : undefined,
     builderlabDeletionErrorSequence: options.errorSequence,
+    builderlabDeletionRejectSequence: options.rejectSequence,
     builderlabDeletionStatusSequence: options.statusSequence,
     builderlabDeletionHttpStatusSequence: options.httpStatusSequence,
     builderlabDeletionBodyStatus: options.bodyStatus,
@@ -150,6 +152,23 @@ async function startArchivedDeletion(page: Page) {
   await page
     .getByLabel(`Type the exact host to continue: ${exactHost}`)
     .fill(exactHost);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page
+    .getByRole("button", { name: "Delete community permanently" })
+    .click();
+}
+
+async function startSecondArchivedDeletion(page: Page) {
+  await page
+    .getByTestId("hosted-community-row")
+    .filter({ hasText: "Second archived team" })
+    .getByRole("button", { name: "Delete", exact: true })
+    .click();
+  await page
+    .getByLabel(
+      `Type the exact host to continue: ${SECOND_ARCHIVED.normalized_host}`,
+    )
+    .fill(SECOND_ARCHIVED.normalized_host);
   await page.getByRole("button", { name: "Continue" }).click();
   await page
     .getByRole("button", { name: "Delete community permanently" })
@@ -1036,20 +1055,7 @@ test("Refresh restores only the aborted row while another accepted deletion rema
   await expect(
     page.getByText("Deletion started", { exact: true }),
   ).toBeVisible();
-  await page
-    .getByTestId("hosted-community-row")
-    .filter({ hasText: "Second archived team" })
-    .getByRole("button", { name: "Delete", exact: true })
-    .click();
-  await page
-    .getByLabel(
-      `Type the exact host to continue: ${SECOND_ARCHIVED.normalized_host}`,
-    )
-    .fill(SECOND_ARCHIVED.normalized_host);
-  await page.getByRole("button", { name: "Continue" }).click();
-  await page
-    .getByRole("button", { name: "Delete community permanently" })
-    .click();
+  await startSecondArchivedDeletion(page);
   await expect.poll(() => deletionPayloads(page)).toHaveLength(2);
   const acceptedCalls = await deletionPayloads(page);
   await expect(
@@ -1082,15 +1088,99 @@ test("Refresh restores only the aborted row while another accepted deletion rema
     ]);
 });
 
+test("Refresh restores an earlier abort when a later replay rejects", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, {
+    capability: true,
+    communities: [...DELETION_COMMUNITIES, SECOND_ARCHIVED],
+    quota: { used: 3, limit: 5, canCreate: true },
+    statusSequence: ["submitted", "submitted", "aborted"],
+    rejectSequence: [false, false, false, true],
+  });
+  await startArchivedDeletion(page);
+  await startSecondArchivedDeletion(page);
+  await expect.poll(() => deletionPayloads(page)).toHaveLength(2);
+  const acceptedCalls = await deletionPayloads(page);
+
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(
+    page.getByText("Mock deletion transport failure", { exact: true }),
+  ).toBeVisible();
+  const firstRow = page
+    .getByTestId("hosted-community-row")
+    .filter({ hasText: "Archived team" })
+    .filter({ hasNotText: "Second archived team" });
+  await expect(firstRow).toBeVisible();
+  await expect(
+    firstRow.getByRole("button", { name: "Delete", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page
+      .getByTestId("hosted-community-row")
+      .filter({ hasText: "Second archived team" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Deletion started", { exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() => deletionPayloads(page))
+    .toEqual([
+      acceptedCalls?.[0],
+      acceptedCalls?.[1],
+      acceptedCalls?.[0],
+      acceptedCalls?.[1],
+    ]);
+});
+
+test("Refresh restores an earlier abort when a later capability check fails", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, {
+    capability: true,
+    capabilitySequence: [true, true, true, false],
+    communities: [...DELETION_COMMUNITIES, SECOND_ARCHIVED],
+    quota: { used: 3, limit: 5, canCreate: true },
+    statusSequence: ["submitted", "submitted", "aborted"],
+  });
+  await startArchivedDeletion(page);
+  await startSecondArchivedDeletion(page);
+  await expect.poll(() => deletionPayloads(page)).toHaveLength(2);
+  const acceptedCalls = await deletionPayloads(page);
+
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
+  const firstRow = page
+    .getByTestId("hosted-community-row")
+    .filter({ hasText: "Archived team" })
+    .filter({ hasNotText: "Second archived team" });
+  await expect(firstRow).toBeVisible();
+  await expect(
+    page
+      .getByTestId("hosted-community-row")
+      .filter({ hasText: "Second archived team" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Deletion started", { exact: true }),
+  ).toBeVisible();
+  expect(await deletionPayloads(page)).toEqual([
+    acceptedCalls?.[0],
+    acceptedCalls?.[1],
+    acceptedCalls?.[0],
+  ]);
+});
+
 for (const scenario of [
   { name: "non-aborted stage", statusSequence: ["submitted", "approved"] },
   {
     name: "uncertain 503",
     errorSequence: [null, { code: "acceptance_unknown" }],
+    expectsCheckError: true,
   },
   {
     name: "error-only 409",
     errorSequence: [null, { code: "deletion_aborted" }],
+    expectsCheckError: true,
   },
 ]) {
   test(`Refresh keeps an accepted row hidden after ${scenario.name}`, async ({
@@ -1123,6 +1213,14 @@ for (const scenario of [
         exact: true,
       }),
     ).toHaveCount(0);
+    const checkError = page.getByText("Couldn't check deletion status.", {
+      exact: true,
+    });
+    if (scenario.expectsCheckError) {
+      await expect(checkError).toBeVisible();
+    } else {
+      await expect(checkError).toHaveCount(0);
+    }
   });
 }
 

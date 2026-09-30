@@ -265,6 +265,7 @@ type E2eConfig = {
       code: string;
       message?: string;
     } | null>;
+    builderlabDeletionRejectSequence?: boolean[];
     builderlabDeletionStatusSequence?: string[];
     builderlabDeletionHttpStatusSequence?: number[];
     builderlabDeletionBodyStatus?: number;
@@ -12663,6 +12664,16 @@ export function maybeInstallE2eTauriMocks() {
           await new Promise<void>((resolve) => {
             heldBuilderlabDeletionReleases.push(resolve);
           });
+        }
+        const rejectSequence =
+          activeConfig?.mock?.builderlabDeletionRejectSequence;
+        if (
+          rejectSequence?.length &&
+          (rejectSequence.length > 1
+            ? rejectSequence.shift()
+            : rejectSequence[0])
+        ) {
+          throw new Error("Mock deletion transport failure");
         }
         const sequence = activeConfig?.mock?.builderlabDeletionErrorSequence;
         const deletionError = sequence?.length

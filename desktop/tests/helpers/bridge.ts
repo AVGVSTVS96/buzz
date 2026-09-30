@@ -196,6 +196,7 @@ type MockBridgeOptions = {
     code: string;
     message?: string;
   } | null>;
+  builderlabDeletionRejectSequence?: boolean[];
   builderlabDeletionStatusSequence?: string[];
   builderlabDeletionHttpStatusSequence?: number[];
   builderlabDeletionBodyStatus?: number;

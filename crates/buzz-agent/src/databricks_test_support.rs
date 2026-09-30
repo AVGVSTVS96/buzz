@@ -28,16 +28,13 @@ impl Request {
 }
 pub(super) enum Reply {
     Json(u16, serde_json::Value),
-    #[cfg(unix)]
     Raw(String),
-    #[cfg(unix)]
     Stall,
 }
 pub(super) struct Server {
     pub base: String,
     pub cert: Option<reqwest::Certificate>,
     pub requests: Arc<Mutex<Vec<Request>>>,
-    #[cfg_attr(not(unix), allow(dead_code))]
     pub active: Arc<AtomicUsize>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -124,7 +121,6 @@ impl Server {
             .filter(|r| r.path.starts_with(path))
             .count()
     }
-    #[cfg(unix)]
     pub async fn wait_for(&self, path: &str) {
         tokio::time::timeout(Duration::from_secs(3), async {
             while self.count(path) == 0 {
@@ -203,9 +199,7 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
             let body = body.to_string();
             format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
         }
-        #[cfg(unix)]
         Reply::Raw(raw) => raw,
-        #[cfg(unix)]
         Reply::Stall => {
             // Send headers, then stall the body until the client cancels.
             let _ = stream
@@ -268,7 +262,6 @@ pub(super) fn discovery(base: &str) -> Reply {
         serde_json::json!({"authorization_endpoint": format!("{base}/authorize"), "token_endpoint": format!("{base}/token")}),
     )
 }
-#[cfg(unix)]
 pub(super) fn seed(root: &Path, base: &str, namespace: &str, token: &str, expired: bool) {
     use sha2::{Digest, Sha256};
     let key = format!(
@@ -278,7 +271,6 @@ pub(super) fn seed(root: &Path, base: &str, namespace: &str, token: &str, expire
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(format!("{}.json", hex::encode(Sha256::digest(key)))), serde_json::json!({"access_token": token, "refresh_token": "synthetic-refresh", "expires_at": if expired { 1 } else { 4_000_000_000u64 }}).to_string()).unwrap();
 }
-#[cfg(unix)]
 pub(super) fn chunked(status: u16, body: &str) -> Reply {
     Reply::Raw(format!("HTTP/1.1 {status} Test\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n", body.len()))
 }

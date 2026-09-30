@@ -1018,6 +1018,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "buzz-private-file",
  "dirs",
  "fs2",
  "getrandom 0.4.3",
@@ -1359,6 +1360,14 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "buzz-private-file"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -146,35 +146,19 @@ enum RefreshMode {
     Reject,
     /// `500` — a provider-side fault, transient rather than a credential
     /// decision.
-    ///
-    /// Used only by Unix-only tests (refresh-error classification).
-    /// Gated to suppress dead-code warnings on Windows.
-    #[cfg(unix)]
     ServerError,
     /// A 4xx with the given OAuth `error` code in the body. Lets a test assert
     /// the coordinator treats `invalid_grant` (any 4xx) as a dead grant, but
     /// every other error code — and any non-`invalid_grant` status like `429`
     /// — as infrastructural rather than a credential rejection.
-    ///
-    /// Used only by Unix-only tests (refresh-error classification).
-    /// Gated to suppress dead-code warnings on Windows.
-    #[cfg(unix)]
     ClientError(axum::http::StatusCode, &'static str),
     /// Sleep `d` before answering, so the caller's per-request HTTP timeout
     /// elapses first (a transport timeout, not a verdict from the provider).
-    ///
-    /// Used only by Unix-only tests (refresh-timeout classification).
-    /// Gated to suppress dead-code warnings on Windows.
-    #[cfg(unix)]
     Hang(Duration),
     /// `200` returning the same fixed access token on every grant, regardless
     /// of how many are served. Models a provider that re-issues an identical
     /// access token, so a bounded rerun can hand back the exact bytes the
     /// caller already reported 401-rejected.
-    ///
-    /// Used only by Unix-only tests (rejected-token neutralization, sticky
-    /// reissuance). Gated to suppress dead-code warnings on Windows.
-    #[cfg(unix)]
     SucceedSticky(&'static str),
 }
 
@@ -201,10 +185,6 @@ enum ExchangeMode {
     /// exchange. Models a provider that re-issues an identical access token, so
     /// a browser sign-in (reached after a dead refresh) can hand back the exact
     /// bytes the caller reported 401-rejected.
-    ///
-    /// Used only by Unix-only tests (sticky browser exchange after dead refresh).
-    /// Gated to suppress dead-code warnings on Windows.
-    #[cfg(unix)]
     SucceedSticky(&'static str),
 }
 
@@ -274,7 +254,6 @@ async fn spawn_stub_with_modes(refresh: RefreshMode, exchange: ExchangeMode) -> 
                         // A hang delays the answer so the caller's per-request
                         // HTTP timeout can elapse first (transport timeout, not
                         // a credential decision).
-                        #[cfg(unix)]
                         if let RefreshMode::Hang(d) = refresh {
                             tokio::time::sleep(d).await;
                         }
@@ -283,12 +262,10 @@ async fn spawn_stub_with_modes(refresh: RefreshMode, exchange: ExchangeMode) -> 
                                 axum::http::StatusCode::UNAUTHORIZED,
                                 Json(json!({ "error": "invalid_grant" })),
                             ),
-                            #[cfg(unix)]
                             RefreshMode::ServerError => (
                                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                                 Json(json!({ "error": "temporarily_unavailable" })),
                             ),
-                            #[cfg(unix)]
                             RefreshMode::ClientError(status, error) => {
                                 (status, Json(json!({ "error": error })))
                             }
@@ -300,7 +277,6 @@ async fn spawn_stub_with_modes(refresh: RefreshMode, exchange: ExchangeMode) -> 
                                     "expires_in": 3600,
                                 })),
                             ),
-                            #[cfg(unix)]
                             RefreshMode::Hang(_) => (
                                 axum::http::StatusCode::OK,
                                 Json(json!({
@@ -309,7 +285,6 @@ async fn spawn_stub_with_modes(refresh: RefreshMode, exchange: ExchangeMode) -> 
                                     "expires_in": 3600,
                                 })),
                             ),
-                            #[cfg(unix)]
                             RefreshMode::SucceedSticky(tok) => (
                                 axum::http::StatusCode::OK,
                                 Json(json!({
@@ -343,7 +318,6 @@ async fn spawn_stub_with_modes(refresh: RefreshMode, exchange: ExchangeMode) -> 
                             axum::http::StatusCode::OK,
                             Json(json!({ "token_type": "bearer" })),
                         ),
-                        #[cfg(unix)]
                         ExchangeMode::SucceedSticky(tok) => (
                             axum::http::StatusCode::OK,
                             Json(json!({
@@ -383,7 +357,6 @@ async fn spawn_stub_with_modes(refresh: RefreshMode, exchange: ExchangeMode) -> 
 /// deterministic ordering: the parent waits for `request_received` (proves A
 /// holds the lock and is mid-refresh), then spawns B, waits for B's snapshot
 /// marker, and finally calls `release()` before joining both workers.
-#[cfg(unix)]
 struct RefreshGate {
     /// Notified by the stub once it has received the first refresh request.
     request_received: Arc<tokio::sync::Notify>,
@@ -391,7 +364,6 @@ struct RefreshGate {
     proceed: Arc<tokio::sync::Notify>,
 }
 
-#[cfg(unix)]
 impl RefreshGate {
     /// Asynchronously wait until the stub has received A's refresh request.
     async fn wait_for_request(&self) {
@@ -408,7 +380,6 @@ impl RefreshGate {
 ///
 /// - `Sticky(tok)` — every refresh returns `200 OK` with `access_token: tok`.
 /// - `Reject` — every refresh returns `401 Unauthorized` with `invalid_grant`.
-#[cfg(unix)]
 enum HeldRefreshResponse {
     Sticky(&'static str),
     Reject,
@@ -422,7 +393,6 @@ enum HeldRefreshResponse {
 ///
 /// Returns the stub (for `refresh_grants` / `code_grants` assertions) and the
 /// control gate. Used by the cross-process held-refresh tests.
-#[cfg(unix)]
 async fn spawn_stub_with_held_refresh(response: HeldRefreshResponse) -> (Stub, RefreshGate) {
     let code_grants = Arc::new(AtomicU64::new(0));
     let refresh_grants = Arc::new(AtomicU64::new(0));
@@ -569,7 +539,6 @@ fn attempt_sidecar_path(cfg: &PkceOAuthConfig, cache_dir: &std::path::Path) -> s
 /// coordinator's `append_ext(cache_path, "lock")`. Used to point the
 /// out-of-process lock-holder helper at the exact file the coordinator
 /// contends on.
-#[cfg(unix)]
 fn lock_file_path(cfg: &PkceOAuthConfig, cache_dir: &std::path::Path) -> std::path::PathBuf {
     let mut p = cache_file_path(cfg, cache_dir).into_os_string();
     p.push(".lock");
@@ -780,7 +749,6 @@ async fn test_browser_open_failure_is_typed_and_retryable_by_user() {
     assert_eq!(approve_opener.call_count(), 1);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_headless_dead_refresh_returns_refresh_rejected_without_browser() {
     let stub = spawn_stub(true).await; // refresh grants 401
@@ -816,7 +784,6 @@ async fn test_headless_dead_refresh_returns_refresh_rejected_without_browser() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_interactive_dead_refresh_converts_to_browser() {
     let stub = spawn_stub(true).await; // refresh grants 401
@@ -847,7 +814,6 @@ async fn test_interactive_dead_refresh_converts_to_browser() {
     assert_eq!(stub.code_grants.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_headless_expired_token_live_refresh_recovers_silently() {
     let stub = spawn_stub(false).await; // refresh succeeds
@@ -875,7 +841,6 @@ async fn test_headless_expired_token_live_refresh_recovers_silently() {
     assert_eq!(stub.refresh_grants.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_interactive_login_reuses_valid_cache_without_browser() {
     let stub = spawn_stub(false).await;
@@ -918,7 +883,6 @@ async fn test_interactive_login_reuses_valid_cache_without_browser() {
 
 /// Seed a not-yet-expired access token with a (dead) refresh token and return
 /// the access token so the caller can pass it as `rejected`.
-#[cfg(unix)]
 fn seed_fresh_rejectable(cfg: &PkceOAuthConfig, cache_dir: &std::path::Path) -> String {
     let access = "fresh-but-rejected";
     seed_cache(
@@ -933,7 +897,6 @@ fn seed_fresh_rejectable(cfg: &PkceOAuthConfig, cache_dir: &std::path::Path) -> 
     access.to_string()
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_auto_rejected_fresh_bearer_with_dead_refresh_launches_browser() {
     let stub = spawn_stub(true).await; // refresh grants 401
@@ -957,7 +920,6 @@ async fn test_auto_rejected_fresh_bearer_with_dead_refresh_launches_browser() {
     assert_eq!(stub.code_grants.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_headless_rejected_fresh_bearer_with_dead_refresh_returns_refresh_rejected() {
     let stub = spawn_stub(true).await; // refresh grants 401
@@ -989,7 +951,6 @@ async fn test_headless_rejected_fresh_bearer_with_dead_refresh_returns_refresh_r
 // `RefreshRejected`, which would misreport a transient fault as a rotated
 // token and (for interactive intents) prompt a needless sign-in.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_refresh_timeout_is_network_unavailable_not_rejected() {
     // The token endpoint hangs far longer than the injected per-request HTTP
@@ -1043,7 +1004,6 @@ async fn test_refresh_timeout_is_network_unavailable_not_rejected() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_refresh_server_error_is_network_unavailable_not_rejected() {
     let stub = spawn_stub_with(RefreshMode::ServerError).await; // refresh 500s
@@ -1091,7 +1051,6 @@ async fn test_refresh_server_error_is_network_unavailable_not_rejected() {
 // and never pop a browser. The classifier keys on the OAuth error body, not
 // the bare status class.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_refresh_400_invalid_grant_is_dead_grant_not_network() {
     // A 400 (not just 401) carrying `invalid_grant` is still a dead refresh
@@ -1127,7 +1086,6 @@ async fn test_refresh_400_invalid_grant_is_dead_grant_not_network() {
     assert_eq!(stub.refresh_grants.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_refresh_non_invalid_grant_4xx_is_network_unavailable_not_rejected() {
     // Every 4xx whose OAuth body is NOT `invalid_grant` is a request/config or
@@ -1300,7 +1258,6 @@ async fn test_userinitiated_joiner_does_not_inherit_auto_cooldown_result() {
 // dead. The joiner must instead detect the collision and run its own bounded
 // acquisition, obtaining a token that differs from its `rejected`.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_joiner_never_receives_its_own_rejected_token() {
     // Two concurrent `Headless` 401-recovery callers on one key, each rejecting
@@ -1384,7 +1341,6 @@ async fn test_joiner_never_receives_its_own_rejected_token() {
 // this rerun terminate with a typed auth error before caching the rejected
 // token rather than returning it.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_joiner_rerun_reissuing_rejected_token_fails_typed_not_loop() {
     // A sticky provider returns ONE fixed access token on every refresh. Leader
@@ -1456,7 +1412,6 @@ async fn test_joiner_rerun_reissuing_rejected_token_fails_typed_not_loop() {
 // Concrete scenario: A rejected X, refresh re-issues X → A gets RefreshRejected.
 // B rejected Y (different), refresh would yield X for B → B succeeds.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_joiner_with_different_rejected_does_not_inherit_leaders_rejection_failure() {
     // Sticky provider always returns "X" on every refresh grant.
@@ -1525,16 +1480,10 @@ async fn test_joiner_with_different_rejected_does_not_inherit_leaders_rejection_
 //     token X rather than the just-acquired Y (memory won over disk).
 //   - failure: B's matching rejected X remained live; its next `bearer()` still
 //     served it.
-//   - no-persistence (Windows): B's state stayed empty; its next headless read
-//     returned `NoCredential` instead of Y and a second browser opened.
 //
-// All three tests exercise the full `finish()` → `acquire_locked()` →
+// Both tests exercise the full `finish()` → `acquire_locked()` →
 // `acquire_leader()` → `LeaderGuard::complete()` → joiner wiring.
 
-// Unix-specific: the seed provides a live refresh token. The non-Unix constructor
-// does not read the disk cache, so without a seed in memory A's headless path
-// returns NoCredential rather than RefreshRejected.
-#[cfg(unix)]
 #[tokio::test]
 async fn test_inprocess_joiner_reconciles_stale_state_after_shared_success() {
     // Scenario: A and B both loaded a locally-fresh-but-401'd token X. A leads,
@@ -1618,8 +1567,6 @@ async fn test_inprocess_joiner_reconciles_stale_state_after_shared_success() {
     );
 }
 
-// Unix-specific: refresh token is required for a headless rejection path.
-#[cfg(unix)]
 #[tokio::test]
 async fn test_inprocess_joiner_neutralizes_rejected_on_matching_shared_failure() {
     // Scenario: A and B both carry unexpired X as their rejected token. A leads,
@@ -1686,90 +1633,6 @@ async fn test_inprocess_joiner_neutralizes_rejected_on_matching_shared_failure()
     );
 }
 
-// Non-Unix-specific: disk persistence is disabled on Windows, so the only way
-// for B to retain Y after joining is in-memory state reconciliation. On Unix
-// the disk can provide Y as a fallback, masking a reconciliation failure.
-#[cfg(not(unix))]
-#[tokio::test]
-async fn test_inprocess_joiner_populates_empty_state_no_second_acquisition() {
-    // Scenario: A and B both start with empty state (no disk token on non-Unix).
-    // A leads, opens a browser, exchanges the code for Y. B joins A's slot and
-    // wakes to Ok(Y). Without reconciliation, B.state stays None. B's next
-    // headless acquire returns NoCredential instead of Y, and a second browser
-    // would open if UserInitiated.
-    //
-    // Mutation check (no state reconciliation): B.state stays None. The
-    // subsequent headless acquire on B returns Err(NoCredential) instead of
-    // Ok("browser-token-1") — the assertion FAILS.
-    let stub = spawn_stub(false).await;
-    let cache = TempDir::new().unwrap();
-    let approve = ScriptedOpener::new(Script::Approve);
-
-    let a = PkceOAuthTokenSource::new_with(
-        config(&stub, "/disco/a", cache.path()),
-        Arc::new(approve.clone()),
-    )
-    .unwrap();
-    let b = PkceOAuthTokenSource::new_with(
-        config(&stub, "/disco/a", cache.path()),
-        Arc::new(approve.clone()),
-    )
-    .unwrap();
-
-    // Both start with empty state — UserInitiated falls through to a browser.
-    let (ra, rb) = tokio::join!(
-        a.acquire_with_intent(AuthIntent::UserInitiated, None),
-        b.acquire_with_intent(AuthIntent::UserInitiated, None),
-    );
-
-    assert_eq!(
-        ra,
-        Ok("browser-token-1".to_string()),
-        "leader (A) gets the browser token"
-    );
-    assert_eq!(
-        rb,
-        Ok("browser-token-1".to_string()),
-        "joiner (B) shares the leader's browser token"
-    );
-    assert_eq!(
-        approve.call_count(),
-        1,
-        "exactly one browser opened — B joined rather than launching its own"
-    );
-    assert_eq!(
-        stub.code_grants.load(Ordering::SeqCst),
-        1,
-        "exactly one authorization-code exchange"
-    );
-
-    // B's subsequent headless acquire must return Y from in-memory state without
-    // a second browser. Without reconciliation, B.state is None and headless
-    // returns NoCredential (no disk fallback on non-Unix).
-    let rb_next = b
-        .acquire_with_intent(AuthIntent::Headless, None)
-        .await
-        .expect(
-            "B subsequent headless read must return Y from in-memory state, not NoCredential — \
-             mutation check: fails if joiner state was not reconciled (bearer-only publication)",
-        );
-    assert_eq!(
-        rb_next, "browser-token-1",
-        "B retains Y in memory for subsequent headless reads"
-    );
-    // No second browser: B's subsequent read hit the in-memory cache.
-    assert_eq!(
-        approve.call_count(),
-        1,
-        "no second browser opened — B's subsequent headless read hit the in-memory cache"
-    );
-    assert_eq!(
-        stub.code_grants.load(Ordering::SeqCst),
-        1,
-        "no second code exchange"
-    );
-}
-
 // ---- a browser success that re-issues the rejected bytes must fail typed ---
 //
 // The 401-recovery invariant lives at `finish`'s persistence boundary, so it
@@ -1781,7 +1644,6 @@ async fn test_inprocess_joiner_populates_empty_state_no_second_acquisition() {
 // bearer. A single interactive leader exercises the path; the colliding-joiner
 // rerun routes through the same boundary.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_interactive_browser_reissuing_rejected_token_fails_typed_not_loop() {
     // Refresh 401s (dead), so an interactive intent falls through to the
@@ -1843,7 +1705,6 @@ async fn test_interactive_browser_reissuing_rejected_token_fails_typed_not_loop(
 // prove the cache is untouched after the typed failure, on both the refresh and
 // the browser re-issue paths.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_sticky_refresh_rejection_does_not_poison_cache_for_later_callers() {
     // A sticky provider re-issues `sticky-token` on every refresh. A caller that
@@ -1901,7 +1762,6 @@ async fn test_sticky_refresh_rejection_does_not_poison_cache_for_later_callers()
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_sticky_browser_rejection_does_not_poison_cache_for_later_callers() {
     // Refresh is dead, so an interactive caller browses; the exchange stickily
@@ -1976,7 +1836,6 @@ async fn test_sticky_browser_rejection_does_not_poison_cache_for_later_callers()
 // it rejected, so no future caller and no fresh process can serve it, while the
 // refresh token — not rejected, and the engine of recovery — stays intact.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_rejected_fresh_token_is_neutralized_for_a_fresh_process() {
     // The cached access token `A` is locally UNEXPIRED, and the provider
@@ -2046,7 +1905,6 @@ async fn test_rejected_fresh_token_is_neutralized_for_a_fresh_process() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_rejected_fresh_token_is_neutralized_for_the_same_source() {
     // The in-memory layer of the same neutralization: after the SAME source
@@ -2092,7 +1950,6 @@ async fn test_rejected_fresh_token_is_neutralized_for_the_same_source() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_rejected_fresh_token_neutralized_when_recovery_browses() {
     // The browser variant: `A` is unexpired but its refresh token is dead, so
@@ -2282,7 +2139,6 @@ async fn test_rejected_token_disk_neutralization_neutralizes_in_place_when_paren
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_rejected_token_in_memory_neutralized_when_disk_neutralization_skipped() {
     // When `expire_rejected()` cannot read a matching disk entry (e.g. the cache
@@ -2358,7 +2214,6 @@ async fn test_rejected_token_in_memory_neutralized_when_disk_neutralization_skip
 // must NOT be served as the replacement: doing so would skip the refresh the
 // 401 demanded and hand back a token the provider will also reject.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_rejected_recovery_skips_expired_sibling_and_refreshes() {
     let stub = spawn_stub(false).await; // refresh succeeds
@@ -2540,7 +2395,6 @@ async fn test_exchange_timeout_is_network_unavailable_not_cooldown() {
 // crash mid-flow, and the kernel's release of the advisory lock is what lets
 // the coordinator's successor proceed with no PID files and no lock breaking.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_crossprocess_lock_holder_blocks_then_crash_release_lets_successor_proceed() {
     let stub = spawn_stub(false).await; // refresh succeeds once the lock is free
@@ -2634,7 +2488,6 @@ struct Worker {
 #[derive(Deserialize)]
 struct WorkerOutcome {
     result: String,
-    #[cfg(unix)]
     bearer: Option<String>,
     launches: u64,
 }
@@ -2761,7 +2614,6 @@ async fn test_crossprocess_userinitiated_denial_shared_with_waiting_auto() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_crossprocess_two_coordinators_race_to_one_grant_and_cache() {
     // Two real coordinator processes race on one key from a cold cache. They
@@ -2852,7 +2704,6 @@ async fn test_crossprocess_two_coordinators_race_to_one_grant_and_cache() {
 // second process detect that the predecessor completed while it was waiting
 // and adopt its failure directly.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_crossprocess_waiting_headless_adopts_predecessor_refresh_rejected() {
     // Two real headless processes on one key. The cache holds an expired
@@ -3088,9 +2939,6 @@ async fn test_crossprocess_post_failure_userinitiated_runs_own_attempt() {
 //   6. C (UserInitiated, approve-scripted) starts fresh. C's snapshot == gen
 //      on disk (1 with fix, 2 with mutation). In both cases C sees no advance
 //      and runs its own browser flow. code_grants increments by 1 for C.
-//
-// This test is cache-free (no seed_cache / disk-token assertions) so it runs
-// on Windows as well as Unix.
 
 #[tokio::test]
 async fn test_crossprocess_adopter_does_not_advance_generation() {
@@ -3215,7 +3063,6 @@ async fn test_crossprocess_adopter_does_not_advance_generation() {
 // Mutation check (no digest gating): B adopts A's RefreshRejected →
 // refresh_grants stays at 1 → `refresh_grants == 2` assertion FAILS.
 
-#[cfg(unix)]
 #[tokio::test]
 async fn test_crossprocess_waiter_with_different_rejected_does_not_adopt_leaders_failure() {
     // Stub stickily returns "X" but holds each response until released.
@@ -3315,96 +3162,4 @@ async fn test_crossprocess_waiter_with_different_rejected_does_not_adopt_leaders
         2,
         "both workers run their own refresh — digest mismatch prevented adoption"
     );
-}
-
-// ---- P1-3 non-Unix read path disabled -----------------------------------
-//
-// On non-Unix platforms (Windows) token files written by older builds with
-// default ACLs should not be consumed by new builds. `read_private_cache`
-// returns an error on non-Unix (and opportunistically removes the legacy
-// file), so `read_cache` yields `None` and the source behaves as if no
-// cached token exists — memory-only cache on non-Unix.
-//
-// This test uses a cfg-gated stub: on Unix it only exercises the Unix read
-// path (as a sanity check); the Windows behavior is proved by the
-// `#[cfg(not(unix))]` branch of `read_private_cache` and verified by the
-// Windows CI build + manual testing on the Windows runner. The test is written
-// to compile on all platforms and asserts the platform-appropriate invariant.
-
-#[tokio::test]
-async fn test_non_unix_does_not_serve_legacy_on_disk_token() {
-    // Seed a token that would be served from disk on Unix (unexpired, valid).
-    let stub = spawn_stub(false).await; // fresh token on refresh/browser
-    let cache = TempDir::new().unwrap();
-    let opener = ScriptedOpener::new(Script::Approve);
-    let cfg = config(&stub, "/disco/a", cache.path());
-
-    seed_cache(
-        &cfg,
-        cache.path(),
-        json!({
-            "access_token": "legacy-windows-token",
-            "refresh_token": "legacy-refresh",
-            "expires_at": future_secs(),
-        }),
-    );
-
-    let src = PkceOAuthTokenSource::new_with(cfg.clone(), Arc::new(opener.clone())).unwrap();
-
-    #[cfg(unix)]
-    {
-        // On Unix the cache is read and served directly from disk — this is the
-        // expected behavior on a secured platform.
-        let token = src
-            .acquire_with_intent(AuthIntent::Headless, None)
-            .await
-            .expect("Unix serves the seeded token from disk");
-        assert_eq!(token, "legacy-windows-token", "Unix: disk token served");
-        assert_eq!(
-            stub.refresh_grants.load(Ordering::SeqCst),
-            0,
-            "Unix: no refresh — the disk token was served directly"
-        );
-        // The seeded file is still on disk (not removed on Unix).
-        assert!(
-            cache_file_path(&cfg, cache.path()).exists(),
-            "Unix: the cache file is preserved"
-        );
-    }
-
-    #[cfg(not(unix))]
-    {
-        // On non-Unix `read_private_cache` refuses to read the legacy file and
-        // attempts to remove it. Construction and bearer() behave as if no cache
-        // exists — the source falls through to a browser flow.
-        let token = src
-            .acquire_with_intent(AuthIntent::Auto, None)
-            .await
-            .expect("non-Unix: browser flow succeeds (no disk token served)");
-        assert_ne!(
-            token, "legacy-windows-token",
-            "non-Unix: legacy token must not be served from disk"
-        );
-        assert_eq!(
-            stub.code_grants.load(Ordering::SeqCst),
-            1,
-            "non-Unix: browser flow ran — disk token was not served"
-        );
-        assert_eq!(
-            stub.refresh_grants.load(Ordering::SeqCst),
-            0,
-            "non-Unix: no refresh grant — the source went straight to the browser flow"
-        );
-        // The legacy file should have been removed by read_private_cache.
-        assert!(
-            !cache_file_path(&cfg, cache.path()).exists(),
-            "non-Unix: legacy cache file is removed by read_private_cache"
-        );
-        // No new token file was written (persist is a no-op on non-Unix).
-        // (The token is held in memory only.)
-        assert!(
-            !cache_file_path(&cfg, cache.path()).exists(),
-            "non-Unix: no new cache file created (memory-only)"
-        );
-    }
 }

@@ -36,8 +36,8 @@ impl DatabricksConnection {
     /// `workspace` must be an HTTPS origin (optional trailing slash), without
     /// userinfo, query or fragment. `cache_root` must be absolute and owned by
     /// this app; a separate `databricks-strict` namespace prevents accidental
-    /// coalescing with legacy auth. Unix token files retain owner-only atomic
-    /// persistence; on non-Unix the existing engine keeps credentials in memory.
+    /// coalescing with legacy auth. Token files keep owner-only atomic
+    /// persistence.
     /// The opener must not log the authorization URL or its own error details.
     pub fn new(
         workspace: &str,

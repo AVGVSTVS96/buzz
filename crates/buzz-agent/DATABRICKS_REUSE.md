@@ -18,8 +18,9 @@ without running an agent, ACP, a CLI subprocess or any runtime configuration.
 - The caller chooses and exclusively owns its cache root BEFORE construction.
   `databricks-strict` separates strict state from legacy `databricks` caches and
   single-flight coordination even if roots coincide. It is not credential
-  migration. Existing host/client/scopes hash and Unix owner-only atomic token
-  persistence remain. Non-Unix token persistence remains disabled.
+  migration. Existing host/client/scopes hash and owner-only atomic token
+  persistence remain: mode `0600` on Unix, a protected owner-only DACL on
+  Windows.
 - Keep secrets native. The supplied opener must not log authorization URLs or
   its failure details. Drop the operation future to cancel actual requests and
   the callback listener. Set an app-level overall deadline, generation-fence

@@ -1,8 +1,6 @@
 use super::*;
-#[cfg(unix)]
 use crate::auth::TokenSource;
 use serde_json::json;
-#[cfg(unix)]
 use std::sync::atomic::Ordering;
 
 #[path = "databricks_test_support.rs"]
@@ -12,7 +10,6 @@ use support::*;
 fn strict(server: &Server, root: &Path, opener: Arc<Opener>) -> DatabricksConnection {
     DatabricksConnection::build(&server.base, root, opener, server.builder()).unwrap()
 }
-#[cfg(unix)]
 fn legacy(server: &Server, root: &Path, opener: Arc<Opener>) -> Arc<PkceOAuthTokenSource> {
     PkceOAuthTokenSource::new_with(
         crate::llm::databricks_pkce_config(&server.base, Some(root.into())),
@@ -74,7 +71,6 @@ async fn strict_headless_empty_never_networks_or_browses() {
     assert!(opener.urls.lock().unwrap().is_empty());
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn strict_rejects_discovered_endpoints_before_grants_or_browser() {
     let sink = Server::start(true, |_, _| {
@@ -204,7 +200,6 @@ async fn strict_connect_code_exchange_catalog_and_headless_401_refresh() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn strict_never_follows_discovery_token_or_catalog_redirects() {
     let sink = Server::start(true, |_, _| {
@@ -274,7 +269,6 @@ async fn strict_never_follows_discovery_token_or_catalog_redirects() {
     assert_eq!(sink.count("/control"), 1);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn strict_catalog_preserves_empty_filter_partial_and_paging_semantics() {
     for scenario in ["empty", "filtered-empty", "partial", "pages"] {
@@ -323,7 +317,6 @@ async fn strict_catalog_preserves_empty_filter_partial_and_paging_semantics() {
     }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn strict_cancellation_drops_real_http_work_and_allows_retry() {
     for stage in ["discovery", "refresh", "exchange", "catalog"] {
@@ -432,7 +425,6 @@ async fn strict_browser_wait_cancellation_releases_callback_listener() {
     .unwrap();
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn legacy_different_origin_endpoints_and_redirects_remain_supported() {
     let sink = Server::start(false, |_, r| {
@@ -462,7 +454,6 @@ async fn legacy_different_origin_endpoints_and_redirects_remain_supported() {
     assert_eq!(sink.count("/token"), 2);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn strict_host_root_and_legacy_namespace_isolation() {
     let server = Server::start(true, |_, _| panic!("should not reach network")).await;
@@ -500,7 +491,6 @@ async fn strict_host_root_and_legacy_namespace_isolation() {
     assert_eq!(c.source.bearer_no_browser().await.unwrap(), "strict-a");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn shared_oauth_limits_bound_chunked_and_declared_bodies_in_both_paths() {
     use crate::auth_http::{MAX_OAUTH_ERROR_BYTES, MAX_OAUTH_RESPONSE_BYTES};
@@ -573,7 +563,6 @@ async fn shared_oauth_limits_bound_chunked_and_declared_bodies_in_both_paths() {
     }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn shared_exact_limit_responses_and_grant_classifications_are_preserved() {
     use crate::auth_http::{MAX_OAUTH_ERROR_BYTES, MAX_OAUTH_RESPONSE_BYTES};
@@ -646,7 +635,6 @@ async fn shared_exact_limit_responses_and_grant_classifications_are_preserved() 
     }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn shared_diagnostics_never_log_oauth_bodies_urls_opener_or_callback_details() {
     use std::{io::Write, sync::Mutex};
@@ -790,7 +778,6 @@ async fn strict_malformed_token_expiry_is_a_safe_infrastructure_failure() {
     );
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn strict_catalog_errors_redact_provider_text_and_urls() {
     let server = Server::start(true, |_, _| {

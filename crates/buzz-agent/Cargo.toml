@@ -72,6 +72,11 @@ fs2 = "0.4"
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["signal", "process"] }
 
+# Owner-only token cache files on Windows; keeps the Win32 FFI (and its
+# `unsafe`) out of this crate.
+[target.'cfg(windows)'.dependencies]
+buzz-private-file = { path = "../buzz-private-file" }
+
 [dev-dependencies]
 # Synthetic TLS OAuth/catalog servers exercise the strict HTTPS production path.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }

@@ -516,20 +516,8 @@ impl PkceOAuthTokenSource {
     /// Persist a token to disk and the in-memory cell.
     ///
     /// The cache holds both the access and refresh tokens, so the on-disk
-    /// file is written owner-only (`0o600` on Unix) via an atomic
-    /// inode-swapping rename — see [`write_private_cache`].
-    ///
-    /// On non-Unix platforms the token is stored in-memory only: the
-    /// `write_private_cache` path creates files with default ACLs, which do
-    /// not enforce owner-only access. Disk persistence is intentionally
-    /// disabled until a Windows-specific owner-only DACL is implemented (see
-    /// the `create_private_temp_file` non-Unix branch). The cost is that each
-    /// process performs its own acquisition on non-Unix — cross-process
-    /// *success* handoff requires the shared on-disk cache, so processes
-    /// serialize through the lock but the loser repeats the flow rather than
-    /// reading the winner's token. Cross-process *failure* adoption still works
-    /// because it uses the attempt sidecar (no token bytes). Correct and
-    /// safe until owner-only DACL persistence exists.
+    /// file is written owner-only (`0o600` on Unix, an owner-only DACL on
+    /// Windows) via an atomic rename — see [`write_private_cache`].
     fn save(&self, state: &mut Option<CachedToken>, token: CachedToken) -> Result<(), AgentError> {
         self.persist(&token)?;
         *state = Some(token);
@@ -538,23 +526,12 @@ impl PkceOAuthTokenSource {
 
     /// Write `token` to the on-disk cache. Split out of [`save`](Self::save) so
     /// the 401 neutralization path can rewrite the disk layer without clobbering
-    /// a distinct in-memory entry. No-op on non-Unix (see [`save`](Self::save)).
+    /// a distinct in-memory entry.
     fn persist(&self, token: &CachedToken) -> Result<(), AgentError> {
-        #[cfg(unix)]
-        {
-            let body = serde_json::to_vec_pretty(token)
-                .map_err(|e| AgentError::Llm(format!("oauth cache serialize: {e}")))?;
-            write_private_cache(&self.cache_path, &body).map_err(|e| {
-                AgentError::Llm(format!("oauth cache write {:?}: {e}", self.cache_path))
-            })?;
-        }
-        #[cfg(not(unix))]
-        {
-            // Disk persistence disabled on non-Unix: owner-only file
-            // permissions require a DACL that is not yet implemented.
-            let _ = token;
-        }
-        Ok(())
+        let body = serde_json::to_vec_pretty(token)
+            .map_err(|e| AgentError::Llm(format!("oauth cache serialize: {e}")))?;
+        write_private_cache(&self.cache_path, &body)
+            .map_err(|e| AgentError::Llm(format!("oauth cache write {:?}: {e}", self.cache_path)))
     }
 
     /// Neutralize the matching rejected credential in B's own in-memory `state`
@@ -1840,23 +1817,19 @@ fn read_private_cache(path: &Path) -> io::Result<Vec<u8>> {
     Ok(body)
 }
 
-/// Non-Unix: token persistence and reading are both disabled until a
-/// Windows-specific owner-only DACL is implemented. Any legacy token file
-/// left by an older build (written with default ACLs) is deleted
-/// opportunistically so the exposed artifact cannot be served by new builds.
-/// Returns an error so [`read_cache`] yields `None`, giving a consistent
-/// memory-only cache on non-Unix.
-#[cfg(not(unix))]
+/// Open the cache without following a final link, refuse it unless it is a
+/// regular file owned by the current user, re-apply the owner-only DACL on
+/// the open handle, and return its bytes.
+///
+/// The Windows counterpart of the Unix `O_NOFOLLOW` + `fchmod` repair; see
+/// [`buzz_private_file::open_owned`].
+#[cfg(windows)]
 fn read_private_cache(path: &Path) -> io::Result<Vec<u8>> {
-    // Best-effort removal of any legacy file. Errors are ignored — either the
-    // file does not exist (normal case) or it cannot be removed (no worse
-    // than before — the DACL story is still broken, but that is the pre-fix
-    // state we are trying to retire).
-    let _ = fs::remove_file(path);
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "token disk cache disabled on non-Unix (no owner-only DACL)",
-    ))
+    use std::io::Read;
+
+    let mut body = Vec::new();
+    buzz_private_file::open_owned(path)?.read_to_end(&mut body)?;
+    Ok(body)
 }
 
 /// Removes a temp file on drop unless it was already renamed away. Keeps a
@@ -1894,10 +1867,9 @@ fn unique_suffix() -> String {
 /// world/other readable, write and fsync it, then rename over the
 /// destination. The rename swaps the inode/entry wholesale, so a pre-existing
 /// cache file with loose permissions is *replaced* by the new private one;
-/// its old mode never survives. `fs::rename` maps to
-/// `MOVEFILE_REPLACE_EXISTING` on Windows, so the atomic replace holds on
-/// both platforms; the Windows owner-only DACL is pending the unsafe-FFI
-/// decision noted at the seam.
+/// its old mode or DACL never survives. `fs::rename` replaces an existing
+/// destination on Windows too, so the atomic replace holds on both
+/// platforms.
 fn write_private_cache(path: &Path, body: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
@@ -1938,22 +1910,11 @@ fn create_private_temp_file(tmp: &Path) -> io::Result<fs::File> {
         .open(tmp)
 }
 
-/// Non-Unix fallback: create the temp file if it does not already exist.
-///
-/// On Windows the owner-only equivalent is an explicit DACL set at creation
-/// (`CreateFileW` with SDDL `D:P(A;;FA;;;OW)`, matching goose's
-/// `private_file.rs`), but that FFI needs `unsafe`, which this crate forbids.
-/// Reconciling the two — an isolated helper crate, a vetted safe dependency,
-/// or descoping Windows — is an open decision escalated to the maintainer, so
-/// this interim relies on the default per-user ACLs and drops the owner-only
-/// implementation in behind this seam once the decision lands. `create_new`
-/// fails if the file already exists.
-#[cfg(not(unix))]
+/// Windows: the same, with a protected owner-only DACL set atomically at
+/// creation instead of a mode.
+#[cfg(windows)]
 fn create_private_temp_file(tmp: &Path) -> io::Result<fs::File> {
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(tmp)
+    buzz_private_file::create_new(tmp)
 }
 
 /// Parse a token-endpoint JSON response. Fails loudly when `access_token`
@@ -2327,7 +2288,6 @@ mod tests {
         assert!(token_from_response(&v, None).is_err());
     }
 
-    #[cfg(unix)] // Disk adoption relies on `write_private_cache`; non-Unix disables disk persistence.
     #[tokio::test]
     async fn test_bearer_reuses_disk_token_after_expiry() {
         let dir = tempfile::tempdir().unwrap();
@@ -2381,10 +2341,6 @@ mod tests {
     /// exercises the joiner recovery branch rather than the initial fast-path
     /// `cached_hit`. Removing the joiner disk-recovery branch must make the
     /// test return Err(RefreshRejected) rather than Ok("sibling-replacement").
-    ///
-    /// Disk-dependent: the replacement lives on disk, so `write_private_cache`
-    /// must be available (i.e. Unix only).
-    #[cfg(unix)]
     #[tokio::test]
     async fn test_joiner_shared_failure_recovers_disk_replacement() {
         use std::future::Future as _;
@@ -2487,7 +2443,6 @@ mod tests {
     /// "disk unchanged" assertion fails — proving the unfenced write is exactly
     /// the race that would overwrite any concurrent C write that landed between
     /// A's failure and B's reconciliation.
-    #[cfg(unix)]
     #[tokio::test]
     async fn test_joiner_failure_does_not_write_disk() {
         use std::future::Future as _;
@@ -2766,11 +2721,39 @@ mod tests {
 
     // ---- private atomic cache write --------------------------------------
 
-    #[cfg(unix)]
+    /// Mode `0600` on Unix; on Windows a protected DACL whose only entry
+    /// grants the owner full access.
+    fn assert_owner_only(path: &Path, why: &str) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{why}: got {mode:o}");
+        }
+        #[cfg(windows)]
+        {
+            // SDDL, unlike `icacls` output, is not localized.
+            let out = std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-Acl -LiteralPath $env:ACL_PATH).Sddl",
+                ])
+                .env("ACL_PATH", path)
+                .output()
+                .unwrap();
+            let sddl = String::from_utf8_lossy(&out.stdout);
+            let dacl = sddl.trim().split_once("D:").map_or("", |(_, dacl)| dacl);
+            let (flags, aces) = dacl.split_once('(').unwrap_or_default();
+            assert!(
+                flags.contains('P') && aces == "A;;FA;;;OW)",
+                "{why}: got {sddl}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_save_writes_owner_only_cache_file() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().unwrap();
         let cfg = PkceOAuthConfig {
             discovery_url: "https://example.com/.well-known".into(),
@@ -2795,16 +2778,7 @@ mod tests {
                 .unwrap();
         }
 
-        let mode = fs::metadata(&source.cache_path)
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(
-            mode & 0o777,
-            0o600,
-            "cache file must be owner-only, got {:o}",
-            mode & 0o777
-        );
+        assert_owner_only(&source.cache_path, "cache file must be owner-only");
         // No temp file left behind.
         let leftovers: Vec<_> = fs::read_dir(dir.path().join("test"))
             .unwrap()
@@ -2860,11 +2834,8 @@ mod tests {
         assert_ne!(meta.ino(), old_inode, "cache inode was not replaced");
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_write_private_cache_concurrent_savers_all_succeed() {
-        use std::os::unix::fs::PermissionsExt;
-
         // Unique tmp suffixes must let many concurrent writers to the SAME
         // destination each land a complete, private file — no tmp collision,
         // no failed rename. The fixed `*.json.tmp` name this replaces would
@@ -2889,12 +2860,11 @@ mod tests {
                 .expect("concurrent write_private_cache failed");
         }
 
-        // Destination exists, is valid (one writer's complete body), and 0600.
+        // Destination exists and is valid (one writer's complete body).
         let contents = fs::read_to_string(path.as_ref()).unwrap();
         let v: serde_json::Value = serde_json::from_str(&contents).unwrap();
         assert!(v.get("n").is_some(), "cache body was corrupted: {contents}");
-        let mode = fs::metadata(path.as_ref()).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        assert_owner_only(&path, "concurrent saves must stay owner-only");
 
         // No temp files leaked.
         let leftovers: Vec<_> = fs::read_dir(dir.path())
@@ -2907,14 +2877,12 @@ mod tests {
 
     // ---- owner-only is a load-time invariant, not just a save-time one ----
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn test_bearer_cache_hit_tightens_preexisting_loose_mode_file() {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
         // A world-readable cache left by an older buzz-agent must be tightened
         // the moment we load it — on the plain cache-hit path, with no refresh
         // or save. Otherwise the pre-bug population stays exposed indefinitely.
+        // On Windows a plain `fs::write` already inherits the directory's ACL.
         let dir = tempfile::tempdir().unwrap();
         let cfg = PkceOAuthConfig {
             discovery_url: "https://example.com/.well-known".into(),
@@ -2939,26 +2907,32 @@ mod tests {
             expires_at: Some(future_exp),
         };
         fs::write(&cache_path, serde_json::to_vec_pretty(&token).unwrap()).unwrap();
-        fs::set_permissions(&cache_path, fs::Permissions::from_mode(0o644)).unwrap();
-        let old_inode = fs::metadata(&cache_path).unwrap().ino();
+        #[cfg(unix)]
+        let old_inode = {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            fs::set_permissions(&cache_path, fs::Permissions::from_mode(0o644)).unwrap();
+            fs::metadata(&cache_path).unwrap().ino()
+        };
 
         // Constructing the source loads the cache — repair happens here.
         let source = PkceOAuthTokenSource::new(cfg).unwrap();
         let bearer = source.bearer().await.unwrap();
         assert_eq!(bearer, "loose-but-valid");
 
-        let meta = fs::metadata(&cache_path).unwrap();
-        assert_eq!(
-            meta.permissions().mode() & 0o777,
-            0o600,
-            "existing loose-mode cache was not tightened on load"
+        assert_owner_only(
+            &cache_path,
+            "existing loose cache was not tightened on load",
         );
         // Repaired in place on the open fd — same inode, no rewrite/rename.
-        assert_eq!(
-            meta.ino(),
-            old_inode,
-            "load-time repair should fchmod in place, not replace the inode"
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                fs::metadata(&cache_path).unwrap().ino(),
+                old_inode,
+                "load-time repair should fchmod in place, not replace the inode"
+            );
+        }
     }
 
     #[cfg(unix)]

@@ -154,20 +154,23 @@ jobs:
       - name: Test (ACP launch-prefix platform contract)
         # Execute the non-Unix refusal branch; a cross-compile cannot test it.
         run: cargo test -p buzz-acp --target $env:TARGET --lib acp::launch::platform_tests
+      - name: Test (owner-only private files)
+        # The Win32 DACL code behind buzz-agent's token cache. The ignored
+        # tests plant a foreign-owned file and a symlink, which needs the
+        # runner's elevated shell.
+        run: cargo test -p buzz-private-file --target $env:TARGET -- --include-ignored
       - name: Test (buzz-agent auth coordinator)
         # The auth coordinator single-flights on an OS advisory lock, which is
-        # LockFileEx on Windows; this integration suite drives real second
-        # processes on the same lock file, so it only exercises the Windows
-        # lock runtime if it runs ON Windows. Every other job compiles it but
-        # never executes it. Tests exercised on Windows: lock serialization
-        # (two coordinators race for the same key), cooldown sidecar sharing
-        # across processes, attempt-sidecar adoption (UserInitiated waiter
-        # adopts a predecessor's denial), and the in-process single-flight for
-        # same-key coalescing. Tests that are UNIX-ONLY and NOT executed here:
-        # crash-release (flock drop on SIGKILL, guarded by #[cfg(unix)]) and
-        # cross-process cache success/race (on-disk token handoff, also
-        # #[cfg(unix)]).
+        # LockFileEx on Windows, and hands tokens across processes through the
+        # owner-only disk cache. This integration suite drives real second
+        # processes on the same lock and cache files, so it only exercises the
+        # Windows runtime if it runs ON Windows. Every other job compiles it but
+        # never executes it.
         run: cargo test -p buzz-agent --target $env:TARGET --test databricks_auth_coordinator
+      - name: Test (buzz-agent token cache)
+        # Disk cache reuse, joiner recovery and concurrent savers through the
+        # Windows owner-only cache path.
+        run: cargo test -p buzz-agent --target $env:TARGET --lib -- auth::tests databricks::tests
       # Smoke-test the new host-prereq contract: Git for Windows (which provides
       # bash) is available on the runner, a shell command round-trips, and bash
       # does NOT resolve from System32 (so WSL's launcher is never picked up).

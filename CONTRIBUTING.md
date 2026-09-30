@@ -333,11 +333,23 @@ Fix all clippy warnings before submitting a PR. If you believe a warning is
 a false positive, add a targeted `#[allow(...)]` with a comment explaining
 why.
 
-### No Unsafe Code
+### Unsafe Code
 
-All crates enforce `#![deny(unsafe_code)]`. Do not add unsafe blocks. If you
-believe unsafe is genuinely necessary, open an issue first to discuss the
-approach.
+Unsafe Rust is denied by default, and many crates enforce this with
+`#![deny(unsafe_code)]` or `#![forbid(unsafe_code)]`. Exceptions are limited
+to code with no safe alternative, usually OS or FFI calls that `std` and
+existing dependencies do not wrap safely.
+
+A new exception needs a maintainer's approval, recorded in an issue or on the
+PR, before it merges. When adding one:
+
+- Put it in the smallest item that can hold it, behind a safe API, with an
+  item-level `#[allow(unsafe_code)]` where the crate denies unsafe code.
+- Explain why each `unsafe` block is sound in a `// SAFETY:` comment.
+
+For example, `buzz-private-file` wraps the Win32 calls that make a file
+owner-only, so `buzz-agent` keeps `#![forbid(unsafe_code)]`
+([approval](https://github.com/block/buzz/pull/7991#issuecomment-5920461188)).
 
 ### Error Handling
 

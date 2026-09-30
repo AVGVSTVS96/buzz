@@ -123,7 +123,9 @@ controllers.
 ### Dependency Management
 
 We use `cargo audit` in CI to scan for known vulnerabilities in dependencies.
-`#![deny(unsafe_code)]` is enforced across all crates — no unsafe Rust.
+Unsafe Rust is denied by default. Exceptions are narrow, maintainer-approved
+calls with no safe alternative, usually OS or FFI calls; see
+[CONTRIBUTING.md](CONTRIBUTING.md#unsafe-code).
 
 ---
 

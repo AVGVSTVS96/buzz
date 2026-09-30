@@ -191,7 +191,7 @@ non-hook commands.
 **Commit with `git commit -s`.** The required **DCO Check** fails any PR with a commit missing a `Signed-off-by` trailer, and `just hooks` installs a `commit-msg` hook that adds it to commits you create locally (`git rebase` and `git cherry-pick` still need `--signoff`) — if you build commit commands programmatically, include `-s` every time. To repair a branch that already has unsigned commits: `git rebase --signoff main`, then force-push.
 
 Additional rules:
-- No `unsafe` code
+- No `unsafe` code without a maintainer-approved exception; see [Unsafe Code](CONTRIBUTING.md#unsafe-code)
 - Do not introduce new `unwrap()` or `expect()` in production paths — use `?` and proper error types
 - New public API must have doc comments
 

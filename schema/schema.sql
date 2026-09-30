@@ -291,7 +291,7 @@ CREATE INDEX idx_events_community_pubkey_kind_created
 CREATE INDEX idx_events_community_kind_created
     ON events (community_id, kind, created_at DESC, id);
 CREATE INDEX idx_events_community_deleted ON events (community_id, deleted_at);
--- Sidebar receipt window per channel (0052); key order = its ORDER BY.
+-- Sidebar receipt window per channel (0055); key order = its ORDER BY.
 CREATE INDEX idx_events_community_channel_received
     ON events (community_id, channel_id, received_at DESC, id, created_at);
 -- Addressable (replaceable) and NIP-33 parameterized lookups.
@@ -307,6 +307,10 @@ CREATE INDEX idx_events_not_before ON events (community_id, not_before)
 -- stays a single-column GIN. The search lane confirms the final spelling with
 -- EXPLAIN before its work lands (Quinn option A; Max's index-spelling caveat).
 CREATE INDEX idx_events_search_tsv ON events USING GIN (search_tsv);
+
+-- e-tag containment (`tags @> '[["e","<hex>"]]'`) for the aux closure and #e
+-- reads. Mirrors migrations/0004; jsonb_path_ops supports exactly @>.
+CREATE INDEX idx_events_tags_gin ON events USING GIN (tags jsonb_path_ops);
 
 -- ── Event mentions ────────────────────────────────────────────────────────────
 -- Conformance: "Channel-less global events and DMs" (#p fan-out). The join to
@@ -1262,6 +1266,11 @@ CREATE TABLE community_deletion_requests (
         'logically_verified', 'retention_pending', 'aborted'
     )),
     requested_by TEXT NOT NULL,
+    request_origin TEXT NOT NULL DEFAULT 'operator'
+        CHECK (request_origin IN ('operator', 'owner')),
+    owner_pubkey TEXT,
+    mediating_operator_pubkey TEXT,
+    acknowledgement_version INTEGER,
     reason TEXT,
     schema_manifest JSONB,
     storage_manifest JSONB,
@@ -1277,7 +1286,7 @@ CREATE TABLE community_deletion_requests (
     attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
     retry_stage TEXT CHECK (retry_stage IS NULL OR retry_stage IN (
-        'approved', 'fenced', 'drained', 'bindings_removed',
+        'submitted', 'approved', 'fenced', 'drained', 'bindings_removed',
         'postgres_purged', 'cache_purged', 'logically_verified'
     )),
     next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1298,6 +1307,21 @@ CREATE TABLE community_deletion_requests (
     CHECK ((aborted_at IS NULL) = (aborted_by IS NULL)),
     CHECK ((aborted_at IS NULL) = (abort_reason IS NULL)),
     CHECK ((inventory_frozen_at IS NULL) = (inventory_digest IS NULL)),
+    CONSTRAINT community_deletion_owner_provenance CHECK (
+        (request_origin = 'operator'
+            AND owner_pubkey IS NULL
+            AND mediating_operator_pubkey IS NULL
+            AND acknowledgement_version IS NULL)
+        OR
+        (request_origin = 'owner'
+            AND NOT (owner_pubkey IS NULL)
+            AND NOT (mediating_operator_pubkey IS NULL)
+            AND NOT (acknowledgement_version IS NULL)
+            AND owner_pubkey ~ '^[0-9a-f]{64}$'
+            AND mediating_operator_pubkey ~ '^[0-9a-f]{64}$'
+            AND acknowledgement_version BETWEEN 1 AND 32767
+            AND requested_by = owner_pubkey)
+    ),
     UNIQUE (id, community_id, inventory_digest)
 );
 CREATE UNIQUE INDEX community_deletion_requests_active_community
@@ -1310,12 +1334,19 @@ CREATE INDEX community_deletion_requests_runnable
                     'postgres_purged', 'cache_purged', 'logically_verified');
 CREATE INDEX community_deletion_requests_lease
     ON community_deletion_requests (lease_until) WHERE lease_owner IS NOT NULL;
+CREATE INDEX community_deletion_requests_owner_preparable
+    ON community_deletion_requests (next_attempt_at, created_at)
+    WHERE request_origin = 'owner'
+      AND stage = 'submitted'
+      AND blocked_at IS NULL;
 
 CREATE TABLE community_deletion_approvals (
     request_id UUID PRIMARY KEY,
     community_id UUID NOT NULL,
     inventory_digest BYTEA NOT NULL CHECK (length(inventory_digest) = 32),
     approved_by TEXT NOT NULL,
+    approval_origin TEXT NOT NULL DEFAULT 'operator'
+        CHECK (approval_origin IN ('operator', 'owner_automatic')),
     note TEXT,
     approved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     FOREIGN KEY (request_id, community_id, inventory_digest)
@@ -1323,7 +1354,7 @@ CREATE TABLE community_deletion_approvals (
         ON DELETE RESTRICT
 );
 
-CREATE FUNCTION prevent_community_deletion_request_retargeting()
+CREATE OR REPLACE FUNCTION prevent_community_deletion_request_retargeting()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -1332,6 +1363,14 @@ BEGIN
         OR NEW.community_host IS DISTINCT FROM OLD.community_host
     THEN
         RAISE EXCEPTION 'community deletion target identity is immutable'
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    IF NEW.request_origin IS DISTINCT FROM OLD.request_origin
+        OR NEW.owner_pubkey IS DISTINCT FROM OLD.owner_pubkey
+        OR NEW.mediating_operator_pubkey IS DISTINCT FROM OLD.mediating_operator_pubkey
+        OR NEW.acknowledgement_version IS DISTINCT FROM OLD.acknowledgement_version
+    THEN
+        RAISE EXCEPTION 'community deletion request provenance is immutable'
             USING ERRCODE = 'integrity_constraint_violation';
     END IF;
     IF OLD.inventory_frozen_at IS NOT NULL AND (
@@ -1998,3 +2037,31 @@ CREATE TABLE storage_accounting_snapshots (
 
 INSERT INTO _operator_global_tables (table_name, reason) VALUES
     ('storage_accounting_snapshots', 'deployment-global completed media accounting handoff');
+
+-- NIP-AR current heads and acceptance ledger are independent of event retention.
+CREATE TABLE artifact_heads (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    artifact_id UUID NOT NULL,
+    event_id BYTEA NOT NULL CHECK (length(event_id) = 32),
+    channel_id UUID NOT NULL,
+    artifact_type TEXT NOT NULL,
+    root BYTEA,
+    deleted BOOLEAN NOT NULL DEFAULT false,
+    PRIMARY KEY (community_id, artifact_id)
+);
+CREATE INDEX artifact_heads_event ON artifact_heads (community_id, event_id);
+-- Every accepted revision ID, so replays stay idempotent after redaction or
+-- retention.
+CREATE TABLE artifact_revisions (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    event_id BYTEA NOT NULL CHECK (length(event_id) = 32),
+    artifact_id UUID NOT NULL,
+    PRIMARY KEY (community_id, event_id)
+);
+
+SELECT attach_community_write_fence('artifact_heads');
+SELECT attach_community_write_fence('artifact_revisions');
+
+-- The relay does not expire events. Any future row retention or partition
+-- retirement must skip payloads referenced by `artifact_heads.event_id`
+-- (NIP-AR: expiring earlier revisions MUST NOT remove the current revision).

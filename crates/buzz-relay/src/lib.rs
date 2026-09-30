@@ -6,6 +6,15 @@ mod admission;
 mod build_info;
 mod rejection;
 
+/// NIP-FI session admission gate — per-connection effect-permit and quiescence barrier.
+pub(crate) mod nip_fi_gate;
+pub(crate) mod nip_fi_session;
+/// NIP-FI test hooks — production barriers for deterministic B1/B2 witnesses.
+#[cfg(test)]
+pub(crate) mod nip_fi_test_hooks;
+/// NIP-FI assertion validation at WebSocket upgrade.
+pub(crate) mod nip_fi_upgrade;
+
 /// REST API route handlers.
 pub mod api;
 /// WebSocket audio relay for huddle voice channels.
@@ -45,7 +54,8 @@ pub mod operator_listener;
 pub mod protocol;
 /// Durable NIP-PL matcher and delivery worker.
 pub mod push_runtime;
-mod readiness;
+/// Readiness-probe telemetry and the per-pod dependency sampler behind `/_status`.
+pub mod readiness;
 /// Axum router construction.
 pub mod router;
 /// Shared application state.

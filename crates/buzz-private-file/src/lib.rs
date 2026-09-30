@@ -39,9 +39,10 @@ const OWNER_ONLY: &str = "D:P(A;;FA;;;OW)";
 
 /// Create `path` for writing, owner-only from the moment it exists.
 ///
-/// Fails if `path` exists. The DACL is set atomically at creation, so no other
-/// user can open the file even briefly. Read, write and delete sharing match
-/// std, so another process can still rename a new file over this path.
+/// Fails if `path` exists, even as a dangling link. The DACL is set atomically
+/// at creation, so no other user can open the file even briefly. Read, write
+/// and delete sharing match std, so another process can still rename a new
+/// file over this path.
 #[allow(unsafe_code)]
 pub fn create_new(path: &Path) -> io::Result<File> {
     let descriptor = owner_only()?;
@@ -60,7 +61,7 @@ pub fn create_new(path: &Path) -> io::Result<File> {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             &attributes,
             CREATE_NEW,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
             null_mut(),
         )
     };
@@ -159,7 +160,7 @@ fn restrict_to_owner(file: &File) -> io::Result<()> {
 fn owned_by_current_process(file: &File) -> io::Result<bool> {
     let (mut owner, mut descriptor) = (null_mut(), null_mut());
     // SAFETY: the handle is open with `READ_CONTROL`; on success Windows
-    // allocates `descriptor` and points `owner` into it.
+    // allocates `descriptor` and points `owner` into it, or sets it to null.
     win32(unsafe {
         GetSecurityInfo(
             file.as_raw_handle(),
@@ -173,6 +174,10 @@ fn owned_by_current_process(file: &File) -> io::Result<bool> {
         )
     })?;
     let _descriptor = Local(descriptor);
+    // A descriptor without an owner SID yields null, which `EqualSid` must not see.
+    if owner.is_null() {
+        return Ok(false);
+    }
 
     let mut token = null_mut();
     // SAFETY: `GetCurrentProcess` returns a pseudo-handle; on success `token`

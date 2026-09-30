@@ -839,6 +839,30 @@ fn dependency_diagnostics_payload(snapshot: DependencySnapshot) -> serde_json::V
     }
 }
 
+/// Cached partition diagnostics only; a missing or stale audit never changes probes.
+fn partition_diagnostics_payload(
+    audit: Option<&buzz_db::partition::PartitionAudit>,
+    now: chrono::DateTime<chrono::Utc>,
+    interval: std::time::Duration,
+) -> serde_json::Value {
+    match audit {
+        None => json!({
+            "sample": "not_yet_sampled",
+            "sample_interval_seconds": interval.as_secs(),
+        }),
+        Some(audit) => {
+            let age = (now - audit.audited_at).to_std().unwrap_or_default();
+            json!({
+                "sample": if age > interval.saturating_mul(2) { "stale" } else { "fresh" },
+                "sample_interval_seconds": interval.as_secs(),
+                "sample_age_seconds": age.as_secs(),
+                "audited_at": audit.audited_at,
+                "serving_safe": audit.serving_safe_at(now),
+            })
+        }
+    }
+}
+
 /// Status endpoint — service name, version, uptime, intrinsic build identity,
 /// and the cached shared-dependency diagnostics.
 ///
@@ -851,6 +875,11 @@ async fn status_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse
     let mut payload = status_payload(state.started_at.elapsed().as_secs());
     payload["dependencies"] =
         dependency_diagnostics_payload(state.dependency_diagnostics.snapshot());
+    payload["partition_catalog"] = partition_diagnostics_payload(
+        state.partition_audit_snapshot().as_ref(),
+        chrono::Utc::now(),
+        state.config.partition_audit_interval,
+    );
     Json(payload)
 }
 
@@ -1166,6 +1195,47 @@ mod tests {
                 "a draining pod must still withdraw itself"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn partition_diagnostics_never_gate_readiness() {
+        use buzz_db::partition::{PartitionAudit, PartitionTableAudit};
+
+        let state = unreachable_dependency_state().await;
+        let health = build_health_router(state.clone());
+        let (_, payload) = status_request(health.clone()).await;
+        assert_eq!(payload["partition_catalog"]["sample"], "not_yet_sampled");
+        let now = chrono::Utc::now();
+        let mut audit = PartitionAudit {
+            audited_at: now,
+            tables: vec![PartitionTableAudit {
+                table: "events",
+                partition_key: None,
+                expected_partition_key: "RANGE (created_at)",
+                partition_key_valid: false,
+                children: vec![],
+                coverage_leaves: vec![],
+                months: vec![],
+                serving_safe: false,
+            }],
+        };
+        state.record_partition_audit(audit.clone());
+        let (_, payload) = status_request(health.clone()).await;
+        assert_eq!(payload["partition_catalog"]["sample"], "fresh");
+        assert_eq!(payload["partition_catalog"]["serving_safe"], false);
+        for router in [health, build_router(state.clone())] {
+            assert_eq!(
+                readiness_request(router).await,
+                (StatusCode::OK, json!({"status": "ready"})),
+            );
+        }
+        let period = state.config.partition_audit_interval;
+        audit.audited_at = now - chrono::Duration::seconds((period.as_secs() * 2 + 1) as i64);
+        let payload = partition_diagnostics_payload(Some(&audit), now, period);
+        assert_eq!(payload["sample"], "stale");
+        assert_eq!(payload["serving_safe"], false);
+        assert_eq!(payload["sample_age_seconds"], period.as_secs() * 2 + 1);
+        assert_eq!(payload["audited_at"], json!(audit.audited_at));
     }
 
     /// Dependency health did not disappear with the probe — it moved to the

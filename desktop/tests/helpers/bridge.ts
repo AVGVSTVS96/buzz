@@ -196,6 +196,7 @@ type MockBridgeOptions = {
     code: string;
     message?: string;
   } | null>;
+  builderlabDeletionStatusSequence?: string[];
   builderlabDeletionHttpStatusSequence?: number[];
   builderlabDeletionBodyStatus?: number;
   /** Hold deletion responses until the test explicitly releases them. */

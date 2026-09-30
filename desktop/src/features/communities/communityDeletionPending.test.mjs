@@ -280,6 +280,14 @@ test("only tuple-bound canonical stages or abort settle same-UUID recovery", () 
     ),
     "abort",
   );
+  assert.equal(
+    deletionResponseDisposition(
+      transport(409, { error: { code: "deletion_aborted" } }),
+      envelope,
+      "check",
+    ),
+    "retain",
+  );
   for (const status of ["accepted", "admitted", "completed", "future_stage"]) {
     assert.equal(
       deletionResponseDisposition(

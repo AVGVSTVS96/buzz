@@ -398,7 +398,9 @@ export function HostedCommunityOnboarding({
   const creationFeedback = atCommunityLimit
     ? quota.limit === null
       ? "Community quota is unavailable. Creation stays disabled."
-      : `You’ve reached the limit of ${quota.limit} hosted communities.`
+      : quota.limit === 0
+        ? "You can't create more communities right now."
+        : `You’ve reached the limit of ${quota.limit} hosted communities.`
     : name && !validName
       ? "Use lowercase letters, numbers, and single hyphens."
       : checkingName

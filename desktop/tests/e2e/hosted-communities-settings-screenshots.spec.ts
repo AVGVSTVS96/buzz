@@ -40,6 +40,12 @@ const DELETION_COMMUNITIES: Array<{
     archived_at: "2026-09-28T00:00:00Z",
   },
 ];
+const SECOND_ARCHIVED = {
+  id: "33333333-3333-4333-8333-333333333333",
+  name: "Second archived team",
+  normalized_host: "second.communities.buzz.xyz",
+  archived_at: "2026-09-28T00:00:00Z",
+};
 
 /**
  * Install the default hosted-communities fixture and open its settings
@@ -88,7 +94,9 @@ async function openDeletionFixture(
     mismatch?: boolean;
     errorCode?: string;
     errorSequence?: Array<{ code: string; message?: string } | null>;
+    statusSequence?: string[];
     capabilitySequence?: boolean[];
+    quota?: { used: number; limit: number; canCreate: boolean };
     communitiesSequence?: Array<typeof DELETION_COMMUNITIES>;
     communities?: Array<(typeof DELETION_COMMUNITIES)[number]>;
     httpStatusSequence?: number[];
@@ -111,11 +119,12 @@ async function openDeletionFixture(
     },
     builderlabCommunities: options.communities ?? DELETION_COMMUNITIES,
     builderlabCommunitiesSequence: options.communitiesSequence,
-    builderlabQuota: { used: 2, limit: 5, canCreate: true },
+    builderlabQuota: options.quota ?? { used: 2, limit: 5, canCreate: true },
     builderlabDeletionError: options.errorCode
       ? { code: options.errorCode, message: "mock deletion error" }
       : undefined,
     builderlabDeletionErrorSequence: options.errorSequence,
+    builderlabDeletionStatusSequence: options.statusSequence,
     builderlabDeletionHttpStatusSequence: options.httpStatusSequence,
     builderlabDeletionBodyStatus: options.bodyStatus,
     builderlabIdentityResponseSequence: options.identityResponseSequence,
@@ -339,6 +348,20 @@ test("explicit quota false hides Create and shows the limit copy", async ({
   await expect(
     page.getByRole("button", { name: "Create and connect" }),
   ).toHaveCount(0);
+});
+
+test("zero community quota does not promise a deletion will free a slot", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, {
+    quota: { used: 2, limit: 0, canCreate: false },
+  });
+  await expect(
+    page.getByText("You can't create more communities right now.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText(/deletion frees its slot/i)).toHaveCount(0);
 });
 
 test("archived deletion requires exact host and two confirmations, then removes the row", async ({
@@ -954,6 +977,185 @@ test("check resends the saved UUID even when the fresh owner list omits it", asy
   await expect(
     page.getByText("Deletion started", { exact: true }),
   ).toBeVisible();
+});
+
+test("Refresh replays an accepted request and restores a tuple-bound aborted row", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, {
+    capability: true,
+    statusSequence: ["submitted", "aborted"],
+  });
+  await startArchivedDeletion(page);
+  await expect(
+    page.getByText("Deletion started", { exact: true }),
+  ).toBeVisible();
+  const firstCalls = await deletionPayloads(page);
+  expect(firstCalls).toHaveLength(1);
+  expect(await storedDeletionBytes(page)).toBeNull();
+  await expect(
+    page
+      .getByTestId("hosted-community-row")
+      .filter({ hasText: "Archived team" }),
+  ).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Refresh" }).click();
+  const archived = page
+    .getByTestId("hosted-community-row")
+    .filter({ hasText: "Archived team" });
+  await expect(archived).toBeVisible();
+  await expect(
+    archived.getByRole("button", { name: "Delete", exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByText("2 of 5 used", { exact: false })).toBeVisible();
+  await expect(page.getByTestId("hosted-community-row")).toHaveCount(2);
+  await expect(
+    page.getByText("Deletion stopped. This community is not being deleted.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Deletion started", { exact: true })).toHaveCount(
+    0,
+  );
+  await expect
+    .poll(() => deletionPayloads(page))
+    .toEqual([firstCalls?.[0], firstCalls?.[0]]);
+  expect(await storedDeletionBytes(page)).toBeNull();
+});
+
+test("Refresh restores only the aborted row while another accepted deletion remains", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, {
+    capability: true,
+    communities: [...DELETION_COMMUNITIES, SECOND_ARCHIVED],
+    quota: { used: 3, limit: 5, canCreate: true },
+    statusSequence: ["submitted", "submitted", "aborted", "approved"],
+  });
+  await startArchivedDeletion(page);
+  await expect(
+    page.getByText("Deletion started", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByTestId("hosted-community-row")
+    .filter({ hasText: "Second archived team" })
+    .getByRole("button", { name: "Delete", exact: true })
+    .click();
+  await page
+    .getByLabel(
+      `Type the exact host to continue: ${SECOND_ARCHIVED.normalized_host}`,
+    )
+    .fill(SECOND_ARCHIVED.normalized_host);
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page
+    .getByRole("button", { name: "Delete community permanently" })
+    .click();
+  await expect.poll(() => deletionPayloads(page)).toHaveLength(2);
+  const acceptedCalls = await deletionPayloads(page);
+  await expect(
+    page
+      .getByTestId("hosted-community-row")
+      .filter({ hasText: "Second archived team" }),
+  ).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(
+    page
+      .getByTestId("hosted-community-row")
+      .filter({ hasText: "Archived team" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByTestId("hosted-community-row")
+      .filter({ hasText: "Second archived team" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Deletion started", { exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() => deletionPayloads(page))
+    .toEqual([
+      acceptedCalls?.[0],
+      acceptedCalls?.[1],
+      acceptedCalls?.[0],
+      acceptedCalls?.[1],
+    ]);
+});
+
+for (const scenario of [
+  { name: "non-aborted stage", statusSequence: ["submitted", "approved"] },
+  {
+    name: "uncertain 503",
+    errorSequence: [null, { code: "acceptance_unknown" }],
+  },
+  {
+    name: "error-only 409",
+    errorSequence: [null, { code: "deletion_aborted" }],
+  },
+]) {
+  test(`Refresh keeps an accepted row hidden after ${scenario.name}`, async ({
+    page,
+  }) => {
+    await openDeletionFixture(page, {
+      capability: true,
+      statusSequence: scenario.statusSequence,
+      errorSequence: scenario.errorSequence,
+    });
+    await startArchivedDeletion(page);
+    await expect(
+      page.getByText("Deletion started", { exact: true }),
+    ).toBeVisible();
+    const firstCalls = await deletionPayloads(page);
+    await page.getByRole("button", { name: "Refresh" }).click();
+    await expect
+      .poll(() => deletionPayloads(page))
+      .toEqual([firstCalls?.[0], firstCalls?.[0]]);
+    await expect(
+      page
+        .getByTestId("hosted-community-row")
+        .filter({ hasText: "Archived team" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText("Deletion started", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Deletion stopped. This community is not being deleted.", {
+        exact: true,
+      }),
+    ).toHaveCount(0);
+  });
+}
+
+test("Refresh with deletion capability off keeps an accepted row hidden without replay", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, {
+    capability: true,
+    capabilitySequence: [true, false],
+    communities: [...DELETION_COMMUNITIES, SECOND_ARCHIVED],
+  });
+  await startArchivedDeletion(page);
+  await expect(
+    page.getByText("Deletion started", { exact: true }),
+  ).toBeVisible();
+  const firstCalls = await deletionPayloads(page);
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(
+    page
+      .getByTestId("hosted-community-row")
+      .filter({ hasText: "Archived team" })
+      .filter({ hasNotText: "Second archived team" }),
+  ).toHaveCount(0);
+  await expect(
+    page
+      .getByTestId("hosted-community-row")
+      .filter({ hasText: "Second archived team" })
+      .getByRole("button", { name: "Delete", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Deletion started", { exact: true }),
+  ).toBeVisible();
+  expect(await deletionPayloads(page)).toEqual(firstCalls);
 });
 
 test("check settles must_archive and offers Archive after the owner row is unarchived", async ({

@@ -92,7 +92,10 @@ export function HostedCommunitiesSettingsCard() {
   const [blockingOwnerPubkey, setBlockingOwnerPubkey] = React.useState<
     string | null
   >(null);
-  const hiddenCommunityIds = React.useRef(new Set<string>());
+  const acceptedDeletions = React.useRef(
+    new Map<string, PendingCommunityDeletion>(),
+  );
+  const cardActive = React.useRef(false);
   const recoveryAccount = React.useRef<string | null>(null);
   const deleteInFlight = React.useRef<symbol | null>(null);
   const accountOwner = React.useRef<string | null>(null);
@@ -102,13 +105,16 @@ export function HostedCommunitiesSettingsCard() {
     if (accountOwner.current === nextOwner) return;
     accountOwner.current = nextOwner;
     accountGeneration.current += 1;
+    acceptedDeletions.current.clear();
     deleteInFlight.current = null;
     setAction(null);
     setError(null);
     setStatusMessage(null);
   }, []);
 
-  const loadAccount = React.useCallback(async (): Promise<void> => {
+  const loadAccount = React.useCallback(async (): Promise<
+    HostedCommunity[]
+  > => {
     setError(null);
     const [identityResponse, communitiesResponse] = await Promise.all([
       invoke<IdentityResponse>("get_builderlab_nostr_identity"),
@@ -147,9 +153,10 @@ export function HostedCommunitiesSettingsCard() {
     setPendingDeletion(deletionView.owned);
     setBlockingOwnerPubkey(deletionView.blockingOwnerPubkey);
     setIdentity(identityResponse.identity ?? null);
-    const nextCommunities = (communitiesResponse.communities ?? []).filter(
+    const listedCommunities = communitiesResponse.communities ?? [];
+    const nextCommunities = listedCommunities.filter(
       (community) =>
-        !community.id || !hiddenCommunityIds.current.has(community.id),
+        !community.id || !acceptedDeletions.current.has(community.id),
     );
     setCommunities(nextCommunities);
     setQuota({
@@ -161,9 +168,11 @@ export function HostedCommunitiesSettingsCard() {
         : null,
       canCreate: hostedCommunityCreateAvailable(communitiesResponse),
     });
+    return listedCommunities;
   }, [adoptAccountOwner]);
 
   React.useEffect(() => {
+    cardActive.current = true;
     let active = true;
     void invoke<BuilderlabAuth | null>("get_builderlab_auth")
       .then(async (nextAuth) => {
@@ -179,6 +188,7 @@ export function HostedCommunitiesSettingsCard() {
       });
     return () => {
       active = false;
+      cardActive.current = false;
       accountGeneration.current += 1;
     };
   }, [loadAccount]);
@@ -215,6 +225,7 @@ export function HostedCommunitiesSettingsCard() {
       setCommunities([]);
       setQuota(null);
       setPendingDeletion(null);
+      setBlockingOwnerPubkey(null);
       setStatusMessage(null);
       setName("");
       setAvailability(null);
@@ -449,7 +460,7 @@ export function HostedCommunitiesSettingsCard() {
     }
     clearPendingCommunityDeletion(envelope);
     setPendingDeletion(null);
-    hiddenCommunityIds.current.add(envelope.community_id);
+    acceptedDeletions.current.set(envelope.community_id, envelope);
     setCommunities((current) =>
       current.filter((community) => community.id !== envelope.community_id),
     );
@@ -595,6 +606,7 @@ export function HostedCommunitiesSettingsCard() {
             setCommunities([]);
             setQuota(null);
             setPendingDeletion(null);
+            setBlockingOwnerPubkey(null);
             return;
           }
           setAuth(refreshedAuth);
@@ -616,6 +628,7 @@ export function HostedCommunitiesSettingsCard() {
             setCommunities([]);
             setQuota(null);
             setPendingDeletion(null);
+            setBlockingOwnerPubkey(null);
             return;
           }
           setAuth(confirmedAuth);
@@ -632,6 +645,99 @@ export function HostedCommunitiesSettingsCard() {
       },
     );
   };
+
+  const refreshCommunities = () =>
+    run("Refreshing…", async () => {
+      const generation = accountGeneration.current;
+      if (!cardActive.current) return;
+      const refreshedAuth = await invoke<BuilderlabAuth | null>(
+        "get_builderlab_auth",
+      );
+      if (!cardActive.current || accountGeneration.current !== generation)
+        return;
+      setAuth(refreshedAuth);
+      if (!refreshedAuth) {
+        adoptAccountOwner(null);
+        setIdentity(null);
+        setCommunities([]);
+        setQuota(null);
+        setPendingDeletion(null);
+        setBlockingOwnerPubkey(null);
+        return;
+      }
+      const listedCommunities = await loadAccount();
+      if (!cardActive.current || accountGeneration.current !== generation)
+        return;
+      if (refreshedAuth.canDeleteBuzzCommunities !== true) return;
+
+      let restored = false;
+      for (const [communityId, envelope] of [
+        ...acceptedDeletions.current.entries(),
+      ]) {
+        if (
+          !listedCommunities.some((community) => community.id === communityId)
+        )
+          continue;
+        const stillEligible = () =>
+          cardActive.current &&
+          accountGeneration.current === generation &&
+          accountOwner.current === envelope.bound_owner_pubkey &&
+          envelope.backend_origin === BUILDERLAB_BACKEND_ORIGIN &&
+          acceptedDeletions.current.get(communityId) === envelope &&
+          !identityMismatch;
+        if (!stillEligible()) return;
+        const latestAuth = await invoke<BuilderlabAuth | null>(
+          "get_builderlab_auth",
+        );
+        if (!stillEligible()) return;
+        setAuth(latestAuth);
+        if (!latestAuth) {
+          adoptAccountOwner(null);
+          setIdentity(null);
+          setCommunities([]);
+          setQuota(null);
+          setPendingDeletion(null);
+          setBlockingOwnerPubkey(null);
+          return;
+        }
+        if (latestAuth.canDeleteBuzzCommunities !== true) return;
+        const request = publicDeletionRequest(envelope);
+        if (!stillEligible()) return;
+        const response = await invoke<CommunityDeletionTransport>(
+          "delete_builderlab_community",
+          {
+            communityId: request.community_id,
+            host: request.host,
+            requestId: request.request_id,
+            acknowledgementVersion: request.acknowledgement_version,
+          },
+        );
+        if (!stillEligible()) return;
+        if (
+          deletionResponseDisposition(response, envelope, "check") === "abort"
+        ) {
+          acceptedDeletions.current.delete(communityId);
+          restored = true;
+        }
+      }
+      if (
+        !restored ||
+        !cardActive.current ||
+        accountGeneration.current !== generation
+      )
+        return;
+      setCommunities(
+        listedCommunities.filter(
+          (community) =>
+            !community.id || !acceptedDeletions.current.has(community.id),
+        ),
+      );
+      setStatusMessage(
+        acceptedDeletions.current.size === 0
+          ? "Deletion stopped. This community is not being deleted."
+          : "Deletion started",
+      );
+    });
 
   React.useEffect(() => {
     if (!auth || loading || !boundHex) return;
@@ -805,7 +911,8 @@ export function HostedCommunitiesSettingsCard() {
           className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm"
           aria-live="polite"
         >
-          A deletion request from {safeNpub(blockingOwnerPubkey)} is still
+          A deletion request from{" "}
+          {safeNpub(blockingOwnerPubkey) ?? "another Buzz identity"} is still
           pending on this device. Switch to that Buzz identity and use Check
           deletion status before starting another deletion here. If you no
           longer have that identity, contact support.
@@ -959,11 +1066,7 @@ export function HostedCommunitiesSettingsCard() {
                 variant="ghost"
                 size="sm"
                 disabled={busy}
-                onClick={() =>
-                  void run("Refreshing…", async () => {
-                    await loadAccount();
-                  })
-                }
+                onClick={() => void refreshCommunities()}
               >
                 <RefreshCw className="h-4 w-4" /> Refresh
               </Button>
@@ -1042,9 +1145,11 @@ export function HostedCommunitiesSettingsCard() {
             </div>
             {atCommunityLimit ? (
               <p className="text-sm text-muted-foreground">
-                {quota?.limit != null
-                  ? `You've reached the limit of ${quota.limit} hosted communities. A deletion frees its slot only after logical cleanup completes.`
-                  : "You've reached the hosted-community limit. A deletion frees its slot only after logical cleanup completes."}
+                {quota?.limit === 0
+                  ? "You can't create more communities right now."
+                  : quota?.limit != null
+                    ? `You've reached the limit of ${quota.limit} hosted communities. A deletion frees its slot only after logical cleanup completes.`
+                    : "You've reached the hosted-community limit. A deletion frees its slot only after logical cleanup completes."}
               </p>
             ) : null}
             <div className="flex max-w-xl items-center gap-2">

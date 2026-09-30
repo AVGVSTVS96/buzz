@@ -265,6 +265,7 @@ type E2eConfig = {
       code: string;
       message?: string;
     } | null>;
+    builderlabDeletionStatusSequence?: string[];
     builderlabDeletionHttpStatusSequence?: number[];
     builderlabDeletionBodyStatus?: number;
     /** Hold deletion responses until the test explicitly releases them. */
@@ -12707,6 +12708,8 @@ export function maybeInstallE2eTauriMocks() {
           requestId?: string;
           acknowledgementVersion?: number;
         };
+        const statusSequence =
+          activeConfig?.mock?.builderlabDeletionStatusSequence;
         return {
           http_status: 202,
           body: {
@@ -12714,7 +12717,11 @@ export function maybeInstallE2eTauriMocks() {
             host: input.host,
             request_id: input.requestId,
             acknowledgement_version: input.acknowledgementVersion,
-            status: "submitted",
+            status: statusSequence?.length
+              ? statusSequence.length > 1
+                ? statusSequence.shift()
+                : statusSequence[0]
+              : "submitted",
           },
         };
       }

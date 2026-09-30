@@ -8,6 +8,8 @@ import {
   persistPendingCommunityDeletion,
   pendingCommunityDeletionMatchesAccount,
   pendingCommunityDeletionMatchesPersisted,
+  pendingCommunityDeletionForAccount,
+  publicDeletionRequest,
 } from "./communityDeletionPending.ts";
 
 function storage() {
@@ -52,6 +54,45 @@ test("pending deletion round-trips exact host bytes and account binding", () => 
       "https://app.builderlab.xyz",
     ),
     false,
+  );
+});
+
+test("single-slot A-B-A view retains exact bytes and blocks another owner", () => {
+  const target = storage();
+  const bytes = JSON.stringify(envelope);
+  target.setItem("buzz:hosted-community-delete-pending:v1", bytes);
+  assert.deepEqual(pendingCommunityDeletionForAccount("a".repeat(64), target), {
+    owned: envelope,
+    blockedByAnotherAccount: false,
+  });
+  assert.deepEqual(pendingCommunityDeletionForAccount("b".repeat(64), target), {
+    owned: null,
+    blockedByAnotherAccount: true,
+  });
+  assert.equal(
+    target.getItem("buzz:hosted-community-delete-pending:v1"),
+    bytes,
+  );
+  assert.equal(
+    persistPendingCommunityDeletion(
+      { ...envelope, bound_owner_pubkey: "b".repeat(64) },
+      target,
+    ),
+    false,
+  );
+  assert.deepEqual(pendingCommunityDeletionForAccount("a".repeat(64), target), {
+    owned: envelope,
+    blockedByAnotherAccount: false,
+  });
+  assert.deepEqual(publicDeletionRequest(envelope), {
+    community_id: envelope.community_id,
+    host: envelope.host,
+    request_id: envelope.request_id,
+    acknowledgement_version: envelope.acknowledgement_version,
+  });
+  assert.equal(
+    target.getItem("buzz:hosted-community-delete-pending:v1"),
+    bytes,
   );
 });
 
@@ -435,7 +476,7 @@ test("missing native status cannot settle a typed deletion error", () => {
           attempt,
         ),
         "retain",
-        attempt + " " + code + " without native status is ambiguous",
+        `${attempt} ${code} without native status is ambiguous`,
       );
     }
   }

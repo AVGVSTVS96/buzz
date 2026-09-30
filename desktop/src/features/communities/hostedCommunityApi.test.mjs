@@ -120,6 +120,26 @@ test("shared unknown errors stay neutral on non-deletion surfaces when deletion 
   }
 });
 
+test("limit_reached uses the server quota when available and retains the fallback", () => {
+  assert.equal(
+    hostedCommunityErrorMessage(
+      { code: "limit_reached" },
+      undefined,
+      "fallback",
+      7,
+    ),
+    "You've reached the limit of 7 hosted communities.",
+  );
+  assert.equal(
+    hostedCommunityErrorMessage(
+      { code: "limit_reached" },
+      undefined,
+      "fallback",
+    ),
+    "You've reached the limit of 5 hosted communities.",
+  );
+});
+
 test("only explicit can_create false hides Create, never visible rows or absent projection", () => {
   for (const response of [
     {},

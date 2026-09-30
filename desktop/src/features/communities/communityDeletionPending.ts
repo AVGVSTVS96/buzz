@@ -155,6 +155,30 @@ export function pendingCommunityDeletionMatchesAccount(
   );
 }
 
+/** Project the single durable envelope for the current account without clearing another owner's intent. */
+export function pendingCommunityDeletionForAccount(
+  ownerPubkey: string | null,
+  storage: StorageLike = defaultStorage(),
+): {
+  owned: PendingCommunityDeletion | null;
+  blockedByAnotherAccount: boolean;
+} {
+  const stored = loadPendingCommunityDeletion(storage);
+  if (!stored || !ownerPubkey) {
+    return { owned: null, blockedByAnotherAccount: false };
+  }
+  if (
+    pendingCommunityDeletionMatchesAccount(
+      stored,
+      ownerPubkey,
+      BUILDERLAB_BACKEND_ORIGIN,
+    )
+  ) {
+    return { owned: stored, blockedByAnotherAccount: false };
+  }
+  return { owned: null, blockedByAnotherAccount: true };
+}
+
 export function publicDeletionRequest(
   envelope: PendingCommunityDeletion,
 ): CommunityDeletionRequest {

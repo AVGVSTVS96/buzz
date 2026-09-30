@@ -31,7 +31,7 @@ import {
   BUILDERLAB_BACKEND_ORIGIN,
   clearPendingCommunityDeletion,
   deletionResponseDisposition,
-  loadPendingCommunityDeletion,
+  pendingCommunityDeletionForAccount,
   pendingCommunityDeletionMatchesAccount,
   pendingCommunityDeletionMatchesPersisted,
   persistPendingCommunityDeletion,
@@ -89,6 +89,8 @@ export function HostedCommunitiesSettingsCard() {
   } | null>(null);
   const [pendingDeletion, setPendingDeletion] =
     React.useState<PendingCommunityDeletion | null>(null);
+  const [blockedByAnotherAccount, setBlockedByAnotherAccount] =
+    React.useState(false);
   const hiddenCommunityIds = React.useRef(new Set<string>());
   const recoveryAccount = React.useRef<string | null>(null);
   const deleteInFlight = React.useRef<symbol | null>(null);
@@ -140,26 +142,9 @@ export function HostedCommunitiesSettingsCard() {
       identityResponse.identity?.pubkey_hex,
     );
     adoptAccountOwner(nextOwner);
-    const storedDeletion = loadPendingCommunityDeletion();
-    if (!nextOwner) {
-      // Missing/unauthorized identity is not proof of an account change.
-      // Fence the old generation and hide its controls, but retain the
-      // durable recovery envelope until a known owner can be compared.
-      setPendingDeletion(null);
-    } else if (storedDeletion) {
-      if (
-        pendingCommunityDeletionMatchesAccount(
-          storedDeletion,
-          nextOwner,
-          BUILDERLAB_BACKEND_ORIGIN,
-        )
-      ) {
-        setPendingDeletion(storedDeletion);
-      } else {
-        clearPendingCommunityDeletion(storedDeletion);
-        setPendingDeletion(null);
-      }
-    }
+    const deletionView = pendingCommunityDeletionForAccount(nextOwner);
+    setPendingDeletion(deletionView.owned);
+    setBlockedByAnotherAccount(deletionView.blockedByAnotherAccount);
     setIdentity(identityResponse.identity ?? null);
     const nextCommunities = (communitiesResponse.communities ?? []).filter(
       (community) =>
@@ -402,6 +387,7 @@ export function HostedCommunitiesSettingsCard() {
             response.error,
             response.correlation_id,
             "Could not transfer ownership.",
+            quota?.limit,
           ),
         );
       }
@@ -537,10 +523,14 @@ export function HostedCommunitiesSettingsCard() {
   };
 
   const startCommunityDeletion = (community: HostedCommunity) => {
-    const storedDeletion = loadPendingCommunityDeletion();
+    const deletionView = pendingCommunityDeletionForAccount(boundHex);
+    if (deletionView.owned || deletionView.blockedByAnotherAccount) {
+      setPendingDeletion(deletionView.owned);
+      setBlockedByAnotherAccount(deletionView.blockedByAnotherAccount);
+      return;
+    }
     if (
       pendingDeletion !== null ||
-      storedDeletion !== null ||
       deleteInFlight.current !== null ||
       auth?.canDeleteBuzzCommunities !== true ||
       identityMismatch ||
@@ -568,6 +558,7 @@ export function HostedCommunitiesSettingsCard() {
       return;
     }
     setPendingDeletion(envelope);
+    setBlockedByAnotherAccount(false);
     void runDeletion("Starting deletion…", envelope, async (generation) => {
       try {
         await invokeDeletion(envelope, "initial", generation);
@@ -646,20 +637,9 @@ export function HostedCommunitiesSettingsCard() {
     const accountKey = `${BUILDERLAB_BACKEND_ORIGIN}:${boundHex}`;
     if (recoveryAccount.current === accountKey) return;
     recoveryAccount.current = accountKey;
-    const envelope = loadPendingCommunityDeletion();
-    if (!envelope) return;
-    if (
-      !pendingCommunityDeletionMatchesAccount(
-        envelope,
-        boundHex,
-        BUILDERLAB_BACKEND_ORIGIN,
-      )
-    ) {
-      clearPendingCommunityDeletion(envelope);
-      setPendingDeletion(null);
-      return;
-    }
-    setPendingDeletion(envelope);
+    const deletionView = pendingCommunityDeletionForAccount(boundHex);
+    setPendingDeletion(deletionView.owned);
+    setBlockedByAnotherAccount(deletionView.blockedByAnotherAccount);
   }, [auth, boundHex, loading]);
 
   const normalizedName = name.trim().toLowerCase();
@@ -740,6 +720,7 @@ export function HostedCommunitiesSettingsCard() {
             response.error,
             response.correlation_id,
             "Could not create the community.",
+            quota?.limit,
           ),
         );
       }
@@ -809,6 +790,17 @@ export function HostedCommunitiesSettingsCard() {
               Check deletion status
             </Button>
           </div>
+        </div>
+      ) : null}
+
+      {auth && boundHex && blockedByAnotherAccount ? (
+        <div
+          className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm"
+          aria-live="polite"
+        >
+          Another account has a pending deletion on this device. Sign in with
+          that account to check deletion status before starting another deletion
+          here.
         </div>
       ) : null}
 
@@ -987,7 +979,9 @@ export function HostedCommunitiesSettingsCard() {
                       busy={
                         busy || pendingDeletion?.community_id === community.id
                       }
-                      deletionPending={pendingDeletion !== null}
+                      deletionPending={
+                        pendingDeletion !== null || blockedByAnotherAccount
+                      }
                       canDelete={
                         deletionCapability &&
                         usableBoundIdentity &&

@@ -274,6 +274,7 @@ export function HostedCommunityCreateFlow({
             response.error,
             response.correlation_id,
             "Could not create the community.",
+            quota.limit,
           ),
         );
       }

@@ -143,6 +143,20 @@ async function storedDeletionRequestId(page: Page) {
   });
 }
 
+async function storedDeletionBytes(page: Page) {
+  return page.evaluate(() =>
+    window.localStorage.getItem("buzz:hosted-community-delete-pending:v1"),
+  );
+}
+
+async function deletionPayloads(page: Page) {
+  return page.evaluate(() =>
+    window.__BUZZ_E2E_COMMAND_PAYLOADS__
+      ?.filter(({ command }) => command === "delete_builderlab_community")
+      .map(({ payload }) => payload),
+  );
+}
+
 test("reopen sends nothing and Check resends the same saved request once", async ({
   page,
 }) => {
@@ -351,23 +365,45 @@ test("transient identity loss hides but retains an ambiguous envelope and restor
   await expect.poll(() => storedDeletionRequestId(page)).toBe(requestId);
 });
 
-test("a valid different bound owner discards the prior owner's envelope", async ({
+test("A-B-A owner switch retains exact bytes and replays only under A", async ({
   page,
 }) => {
   await openDeletionFixture(page, {
     capability: true,
-    errorCode: "acceptance_unknown",
+    errorSequence: [{ code: "acceptance_unknown" }, null],
     identityResponseSequence: [
       { identity: { pubkey_hex: DEFAULT_MOCK_PUBKEY } },
       { identity: { pubkey_hex: OTHER_HEX } },
+      { identity: { pubkey_hex: DEFAULT_MOCK_PUBKEY } },
     ],
   });
   await startArchivedDeletion(page);
   const requestId = await storedDeletionRequestId(page);
+  const bytes = await storedDeletionBytes(page);
+  const firstCalls = await deletionPayloads(page);
+  expect(firstCalls).toHaveLength(1);
 
   await page.getByRole("button", { name: "Refresh" }).click();
   await expect(page.getByText(requestId, { exact: true })).toHaveCount(0);
-  await expect.poll(() => storedDeletionRequestId(page)).toBeNull();
+  await expect(
+    page.getByRole("button", { name: "Check deletion status" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText(/another account has a pending deletion/i),
+  ).toBeVisible();
+  await expect.poll(() => storedDeletionBytes(page)).toBe(bytes);
+  expect(await deletionPayloads(page)).toHaveLength(1);
+
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.getByText(requestId, { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Check deletion status" }),
+  ).toBeVisible();
+  await expect.poll(() => storedDeletionBytes(page)).toBe(bytes);
+  await page.getByRole("button", { name: "Check deletion status" }).click();
+  await expect
+    .poll(() => deletionPayloads(page))
+    .toEqual([firstCalls?.[0], firstCalls?.[0]]);
 });
 
 test("sign out hides but retains an ambiguous envelope for same-owner reauthentication", async ({
@@ -398,6 +434,7 @@ test("late A response cannot settle after a valid A-B-A owner transition", async
   });
   await startArchivedDeletion(page);
   await expect.poll(() => storedDeletionRequestId(page)).not.toBeNull();
+  const bytes = await storedDeletionBytes(page);
 
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("settings-view")).toHaveCount(0);
@@ -407,7 +444,7 @@ test("late A response cannot settle after a valid A-B-A owner transition", async
     }
   }, OTHER_HEX);
   await openSettings(page, "hosted-communities");
-  await expect.poll(() => storedDeletionRequestId(page)).toBeNull();
+  await expect.poll(() => storedDeletionBytes(page)).toBe(bytes);
   await expect(
     page.getByText("This account is connected to a different Buzz identity"),
   ).toBeVisible();
@@ -422,6 +459,9 @@ test("late A response cannot settle after a valid A-B-A owner transition", async
   await expect(
     page.getByText("This account is connected to a different Buzz identity"),
   ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Check deletion status" }),
+  ).toBeVisible();
   await expect
     .poll(() =>
       page.evaluate(() => window.__BUZZ_E2E_RELEASE_BUILDERLAB_DELETIONS__?.()),
@@ -430,7 +470,53 @@ test("late A response cannot settle after a valid A-B-A owner transition", async
   await expect(page.getByText("Deletion started", { exact: true })).toHaveCount(
     0,
   );
-  await expect.poll(() => storedDeletionRequestId(page)).toBeNull();
+  await expect.poll(() => storedDeletionBytes(page)).toBe(bytes);
+});
+
+test("a changed persisted request fences Check before dispatch in one mounted card", async ({
+  page,
+}) => {
+  await openDeletionFixture(page, {
+    capability: true,
+    errorSequence: [{ code: "acceptance_unknown" }, null],
+  });
+  await startArchivedDeletion(page);
+  await expect(
+    page.getByRole("button", { name: "Check deletion status" }),
+  ).toBeVisible();
+  const replacement = await page.evaluate(() => {
+    const key = "buzz:hosted-community-delete-pending:v1";
+    const raw = window.localStorage.getItem(key);
+    if (!raw) throw new Error("missing original envelope");
+    const before =
+      window.__BUZZ_E2E_COMMANDS__?.filter(
+        (command) => command === "get_builderlab_auth",
+      ).length ?? 0;
+    const button = [...document.querySelectorAll("button")].find((candidate) =>
+      candidate.textContent?.includes("Check deletion status"),
+    );
+    if (!(button instanceof HTMLButtonElement))
+      throw new Error("missing Check button");
+    button.click();
+    const after =
+      window.__BUZZ_E2E_COMMANDS__?.filter(
+        (command) => command === "get_builderlab_auth",
+      ).length ?? 0;
+    if (after !== before + 1)
+      throw new Error("Check did not enter the auth preflight");
+    const next = {
+      ...JSON.parse(raw),
+      request_id: "44444444-4444-4444-8444-444444444444",
+    };
+    const bytes = JSON.stringify(next);
+    window.localStorage.setItem(key, bytes);
+    return bytes;
+  });
+  await expect.poll(() => storedDeletionBytes(page)).toBe(replacement);
+  await expect.poll(async () => (await deletionPayloads(page))?.length).toBe(1);
+  await expect(page.getByText("Deletion started", { exact: true })).toHaveCount(
+    0,
+  );
 });
 
 test("a pre-remount acceptance cannot erase a later uncertain request", async ({

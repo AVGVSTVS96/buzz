@@ -90,12 +90,17 @@ export function hostedCommunityErrorMessage(
   error: HostedCommunityApiError | undefined,
   correlationId: string | undefined,
   fallback: string,
+  quotaLimit?: number | null,
 ) {
+  const displayedLimit =
+    quotaLimit != null && Number.isInteger(quotaLimit) && quotaLimit > 0
+      ? quotaLimit
+      : HOSTED_COMMUNITY_LIMIT;
   const messages: Record<string, string> = {
     missing_mapping: "Connect your Buzz identity before creating a community.",
     invalid_name: "Use lowercase letters, numbers, and hyphens.",
     taken: "That Buzz address is already taken.",
-    limit_reached: `You've reached the limit of ${HOSTED_COMMUNITY_LIMIT} hosted communities.`,
+    limit_reached: `You've reached the limit of ${displayedLimit} hosted communities.`,
     relay_unavailable: "Community provisioning is temporarily unavailable.",
     identity_already_bound:
       "This Builderlab account is connected to another Buzz identity.",

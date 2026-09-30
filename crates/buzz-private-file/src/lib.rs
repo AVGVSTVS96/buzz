@@ -49,11 +49,11 @@ const OWNER_ONLY: &str = "D:P(A;;FA;;;OW)";
 /// removes.
 #[allow(unsafe_code)]
 pub fn create_new(path: &Path) -> io::Result<File> {
-    let descriptor = owner_only()?;
+    let owner_only = descriptor(OWNER_ONLY)?;
     let path = verbatim(path)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor.0,
+        lpSecurityDescriptor: owner_only.0,
         bInheritHandle: 0,
     };
     // SAFETY: `path` is NUL-terminated and `attributes` points at a descriptor
@@ -102,7 +102,7 @@ pub fn open_owned(path: &Path) -> io::Result<File> {
             "file is not owned by the current user",
         ));
     }
-    restrict_to_owner(&file)?;
+    set_dacl(&file, OWNER_ONLY)?;
     Ok(file)
 }
 
@@ -117,10 +117,10 @@ impl Drop for Local {
     }
 }
 
-/// [`OWNER_ONLY`] as a security descriptor.
+/// An SDDL string as a security descriptor.
 #[allow(unsafe_code)]
-fn owner_only() -> io::Result<Local> {
-    let sddl: Vec<u16> = OWNER_ONLY.encode_utf16().chain(Some(0)).collect();
+fn descriptor(sddl: &str) -> io::Result<Local> {
+    let sddl: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
     let mut descriptor = null_mut();
     // SAFETY: `sddl` is NUL-terminated; on success Windows allocates `descriptor`.
     let ok = unsafe {
@@ -137,10 +137,11 @@ fn owner_only() -> io::Result<Local> {
     Ok(Local(descriptor))
 }
 
-/// Replace the DACL of a handle opened with `WRITE_DAC` by [`OWNER_ONLY`].
+/// Replace the DACL of a handle opened with `WRITE_DAC` by the protected DACL
+/// in `sddl`.
 #[allow(unsafe_code)]
-fn restrict_to_owner(file: &File) -> io::Result<()> {
-    let descriptor = owner_only()?;
+fn set_dacl(file: &File, sddl: &str) -> io::Result<()> {
+    let descriptor = descriptor(sddl)?;
     let (mut present, mut dacl, mut defaulted) = (0, null_mut(), 0);
     // SAFETY: `descriptor` is valid, and `dacl` points into it.
     if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) }
@@ -332,6 +333,22 @@ pub fn assert_owner_only(file: &File, why: &str) {
     assert_eq!(aces, "A;;FA;;;OW)", "{why}: DACL is not owner-only: {sddl}");
 }
 
+/// Test support: also let Everyone read `path`, and check that it took, so a
+/// test can show that [`open_owned`] repairs a loose file.
+#[cfg(any(test, feature = "test-support"))]
+#[track_caller]
+pub fn grant_everyone_read(path: &Path) {
+    use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
+
+    let file = OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .open(path)
+        .unwrap();
+    set_dacl(&file, "D:P(A;;FA;;;OW)(A;;FR;;;WD)").unwrap();
+    let sddl = dacl(&file);
+    assert!(sddl.contains(";;;WD)"), "Everyone cannot read: {sddl}");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,10 +386,11 @@ mod tests {
     }
 
     #[test]
-    fn open_owned_tightens_inherited_permissions() {
+    fn open_owned_tightens_loose_permissions() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("token.json");
         std::fs::write(&path, "legacy").unwrap();
+        grant_everyone_read(&path);
         let file = open_owned(&path).unwrap();
         assert_owner_only(&file, "tightened file");
         assert_eq!(read(file), "legacy");

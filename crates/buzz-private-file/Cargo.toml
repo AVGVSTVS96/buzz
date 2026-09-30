@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Owner-only files on Windows, keeping Win32 security FFI out of buzz-agent"
 
 [features]
-# `assert_owner_only`, for other crates' tests.
+# `assert_owner_only` and `grant_everyone_read`, for other crates' tests.
 test-support = []
 
 [target.'cfg(windows)'.dependencies]

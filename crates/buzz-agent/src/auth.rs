@@ -2864,7 +2864,6 @@ mod tests {
         // A world-readable cache left by an older buzz-agent must be tightened
         // the moment we load it — on the plain cache-hit path, with no refresh
         // or save. Otherwise the pre-bug population stays exposed indefinitely.
-        // On Windows a plain `fs::write` already inherits the directory's ACL.
         let dir = tempfile::tempdir().unwrap();
         let cfg = PkceOAuthConfig {
             discovery_url: "https://example.com/.well-known".into(),
@@ -2895,6 +2894,8 @@ mod tests {
             fs::set_permissions(&cache_path, fs::Permissions::from_mode(0o644)).unwrap();
             fs::metadata(&cache_path).unwrap().ino()
         };
+        #[cfg(windows)]
+        buzz_private_file::grant_everyone_read(&cache_path);
 
         // Constructing the source loads the cache — repair happens here.
         let source = PkceOAuthTokenSource::new(cfg).unwrap();

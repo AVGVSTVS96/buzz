@@ -27,7 +27,8 @@ type RefreshContext = {
 export async function refreshAcceptedCommunityDeletions(
   context: RefreshContext,
 ): Promise<void> {
-  if (!context.isCurrent() || context.identityMismatch) return;
+  if (!context.isCurrent()) return;
+  const skipReplay = context.identityMismatch;
   let auth = await invoke<BuilderlabAuth | null>("get_builderlab_auth");
   if (!context.isCurrent()) return;
   context.setAuth(auth);
@@ -36,7 +37,7 @@ export async function refreshAcceptedCommunityDeletions(
     return;
   }
   const listed = await context.loadAccount();
-  if (!context.isCurrent()) return;
+  if (!context.isCurrent() || skipReplay) return;
   if (auth.canDeleteBuzzCommunities !== true) return;
 
   let restored = false;

@@ -29,9 +29,11 @@ use windows_sys::Win32::Security::{
     SECURITY_ATTRIBUTES, TOKEN_OWNER, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, WRITE_DAC,
+    CreateFileW, GetVolumeInformationByHandleW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, WRITE_DAC,
 };
+use windows_sys::Win32::System::SystemServices::FILE_PERSISTENT_ACLS;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 /// Full access for the file's owner and nobody else; `P` blocks inherited ACEs.
@@ -42,7 +44,9 @@ const OWNER_ONLY: &str = "D:P(A;;FA;;;OW)";
 /// Fails if `path` exists, even as a dangling link. The DACL is set atomically
 /// at creation, so no other user can open the file even briefly. Read, write
 /// and delete sharing match std, so another process can still rename a new
-/// file over this path.
+/// file over this path. On a volume that cannot store ACLs, such as FAT or
+/// exFAT, it returns an error after creating the empty file, which the caller
+/// removes.
 #[allow(unsafe_code)]
 pub fn create_new(path: &Path) -> io::Result<File> {
     let descriptor = owner_only()?;
@@ -69,15 +73,17 @@ pub fn create_new(path: &Path) -> io::Result<File> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: `handle` is a valid file handle that nothing else owns.
-    Ok(unsafe { File::from_raw_handle(handle) })
+    let file = unsafe { File::from_raw_handle(handle) };
+    require_acls(&file)?;
+    Ok(file)
 }
 
 /// Open an existing owner-only file for reading.
 ///
 /// Does not follow a final symlink or junction, and refuses anything but a
-/// regular file owned by this process's default owner, which is the owner
-/// [`create_new`] assigns. It then re-applies the owner-only DACL on the open
-/// handle, so a file with inherited permissions is tightened before use.
+/// regular file on a volume with ACLs, owned by this process's default owner,
+/// which is the owner [`create_new`] assigns. It then re-applies the
+/// owner-only DACL on the open handle, so a loose file is tightened before use.
 pub fn open_owned(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .access_mode(FILE_GENERIC_READ | WRITE_DAC)
@@ -89,6 +95,7 @@ pub fn open_owned(path: &Path) -> io::Result<File> {
             "not a regular file",
         ));
     }
+    require_acls(&file)?;
     if !owned_by_current_process(&file)? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -208,6 +215,37 @@ fn owned_by_current_process(file: &File) -> io::Result<bool> {
     // SAFETY: Windows wrote a `TOKEN_OWNER` whose SID lives in `buffer`, and
     // `owner` lives in `_descriptor`; both outlive the comparison.
     Ok(unsafe { EqualSid(owner, (*buffer.as_ptr().cast::<TOKEN_OWNER>()).Owner) } != 0)
+}
+
+/// Refuse a file on a volume that cannot store ACLs, such as FAT or exFAT,
+/// where Windows silently drops the DACL.
+#[allow(unsafe_code)]
+fn require_acls(file: &File) -> io::Result<()> {
+    let mut flags = 0;
+    // SAFETY: the handle is open, and null buffers of size zero skip the
+    // outputs this does not need.
+    let ok = unsafe {
+        GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            null_mut(),
+            0,
+            null_mut(),
+            null_mut(),
+            &mut flags,
+            null_mut(),
+            0,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if flags & FILE_PERSISTENT_ACLS == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "volume cannot store file permissions",
+        ));
+    }
+    Ok(())
 }
 
 fn win32(status: WIN32_ERROR) -> io::Result<()> {

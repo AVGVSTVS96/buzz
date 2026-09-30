@@ -56,6 +56,7 @@ import {
 } from "@/shared/ui/alert-dialog";
 import { Button, buttonVariants } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
+import { refreshAcceptedCommunityDeletions } from "./acceptedDeletionRefresh";
 import { SettingsSectionHeader } from "./SettingsSectionHeader";
 import { HostedCommunityRow } from "./HostedCommunityRow";
 
@@ -209,6 +210,16 @@ export function HostedCommunitiesSettingsCard() {
     }
   };
 
+  const clearAccountView = () => {
+    adoptAccountOwner(null);
+    setAuth(null);
+    setIdentity(null);
+    setCommunities([]);
+    setQuota(null);
+    setPendingDeletion(null);
+    setBlockingOwnerPubkey(null);
+  };
+
   const signIn = () =>
     run("Signing in…", async () => {
       const nextAuth = await invoke<BuilderlabAuth>("start_builderlab_login");
@@ -219,13 +230,7 @@ export function HostedCommunitiesSettingsCard() {
   const signOut = () =>
     run("Signing out…", async () => {
       await invoke("clear_builderlab_auth");
-      adoptAccountOwner(null);
-      setAuth(null);
-      setIdentity(null);
-      setCommunities([]);
-      setQuota(null);
-      setPendingDeletion(null);
-      setBlockingOwnerPubkey(null);
+      clearAccountView();
       setStatusMessage(null);
       setName("");
       setAvailability(null);
@@ -600,13 +605,7 @@ export function HostedCommunitiesSettingsCard() {
           );
           if (!deletionContextMatches(envelope, generation)) return;
           if (!refreshedAuth) {
-            adoptAccountOwner(null);
-            setAuth(null);
-            setIdentity(null);
-            setCommunities([]);
-            setQuota(null);
-            setPendingDeletion(null);
-            setBlockingOwnerPubkey(null);
+            clearAccountView();
             return;
           }
           setAuth(refreshedAuth);
@@ -622,13 +621,7 @@ export function HostedCommunitiesSettingsCard() {
           );
           if (!deletionContextMatches(envelope, generation)) return;
           if (!confirmedAuth) {
-            adoptAccountOwner(null);
-            setAuth(null);
-            setIdentity(null);
-            setCommunities([]);
-            setQuota(null);
-            setPendingDeletion(null);
-            setBlockingOwnerPubkey(null);
+            clearAccountView();
             return;
           }
           setAuth(confirmedAuth);
@@ -649,94 +642,29 @@ export function HostedCommunitiesSettingsCard() {
   const refreshCommunities = () =>
     run("Refreshing…", async () => {
       const generation = accountGeneration.current;
-      if (!cardActive.current) return;
-      const refreshedAuth = await invoke<BuilderlabAuth | null>(
-        "get_builderlab_auth",
-      );
-      if (!cardActive.current || accountGeneration.current !== generation)
-        return;
-      setAuth(refreshedAuth);
-      if (!refreshedAuth) {
-        adoptAccountOwner(null);
-        setIdentity(null);
-        setCommunities([]);
-        setQuota(null);
-        setPendingDeletion(null);
-        setBlockingOwnerPubkey(null);
-        return;
-      }
-      const listedCommunities = await loadAccount();
-      if (!cardActive.current || accountGeneration.current !== generation)
-        return;
-      if (refreshedAuth.canDeleteBuzzCommunities !== true) return;
-
-      let restored = false;
-      for (const [communityId, envelope] of [
-        ...acceptedDeletions.current.entries(),
-      ]) {
-        if (
-          !listedCommunities.some((community) => community.id === communityId)
-        )
-          continue;
-        const stillEligible = () =>
-          cardActive.current &&
-          accountGeneration.current === generation &&
-          accountOwner.current === envelope.bound_owner_pubkey &&
-          envelope.backend_origin === BUILDERLAB_BACKEND_ORIGIN &&
-          acceptedDeletions.current.get(communityId) === envelope &&
-          !identityMismatch;
-        if (!stillEligible()) return;
-        const latestAuth = await invoke<BuilderlabAuth | null>(
-          "get_builderlab_auth",
-        );
-        if (!stillEligible()) return;
-        setAuth(latestAuth);
-        if (!latestAuth) {
-          adoptAccountOwner(null);
-          setIdentity(null);
-          setCommunities([]);
-          setQuota(null);
-          setPendingDeletion(null);
-          setBlockingOwnerPubkey(null);
-          return;
-        }
-        if (latestAuth.canDeleteBuzzCommunities !== true) return;
-        const request = publicDeletionRequest(envelope);
-        if (!stillEligible()) return;
-        const response = await invoke<CommunityDeletionTransport>(
-          "delete_builderlab_community",
-          {
-            communityId: request.community_id,
-            host: request.host,
-            requestId: request.request_id,
-            acknowledgementVersion: request.acknowledgement_version,
-          },
-        );
-        if (!stillEligible()) return;
-        if (
-          deletionResponseDisposition(response, envelope, "check") === "abort"
-        ) {
-          acceptedDeletions.current.delete(communityId);
-          restored = true;
-        }
-      }
-      if (
-        !restored ||
-        !cardActive.current ||
-        accountGeneration.current !== generation
-      )
-        return;
-      setCommunities(
-        listedCommunities.filter(
-          (community) =>
-            !community.id || !acceptedDeletions.current.has(community.id),
-        ),
-      );
-      setStatusMessage(
-        acceptedDeletions.current.size === 0
-          ? "Deletion stopped. This community is not being deleted."
-          : "Deletion started",
-      );
+      await refreshAcceptedCommunityDeletions({
+        accepted: acceptedDeletions.current,
+        isCurrent: () =>
+          cardActive.current && accountGeneration.current === generation,
+        ownerPubkey: () => accountOwner.current,
+        identityMismatch,
+        loadAccount,
+        setAuth,
+        clearAccount: clearAccountView,
+        restoreListed: (listed) => {
+          setCommunities(
+            listed.filter(
+              (community) =>
+                !community.id || !acceptedDeletions.current.has(community.id),
+            ),
+          );
+          setStatusMessage(
+            acceptedDeletions.current.size === 0
+              ? "Deletion stopped. This community is not being deleted."
+              : "Deletion started",
+          );
+        },
+      });
     });
 
   React.useEffect(() => {

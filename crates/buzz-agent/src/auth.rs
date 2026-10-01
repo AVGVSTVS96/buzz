@@ -133,6 +133,9 @@ pub enum AuthError {
     /// An OAuth network call (discovery/refresh/exchange) could not reach the
     /// provider or timed out.
     NetworkUnavailable,
+    /// The token could not be persisted with owner-only protection.
+    /// Fix the cache location or permissions before attempting sign-in again.
+    CacheUnavailable,
     /// A refresh-token grant was rejected (dead/rotated refresh token) and the
     /// caller may not fall back to a browser.
     RefreshRejected,
@@ -155,6 +158,7 @@ impl AuthError {
             Self::TimedOut => "timed_out",
             Self::BrowserOpenFailed => "browser_open_failed",
             Self::NetworkUnavailable => "network_unavailable",
+            Self::CacheUnavailable => "cache_unavailable",
             Self::RefreshRejected => "refresh_rejected",
             Self::ExchangeFailed => "exchange_failed",
             Self::LockTimeout => "lock_timeout",
@@ -164,7 +168,7 @@ impl AuthError {
     /// `true` for the browser-attempt outcomes worth recording in the cooldown
     /// sidecar — the failures that would otherwise re-pop a browser on the
     /// next automatic attempt. Non-browser failures (no credential, refresh
-    /// rejection, lock timeout, network) are not recorded.
+    /// rejection, lock timeout, network, storage) are not recorded.
     fn is_cooldown_worthy(&self) -> bool {
         matches!(
             self,
@@ -173,9 +177,9 @@ impl AuthError {
     }
 
     /// Reconstruct a recorded outcome from its [`code`](Self::code). The
-    /// cooldown-worthy variants always round-trip; `RefreshRejected` and
-    /// `NoCredential` are also reconstructed for the cross-process attempt
-    /// adoption path. Any other code (a forward-compat sidecar written by a
+    /// cooldown-worthy variants always round-trip; `RefreshRejected`,
+    /// `NoCredential` and `CacheUnavailable` are also reconstructed for
+    /// cross-process attempt adoption. Any other code (a sidecar written by a
     /// newer buzz-agent) yields `None`, treated as "no active record" rather
     /// than a hard failure.
     fn from_code(code: &str) -> Option<Self> {
@@ -186,6 +190,7 @@ impl AuthError {
             "exchange_failed" => Some(Self::ExchangeFailed),
             "refresh_rejected" => Some(Self::RefreshRejected),
             "no_credential" => Some(Self::NoCredential),
+            "cache_unavailable" => Some(Self::CacheUnavailable),
             _ => None,
         }
     }
@@ -199,6 +204,7 @@ impl AuthError {
             Self::TimedOut => "Databricks browser authorization timed out".into(),
             Self::BrowserOpenFailed => "could not open a browser for Databricks sign-in".into(),
             Self::NetworkUnavailable => "could not reach Databricks to authenticate".into(),
+            Self::CacheUnavailable => "could not securely save the Databricks token cache; use a writable cache location with owner-only file permissions (Windows FAT/exFAT volumes are not supported)".into(),
             Self::RefreshRejected => "Databricks rejected the refresh token; sign in again".into(),
             Self::ExchangeFailed => "Databricks rejected the authorization code".into(),
             Self::LockTimeout => "timed out waiting for a concurrent Databricks sign-in".into(),
@@ -209,7 +215,8 @@ impl AuthError {
 impl From<AuthError> for AgentError {
     /// Map a typed auth failure onto the crate error the [`TokenSource`] trait
     /// returns. Auth-decision failures become [`AgentError::LlmAuth`] so the
-    /// caller's retry loop stops instead of hammering a rejected credential;
+    /// caller's retry loop stops instead of hammering a rejected credential.
+    /// Storage failures are terminal too: retrying OAuth cannot fix the cache;
     /// purely infrastructural failures (network, lock contention) become
     /// [`AgentError::Llm`], matching the pre-coordinator classification of a
     /// discovery/network error.
@@ -221,7 +228,8 @@ impl From<AuthError> for AgentError {
             | AuthError::TimedOut
             | AuthError::BrowserOpenFailed
             | AuthError::RefreshRejected
-            | AuthError::ExchangeFailed => AgentError::LlmAuth(e.message()),
+            | AuthError::ExchangeFailed
+            | AuthError::CacheUnavailable => AgentError::LlmAuth(e.message()),
         }
     }
 }
@@ -1241,9 +1249,9 @@ impl PkceOAuthTokenSource {
 
     /// Persist a freshly-obtained token, clear any cooldown, and return the
     /// full [`CachedToken`] on success. A cache-write failure maps to
-    /// [`AuthError::NetworkUnavailable`] (the infrastructural bucket) — the
-    /// token was valid but couldn't be persisted, which the caller should treat
-    /// as transient, not as a credential rejection.
+    /// [`AuthError::CacheUnavailable`] — the token was valid but could not be
+    /// securely persisted. Do not return it or install it in memory: other
+    /// processes must be able to share the owner-only cache.
     ///
     /// The candidate-token persistence boundary for refresh and browser results.
     /// Cache-hit paths bypass this function, but every refresh- or browser-issued
@@ -1278,7 +1286,7 @@ impl PkceOAuthTokenSource {
             });
         }
         self.save(state, token.clone())
-            .map_err(|_| AuthError::NetworkUnavailable)?;
+            .map_err(|_| AuthError::CacheUnavailable)?;
         clear_cooldown(&self.cooldown_path());
         Ok(token)
     }
@@ -2717,6 +2725,13 @@ mod tests {
         );
         // The success page is a fixed literal — no request data in it.
         assert!(!page.contains("auth-code-123"));
+    }
+
+    #[test]
+    fn cache_failure_round_trips_for_attempt_adoption_but_not_cooldown() {
+        let error = AuthError::CacheUnavailable;
+        assert_eq!(AuthError::from_code(error.code()), Some(error.clone()));
+        assert!(!error.is_cooldown_worthy());
     }
 
     // ---- private atomic cache write --------------------------------------

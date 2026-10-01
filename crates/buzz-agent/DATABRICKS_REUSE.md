@@ -55,6 +55,30 @@ No old cache migration/deletion, credential rewrite, app launch, internal host,
 internal release settings, or production dependency on a developer checkout is
 part of this patch.
 
+## Windows secure-cache compatibility
+
+Windows OAuth now requires a writable cache on a filesystem with persistent
+ACLs (normally local NTFS). FAT/exFAT and other volumes without persistent ACLs
+are deliberately unsupported: unlike the previous memory-only Windows behavior,
+a completed sign-in fails if the token cannot be stored privately. There is no
+unprotected write or memory-only success fallback; separate app/agent processes
+need the same private cache. This restriction applies to legacy OAuth too.
+
+A failed token save returns `AuthError::CacheUnavailable` (`cache_unavailable`),
+not `NetworkUnavailable`. The CLI explains that secure token storage failed and
+requests a writable, permission-capable location; automatic inference retries
+stop. App callers of `connect()` should present the storage problem rather than
+suggesting another browser sign-in. Choose an app-owned local NTFS cache root;
+for the legacy CLI, point `BUZZ_AGENT_CONFIG_DIR` at such a directory and retry.
+The failed candidate is not installed in memory, and the temporary-file guard
+attempts cleanup before returning the error. No filesystem permission checks
+are relaxed.
+
+Native standard-user ownership, second-account denial, unsupported-volume
+cleanup and network-hosted roots still require explicit Windows evidence. A
+passing elevated CI run does not certify those cases. Network-hosted roots are
+not a validated deployment configuration; use a local cache for now.
+
 ## Validation boundaries
 
 Synthetic HTTPS servers use ephemeral test-only certificates; all cache contents,

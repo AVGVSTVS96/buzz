@@ -124,8 +124,8 @@ controllers.
 
 We use `cargo audit` in CI to scan for known vulnerabilities in dependencies.
 Unsafe Rust is denied by default. Exceptions are narrow, maintainer-approved
-unsafe code needed for OS or FFI integration where no safe alternative exists;
-see [CONTRIBUTING.md](CONTRIBUTING.md#unsafe-code).
+unsafe code where no safe alternative exists, including OS/FFI integration and
+low-level memory operations; see [CONTRIBUTING.md](CONTRIBUTING.md#unsafe-code).
 
 ---
 

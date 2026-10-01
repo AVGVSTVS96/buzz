@@ -2185,17 +2185,9 @@ async fn test_rejected_token_in_memory_neutralized_when_disk_neutralization_skip
         2,
         "in-memory `A` was force-expired; same source went to the network rather than serving the dead token"
     );
-    // The sticky refresh obtained `A` from the network (grant #2). The persist()
-    // call fails because the cache path is now a directory — save() maps the
-    // persist failure to NetworkUnavailable. This proves: (a) the in-memory
-    // neutralization worked (the source re-validated rather than serving A from
-    // the expired in-memory cell), and (b) the network was reached. The
-    // NetworkUnavailable result is an expected artifact of the directory-as-
-    // cache-path test setup, not a correctness gap.
-    assert!(
-        matches!(next, Err(AuthError::NetworkUnavailable)),
-        "save() fails with NetworkUnavailable on persist failure (expected artifact of test setup)"
-    );
+    // The successful refresh cannot be saved over a directory. Report storage,
+    // not network: the provider was reached and issued a valid token.
+    assert_eq!(next, Err(AuthError::CacheUnavailable));
     assert_ne!(
         next,
         Ok("A".to_owned()),
@@ -3163,3 +3155,6 @@ async fn test_crossprocess_waiter_with_different_rejected_does_not_adopt_leaders
         "both workers run their own refresh — digest mismatch prevented adoption"
     );
 }
+
+#[path = "databricks_auth_coordinator/storage.rs"]
+mod storage;

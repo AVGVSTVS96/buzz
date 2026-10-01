@@ -199,17 +199,20 @@ fn normalized_search_text(q: &str) -> Option<String> {
 
 /// Execute a community-scoped FTS query.
 ///
-/// SQL shape (always):
+/// SQL shape (bracketed parts are emitted only for `kinds == [0]`):
 /// ```sql
 /// SELECT id, kind, pubkey, channel_id, EXTRACT(EPOCH FROM created_at)::bigint AS created_at_s,
 ///        ts_rank_cd(search_tsv, query) AS rank
+///        [, <profile name fields as tsvector> @@ query AS name_match]
 /// FROM events,
 ///      <mode-specific tsquery> AS query
 /// WHERE community_id = $ctx
 ///   AND deleted_at IS NULL
 ///   AND search_tsv @@ query
 ///   [+ channel scope, kinds, authors, since, until]
-/// ORDER BY rank DESC, created_at DESC, id
+/// ORDER BY [name_match DESC,]
+///          [search_tsv @@ websearch_to_tsquery('simple', $q) DESC,]  -- prefix mode, ≤ 2 chars
+///          rank DESC, created_at DESC, id
 /// LIMIT $per_page OFFSET (($page - 1) * $per_page)
 /// ```
 ///
@@ -232,21 +235,42 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
     };
     let page = query.page.clamp(1, PAGE_MAX);
     let offset = ((page - 1) as i64) * (per_page_actual as i64);
-    // Profile typeahead uses broad prefix matching. For one- and two-character
-    // queries, a busy community can have enough newer prefix matches to push a
-    // short exact display name off the bounded first page. Keep the same result
-    // set and pagination contract, but put rows containing the whole lexeme
-    // first for this one narrow caller shape.
-    let prioritize_exact_profile_lexeme = query.mode == SearchMode::Prefix
-        && query.kinds.as_deref() == Some(&[0][..])
-        && search_text.chars().count() <= 2;
+    // Profile lookups search the whole kind-0 JSON, so `about` text or an
+    // inline avatar's base64 can match the query on many rows that are not the
+    // person being looked for. Keep the same result set and pagination
+    // contract, but order rows whose name fields match ahead of body-only
+    // matches. Gated on kinds alone so the WebSocket full-text path benefits
+    // as well as the prefix typeahead.
+    let profile_query = query.kinds.as_deref() == Some(&[0][..]);
+    // For one- and two-character prefix queries, a busy community can have
+    // enough newer prefix matches to push a short exact display name off the
+    // bounded first page. Put rows containing the whole lexeme first for this
+    // one narrow caller shape.
+    let prioritize_exact_profile_lexeme =
+        profile_query && query.mode == SearchMode::Prefix && search_text.chars().count() <= 2;
 
     let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
         "SELECT id, kind, pubkey, channel_id, \
          EXTRACT(EPOCH FROM created_at)::bigint AS created_at_s, \
-         ts_rank_cd(search_tsv, search_query.query) AS rank \
-         FROM events CROSS JOIN LATERAL (SELECT ",
+         ts_rank_cd(search_tsv, search_query.query) AS rank",
     );
+    if profile_query {
+        // The same tsquery as the WHERE clause, applied to the name fields
+        // only, so both sides normalize identically. `CASE` skips the `THEN`
+        // arm when the guard is false, so rows that predate ingest-side JSON
+        // validation never raise on `::jsonb`; a non-object document yields
+        // NULL from `->>`, an empty vector, and `false`. `pg_input_is_valid`
+        // needs PostgreSQL 16 or later.
+        qb.push(
+            ", CASE WHEN pg_input_is_valid(content, 'jsonb') \
+             THEN to_tsvector('simple', concat_ws(' ', \
+               content::jsonb ->> 'name', \
+               content::jsonb ->> 'display_name', \
+               content::jsonb ->> 'displayName')) @@ search_query.query \
+             ELSE false END AS name_match",
+        );
+    }
+    qb.push(" FROM events CROSS JOIN LATERAL (SELECT ");
     push_tsquery(&mut qb, query.mode, &search_text);
     qb.push(" AS query) AS search_query WHERE community_id = ");
     qb.push_bind(*query.community.as_uuid());
@@ -306,13 +330,16 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
         qb.push(")");
     }
 
-    if prioritize_exact_profile_lexeme {
-        qb.push(" ORDER BY search_tsv @@ websearch_to_tsquery('simple', ");
-        qb.push_bind(&search_text);
-        qb.push(") DESC, rank DESC, created_at DESC, id LIMIT ");
-    } else {
-        qb.push(" ORDER BY rank DESC, created_at DESC, id LIMIT ");
+    qb.push(" ORDER BY ");
+    if profile_query {
+        qb.push("name_match DESC, ");
     }
+    if prioritize_exact_profile_lexeme {
+        qb.push("search_tsv @@ websearch_to_tsquery('simple', ");
+        qb.push_bind(&search_text);
+        qb.push(") DESC, ");
+    }
+    qb.push("rank DESC, created_at DESC, id LIMIT ");
     qb.push_bind(per_page_actual as i64);
     qb.push(" OFFSET ");
     qb.push_bind(offset);

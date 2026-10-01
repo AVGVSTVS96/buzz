@@ -16,7 +16,7 @@ use buzz_search::{ChannelScope, SearchQuery, SearchService};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use uuid::Uuid;
 
-const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1 -- local test-only credentials
 async fn setup() -> (PgPool, String) {
     let url = std::env::var("BUZZ_TEST_DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.to_string());
     // The PostgreSQL lane supplies an isolated desired-state database. Outside
@@ -298,6 +298,76 @@ async fn short_kind0_prefix_prioritizes_exact_lexeme_on_a_noisy_page() {
 
     assert_eq!(first_page.hits.len(), 3);
     assert_eq!(first_page.hits[0].event_id, exact_id);
+
+    teardown(pool, &schema).await;
+}
+
+/// `search_tsv` tokenizes the whole profile JSON, so a profile whose `about`
+/// text repeats a matching word outranks a one-word display name on
+/// `ts_rank_cd` alone (twelve weight-D covers score 1.2 against 0.1). Kind-0
+/// queries order rows whose name fields match ahead of body-only matches so
+/// the person the typeahead is looking for lands on page 1.
+///
+/// Mutate-bite: drop the `name_match DESC` ORDER BY term in `query.rs` and Wes
+/// falls behind the four newer, higher-ranked body matches onto page 2.
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn kind0_prefix_orders_name_match_before_newer_body_match() {
+    let (pool, schema) = setup().await;
+
+    let c = mk_community(&pool, "profile-name-first.example").await;
+    let wes_id = rand_bytes32();
+    insert_event(
+        &pool,
+        c,
+        wes_id,
+        rand_bytes32(),
+        0,
+        r#"{"display_name":"Wes"}"#,
+        None,
+        1_700_000_000,
+    )
+    .await;
+
+    // Newer profiles that match wes:* only through body text, each with a
+    // higher cover-density rank than a single name lexeme.
+    let about = ["west"; 12].join(" ");
+    for i in 0..4 {
+        insert_event(
+            &pool,
+            c,
+            rand_bytes32(),
+            rand_bytes32(),
+            0,
+            &format!(r#"{{"name":"Pollen {i}","about":"{about}"}}"#),
+            None,
+            1_700_000_100 + i,
+        )
+        .await;
+    }
+
+    let svc = SearchService::new(pool.clone());
+    let first_page = svc
+        .search(&SearchQuery {
+            community: c,
+            q: "wes".into(),
+            channel_scope: ChannelScope::Any,
+            kinds: Some(vec![0]),
+            authors: None,
+            since: None,
+            until: None,
+            page: 1,
+            per_page: 3,
+            mode: buzz_search::SearchMode::Prefix,
+        })
+        .await
+        .expect("profile prefix search ok");
+
+    assert_eq!(first_page.hits.len(), 3);
+    assert_eq!(
+        first_page.hits[0].event_id, wes_id,
+        "name match must outrank newer body-only matches"
+    );
 
     teardown(pool, &schema).await;
 }

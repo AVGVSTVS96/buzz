@@ -200,8 +200,8 @@ async fn search_does_not_return_other_community_events() {
 #[ignore = "requires Postgres"]
 async fn kind0_search_by_display_name_works_without_flattening() {
     // The case I worried might regress without the kind:0 content-flattening
-    // hack. Postgres FTS over raw JSON content tokenizes through the
-    // punctuation and finds display_name/nip05 values.
+    // hack. `profile_search_tsv` indexes display_name/name at weight A and
+    // nip05 at weight B, so each field is found without flattening.
     let (pool, schema) = setup().await;
 
     let c = mk_community(&pool, "a.example").await;
@@ -302,11 +302,75 @@ async fn short_kind0_prefix_prioritizes_exact_lexeme_on_a_noisy_page() {
     teardown(pool, &schema).await;
 }
 
-/// `search_tsv` tokenizes the whole profile JSON, so a profile whose `about`
-/// text repeats a matching word outranks a one-word display name on
-/// `ts_rank_cd` alone (twelve weight-D covers score 1.2 against 0.1). Kind-0
-/// queries order rows whose name fields match ahead of body-only matches so
-/// the person the typeahead is looking for lands on page 1.
+/// Kind-0 rows index their profile text fields through `profile_search_tsv`,
+/// so an inline avatar's base64 never contributes lexemes. Before that arm,
+/// `to_tsvector('simple', content)` over the whole JSON let 111 agent profiles
+/// sharing one avatar match `wes:*` and bury the one person named Wes.
+///
+/// Mutate-bite: drop the `kind = 0` arm from `search_tsv` in `schema.sql` and
+/// the Pollen row matches again, so the search returns two hits.
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn kind0_avatar_data_url_token_is_not_searchable() {
+    let (pool, schema) = setup().await;
+
+    let c = mk_community(&pool, "avatar-tokens.example").await;
+    insert_event(
+        &pool,
+        c,
+        rand_bytes32(),
+        rand_bytes32(),
+        0,
+        r#"{"name":"Pollen","picture":"data:image/png;base64,iVBORw0KGgo+Wes+AAAA"}"#,
+        None,
+        1_700_000_100,
+    )
+    .await;
+    let wes_id = rand_bytes32();
+    insert_event(
+        &pool,
+        c,
+        wes_id,
+        rand_bytes32(),
+        0,
+        r#"{"display_name":"Wes"}"#,
+        None,
+        1_700_000_000,
+    )
+    .await;
+
+    let svc = SearchService::new(pool.clone());
+    let result = svc
+        .search(&SearchQuery {
+            community: c,
+            q: "wes".into(),
+            channel_scope: ChannelScope::Any,
+            kinds: Some(vec![0]),
+            authors: None,
+            since: None,
+            until: None,
+            page: 1,
+            per_page: 10,
+            mode: buzz_search::SearchMode::Prefix,
+        })
+        .await
+        .expect("profile prefix search ok");
+
+    let ids: Vec<[u8; 32]> = result.hits.iter().map(|h| h.event_id).collect();
+    assert_eq!(
+        ids,
+        vec![wes_id],
+        "only the profile named Wes may match wes:*; avatar bytes are not indexed"
+    );
+
+    teardown(pool, &schema).await;
+}
+
+/// A profile whose `about` text repeats a matching word outranks a one-word
+/// display name on `ts_rank_cd` alone (twelve weight-D covers score 1.2
+/// against 1.0 for a single weight-A name lexeme). Kind-0 queries order rows
+/// whose name fields match ahead of body-only matches so the person the
+/// typeahead is looking for lands on page 1.
 ///
 /// Mutate-bite: drop the `name_match DESC` ORDER BY term in `query.rs` and Wes
 /// falls behind the four newer, higher-ranked body matches onto page 2.

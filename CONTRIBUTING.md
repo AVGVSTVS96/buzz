@@ -526,7 +526,12 @@ for team access setup, onboarding, and the full repo inventory. See
    events automatically via the `events.search_tsv` generated column. To
    exclude a privacy-sensitive kind from search, add it to the `CASE WHEN
    kind IN (...)` exclusion in the `search_tsv` definition (see the initial
-   schema migration) rather than wiring a separate indexer.
+   schema migration) rather than wiring a separate indexer. Kind 0 is the one
+   kind with its own arm: `profile_search_tsv(content)` indexes a profile's
+   text fields instead of the whole JSON so avatar bytes never match a name.
+   Changing the generated expression rewrites every `events` partition, so
+   follow the 0008/0056 pattern: rewrite inline only when `events` is empty
+   and ship a `scripts/maintenance/` script for populated databases.
 
 7. **Audit** — the audit log captures all events automatically; no changes
    needed unless you need custom audit metadata.

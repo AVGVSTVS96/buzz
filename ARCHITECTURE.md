@@ -526,7 +526,10 @@ Full-text search via Postgres FTS. Events are searchable through the
 `events.search_tsv` generated `tsvector` column (populated on insert, indexed
 by a GIN index) — there is no separate search service or out-of-band indexer.
 Privacy-sensitive kinds are excluded at the storage level (the `search_tsv`
-`CASE WHEN kind IN (...)` yields `NULL`, which never matches `@@`). In
+`CASE WHEN kind IN (...)` yields `NULL`, which never matches `@@`). Kind 0
+profiles route through `profile_search_tsv(content)`, which indexes the
+profile's name, contact, and `about` fields with weights rather than the whole
+JSON document, so an inline base64 avatar never matches a name prefix. In
 multi-community mode every query filter includes `community_id`, so the shared
 `events` table is infrastructure, not a cross-community result space; the relay
 re-authorizes every candidate hit before returning it.
@@ -894,9 +897,15 @@ Docker Compose provides the full local development stack. All services include h
 
 Search runs over the `events.search_tsv` generated `tsvector` column on the
 `events` table (no separate collection or service). The column is populated on
-insert — `to_tsvector('simple', content)` — and excludes privacy-sensitive
-kinds via `CASE WHEN kind IN (1059, 30300, 30622) THEN NULL`, so those rows are
-storage-level unsearchable (a `NULL` tsvector never matches `@@`). A GIN index
+insert — `to_tsvector('simple', content)` for chat kinds — and excludes
+privacy-sensitive kinds via `CASE WHEN kind IN (1059, 30300, 30622, ...) THEN
+NULL`, so those rows are storage-level unsearchable (a `NULL` tsvector never
+matches `@@`). Kind 0 uses `profile_search_tsv(content)`, an IMMUTABLE SQL
+function (PostgreSQL 16+) that indexes the profile's text fields — names at
+weight A, `nip05`/`lud16`/`website` at B, `about` at D — and skips `picture`,
+so avatar bytes never match a name. Populated databases pick up that arm
+through `scripts/maintenance/profile_search_text_fields.sql`, not at startup,
+because replacing a generated column rewrites every partition. A GIN index
 (`idx_events_search_tsv`) backs the `@@` probe; in multi-community mode the
 community-leading btree filters BitmapAnd with the GIN probe so every query is
 fenced to its `community_id`.

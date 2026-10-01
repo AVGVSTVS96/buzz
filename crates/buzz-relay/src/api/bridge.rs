@@ -6046,59 +6046,235 @@ pub(crate) mod postgres_tests {
         );
     }
 
-    // ── Caller key-pairing witness: moderation mismatched key → 403 ─────────
-    //
-    // Mirror of the GIF case through the moderation route.
-    // Falsifying mutation: remove key-pairing check → admission passes → 403 from
-    // moderation authz (not NIP-FI) with different JSON body.
-    // BFF admission must pair the asserted identity with the signed request.
-    #[test]
+    // All accessory methods must preserve the shared admission wire contract.
+    // Keep each route independent so the unfixed adapter fails all three tests.
+    #[tokio::test]
     #[ignore = "requires Postgres"]
-    fn nip_fi_enforce_buzz_v1_sidebar_pairs_request_identity() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("current_thread runtime");
-        let Some(state) = rt.block_on(nip_fi_enforce_test_state_with_verifier()) else {
-            panic!("local Postgres not reachable");
-        };
-        let mut s = (*state).clone();
-        std::sync::Arc::make_mut(&mut s.config).buzz_v1_enabled = true;
-        let state = std::sync::Arc::new(s);
-        let host = format!("bffv1-{}.local", uuid::Uuid::new_v4().simple());
-        rt.block_on(state.db.ensure_configured_community(&host))
-            .expect("ensure community");
-        let path = "/buzz/v1/me/sidebar?limit=1";
-        let url = format!("https://{host}{path}");
-        let key_nip98 = Keys::generate();
-        let key_assertion = Keys::generate();
-        let mut results = Vec::new();
-        for (label, akey) in [("paired", &key_nip98), ("mismatched", &key_assertion)] {
-            let assertion = signed_assertion_for_pubkey(&akey.public_key().to_hex());
-            let mut headers = make_nip98_headers(&key_nip98, &url, "GET", b"");
-            headers.insert(
-                buzz_auth::CLIENT_ATTACHED_HEADER,
-                format!("Bearer {assertion}").parse().expect("valid header"),
-            );
-            let (status, _h, body) = rt.block_on(oneshot_request_full(
-                state.clone(),
-                "GET",
-                path,
-                &host,
-                headers,
-                b"",
-            ));
-            assert!(!body.is_empty(), "{label} response");
-            results.push(status);
-        }
-        assert_eq!(results[0], axum::http::StatusCode::OK, "paired control");
-        assert_eq!(
-            results[1],
-            axum::http::StatusCode::FORBIDDEN,
-            "mismatched assertion key must be denied on /buzz/v1"
-        );
+    async fn nip_fi_buzz_v1_sidebar_wire_contract() {
+        buzz_v1_wire_contract("GET", "/buzz/v1/me/sidebar?limit=1", b"").await;
     }
 
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn nip_fi_buzz_v1_contexts_wire_contract() {
+        let targets = serde_json::json!([{"target":{"channel_id":uuid::Uuid::new_v4()}}]);
+        let encoded: String = targets
+            .to_string()
+            .bytes()
+            .map(|b| format!("%{b:02X}"))
+            .collect();
+        buzz_v1_wire_contract(
+            "GET",
+            &format!("/buzz/v1/me/read-state?targets={encoded}"),
+            b"",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn nip_fi_buzz_v1_write_wire_contract() {
+        let body = serde_json::to_vec(&serde_json::json!({"intents":[{
+            "type":"mark_channel_read", "channel_id":uuid::Uuid::new_v4(),
+            "message_id":"ab".repeat(32)
+        }]}))
+        .expect("serialize intent");
+        buzz_v1_wire_contract("POST", "/buzz/v1/me/read-state", &body).await;
+    }
+
+    async fn buzz_v1_wire_contract(method: &str, path: &str, request_body: &[u8]) {
+        use axum::http::{header, StatusCode};
+        use buzz_auth::{CrossPodMergeResult, IssuerCapacity, NipFiDenyMap, NipFiMode};
+
+        let fixture = nip_fi_enforce_test_state_with_verifier()
+            .await
+            .expect("local Postgres");
+        let mut state = (*fixture).clone();
+        Arc::make_mut(&mut state.config).buzz_v1_enabled = true;
+        let deny_map = Arc::new(NipFiDenyMap::new(
+            10,
+            vec![IssuerCapacity {
+                issuer: HANDLER_TEST_ISSUER.to_owned(),
+                capacity: 10,
+            }],
+        ));
+        state.nip_fi_deny_map = Some(deny_map.clone());
+        let state = Arc::new(state);
+        let host = format!("bffv1-{}.local", uuid::Uuid::new_v4().simple());
+        state
+            .db
+            .ensure_configured_community(&host)
+            .await
+            .expect("ensure community");
+        let url = format!("https://{host}{path}");
+        let actor = Keys::generate();
+        let other = Keys::generate();
+        let paired = same_key_nip98_and_assertion_headers(&actor, &url, method, request_body);
+        let (status, headers, body) = oneshot_request_full(
+            state.clone(),
+            method,
+            path,
+            &host,
+            paired.clone(),
+            request_body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "admitted control: {body:?}");
+        assert_eq!(headers[header::CONTENT_TYPE], "application/json");
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("control JSON");
+        if method == "POST" {
+            assert_eq!(
+                body.as_ref(),
+                br#"{"outcomes":[{"status":"blocked"}],"projection_status":"not_requested"}"#
+            );
+        } else {
+            assert!(value["account"]["cutoff_ms"].is_i64());
+            assert_eq!(
+                value["account"]["retention_seconds"],
+                state.config.buzz_v1_retention_seconds
+            );
+            if path.contains("sidebar") {
+                assert_eq!(value["channels"], serde_json::json!([]));
+                assert_eq!(value["next_cursor"], serde_json::Value::Null);
+            } else {
+                assert_eq!(
+                    value["contexts"],
+                    serde_json::json!([{"status":"unavailable"}])
+                );
+            }
+        }
+
+        for case in [
+            "mismatch",
+            "denied",
+            "missing_nip98",
+            "invalid_nip98",
+            "missing_assertion",
+            "invalid_assertion",
+        ] {
+            let mut request_headers = paired.clone();
+            match case {
+                "mismatch" => {
+                    let assertion = signed_assertion_for_pubkey(&other.public_key().to_hex());
+                    request_headers.insert(
+                        buzz_auth::CLIENT_ATTACHED_HEADER,
+                        format!("Bearer {assertion}")
+                            .parse()
+                            .expect("assertion header"),
+                    );
+                }
+                "denied" => {
+                    let now = chrono::Utc::now();
+                    assert_eq!(
+                        deny_map.merge_cross_pod_deny(
+                            HANDLER_TEST_ISSUER,
+                            &actor.public_key(),
+                            now + chrono::Duration::minutes(5),
+                            now
+                        ),
+                        CrossPodMergeResult::Merged
+                    );
+                }
+                "missing_nip98" => {
+                    request_headers.remove(header::AUTHORIZATION);
+                }
+                "invalid_nip98" => {
+                    request_headers.insert(header::AUTHORIZATION, "Nostr invalid".parse().unwrap());
+                }
+                "missing_assertion" => {
+                    request_headers.remove(buzz_auth::CLIENT_ATTACHED_HEADER);
+                }
+                "invalid_assertion" => {
+                    request_headers.insert(
+                        buzz_auth::CLIENT_ATTACHED_HEADER,
+                        "Bearer invalid".parse().unwrap(),
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let (status, headers, body) = oneshot_request_full(
+                state.clone(),
+                method,
+                path,
+                &host,
+                request_headers,
+                request_body,
+            )
+            .await;
+            let missing = case.starts_with("missing_");
+            assert_eq!(
+                status,
+                if missing {
+                    StatusCode::UNAUTHORIZED
+                } else {
+                    StatusCode::FORBIDDEN
+                },
+                "{case}"
+            );
+            assert_eq!(
+                headers[header::CONTENT_TYPE],
+                "text/plain; charset=utf-8",
+                "{case}"
+            );
+            assert_eq!(
+                body.as_ref(),
+                if missing {
+                    b"authentication required\n".as_slice()
+                } else if case.starts_with("invalid_") {
+                    b"evidence rejected\n".as_slice()
+                } else {
+                    b"authorization denied\n".as_slice()
+                },
+                "{case}"
+            );
+            assert_eq!(
+                headers
+                    .get(header::WWW_AUTHENTICATE)
+                    .map(|v| v.to_str().unwrap()),
+                missing.then_some("Nostr"),
+                "{case}"
+            );
+            // Outer assertion middleware owns its own cache policy.
+            if !case.ends_with("assertion") {
+                assert_eq!(
+                    headers[header::CACHE_CONTROL],
+                    "private, no-store",
+                    "{case}"
+                );
+            }
+        }
+
+        // Off ignores the same real deny entry, and retains application JSON for
+        // missing request auth rather than leaking the bridge's error envelope.
+        let mut off = (*state).clone();
+        Arc::make_mut(&mut off.config).nip_fi.mode = NipFiMode::Off;
+        let off = Arc::new(off);
+        assert_eq!(
+            oneshot_request_full(off.clone(), method, path, &host, paired, request_body)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let (status, headers, body) = oneshot_request_full(
+            off,
+            method,
+            path,
+            &host,
+            axum::http::HeaderMap::new(),
+            request_body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(headers[header::CONTENT_TYPE], "application/json");
+        assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+        assert!(!headers.contains_key(header::WWW_AUTHENTICATE));
+        let error: serde_json::Value = serde_json::from_slice(&body).expect("Off JSON");
+        assert_eq!(error["error"]["code"], "unauthorized");
+        assert!(uuid::Uuid::parse_str(error["error"]["request_id"].as_str().unwrap()).is_ok());
+    }
+
+    // ── Caller key-pairing witness: moderation mismatched key → 403 ─────────
     #[test]
     #[ignore = "requires Postgres"]
     fn nip_fi_enforce_moderation_mismatched_key_is_403() {

@@ -11,22 +11,26 @@ use buzz_core::TenantContext;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-pub(super) struct Error {
-    status: StatusCode,
-    code: &'static str,
+pub(super) enum Error {
+    Application {
+        status: StatusCode,
+        code: &'static str,
+    },
+    Admission(Box<Response>),
 }
 impl Error {
     pub(super) fn new(status: StatusCode, code: &'static str) -> Self {
-        Self { status, code }
+        Self::Application { status, code }
     }
     pub(super) fn unavailable() -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable")
     }
     pub(super) fn terminal_denial(&self) -> bool {
-        matches!(
-            self.status,
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-        )
+        let status = match self {
+            Self::Application { status, .. } => *status,
+            Self::Admission(response) => response.status(),
+        };
+        matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
     }
     pub(super) fn invalid() -> Self {
         Self::new(StatusCode::BAD_REQUEST, "invalid_request")
@@ -34,23 +38,29 @@ impl Error {
 }
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        let mut response = (
-            self.status,
-            Json(json!({"error":{"code":self.code,
-            "request_id":uuid::Uuid::new_v4().to_string()}})),
-        )
-            .into_response();
+        let mut response = match self {
+            Self::Admission(response) => *response,
+            Self::Application { status, code } => {
+                let mut response = (
+                    status,
+                    Json(json!({"error":{"code":code,
+                    "request_id":uuid::Uuid::new_v4().to_string()}})),
+                )
+                    .into_response();
+                if status == StatusCode::TOO_MANY_REQUESTS
+                    || status == StatusCode::SERVICE_UNAVAILABLE
+                {
+                    response
+                        .headers_mut()
+                        .insert(header::RETRY_AFTER, header::HeaderValue::from_static("60"));
+                }
+                response
+            }
+        };
         response.headers_mut().insert(
             header::CACHE_CONTROL,
             header::HeaderValue::from_static("private, no-store"),
         );
-        if self.status == StatusCode::TOO_MANY_REQUESTS
-            || self.status == StatusCode::SERVICE_UNAVAILABLE
-        {
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, header::HeaderValue::from_static("60"));
-        }
         response
     }
 }
@@ -104,7 +114,14 @@ pub(super) async fn authorize(
             body.is_some(),
         ),
     )
-    .map_err(|r| bridge_error((r.status(), Json(Value::Null))))?;
+    .map_err(|response| {
+        if state.config.nip_fi.mode == buzz_auth::NipFiMode::Off {
+            bridge_error((response.status(), Json(Value::Null)))
+        } else {
+            // Preserve the shared NIP-FI wire contract, not just its status.
+            Error::Admission(Box::new(response))
+        }
+    })?;
     let actor = *admission.proven_pubkey();
     let (event_id, signed_at) = admission.into_extra();
     bridge::enforce_http_admission(state, &tenant, &actor)

@@ -1251,6 +1251,7 @@ async fn handle_text_message(text: String, conn: Arc<ConnectionState>, state: Ar
             sub_id,
             filters,
             before_ids,
+            search_modes,
         } => {
             let conn = Arc::clone(&conn);
             let state = Arc::clone(&state);
@@ -1267,7 +1268,15 @@ async fn handle_text_message(text: String, conn: Arc<ConnectionState>, state: Ar
             let span = tracing::info_span!("ws.req", conn_id = %conn.conn_id, sub_id = %sub_id);
             tokio::spawn(
                 async move {
-                    handlers::req::handle_req(sub_id, filters, before_ids, conn, state).await;
+                    handlers::req::handle_req(
+                        sub_id,
+                        filters,
+                        before_ids,
+                        search_modes,
+                        conn,
+                        state,
+                    )
+                    .await;
                     drop(permit);
                 }
                 .instrument(span),

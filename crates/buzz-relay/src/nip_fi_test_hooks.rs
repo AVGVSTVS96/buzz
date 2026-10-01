@@ -219,6 +219,19 @@ make_hook!(directory_acquire_hook, after_directory_acquire);
 // serialized against the join commit.
 make_hook!(audio_archive_recheck_hook, before_archive_recheck);
 
+// ── Deny-set admission hooks ───────────────────────────────────────────────
+// `before_deny_set_check`: fires in both the root WS auth handler and the audio
+// handler after the proven identity is registered and before `is_denied`, so a
+// straddle witness can insert a deny entry in that window.  [FI-TRACE-DENY-SET]
+make_hook!(deny_set_check_hook, before_deny_set_check);
+
+// `after_deny_set_check_passed`: fires in the audio handler after the deny-set
+// check completes without denying.  Used by `w_audio_deny_absent`.
+make_hook!(
+    audio_after_deny_check_passed_hook,
+    after_deny_set_check_passed
+);
+
 // ── Publication-attempt counter ────────────────────────────────────────────
 // `before_event_publish`: fires immediately before `state.pubsub.publish_event`
 // in `dispatch_persistent_event_inner`. Used by W2: after handle_event returns

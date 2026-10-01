@@ -1534,6 +1534,9 @@ mod tests {
             nip_fi_gate: crate::nip_fi_gate::SessionAdmissionGate::off_mode(
                 CancellationToken::new(),
             ),
+            community_control: crate::state::CommunityConnectionControl::new(
+                CancellationToken::new(),
+            ),
         });
 
         super::handle_agent_observer_event(
@@ -1621,6 +1624,9 @@ mod tests {
                 nip_fi_gate: crate::nip_fi_gate::SessionAdmissionGate::off_mode(
                     CancellationToken::new(),
                 ),
+                community_control: crate::state::CommunityConnectionControl::new(
+                    CancellationToken::new(),
+                ),
             });
             let watcher = Uuid::new_v4();
             let (tx, mut rx) = mpsc::channel(10);
@@ -1629,12 +1635,16 @@ mod tests {
                 watcher,
                 tx,
                 ctrl,
+                tokio::sync::mpsc::channel(1).0,
                 None,
                 CancellationToken::new(),
                 tenant.community(),
                 Arc::new(AtomicU8::new(0)),
                 Arc::new(Mutex::new(HashMap::new())),
                 3,
+                crate::state::CommunityConnectionControl::new(
+                    tokio_util::sync::CancellationToken::new(),
+                ),
             );
             state.sub_registry.register_scoped(
                 tenant.community(),
@@ -1775,6 +1785,9 @@ mod tests {
                 nip_fi_gate: crate::nip_fi_gate::SessionAdmissionGate::off_mode(
                     CancellationToken::new(),
                 ),
+                community_control: crate::state::CommunityConnectionControl::new(
+                    CancellationToken::new(),
+                ),
             });
             // Same watcher registration as the ACK/fan-out cases, proving
             // the storage failure still reaches no subscriber while its
@@ -1786,12 +1799,16 @@ mod tests {
                 watcher,
                 tx,
                 ctrl,
+                tokio::sync::mpsc::channel(1).0,
                 None,
                 CancellationToken::new(),
                 tenant.community(),
                 Arc::new(AtomicU8::new(0)),
                 Arc::new(Mutex::new(HashMap::new())),
                 3,
+                crate::state::CommunityConnectionControl::new(
+                    tokio_util::sync::CancellationToken::new(),
+                ),
             );
             state.sub_registry.register_scoped(
                 tenant.community(),
@@ -1925,12 +1942,16 @@ mod tests {
                 conn_id,
                 tx,
                 ctrl_tx,
+                tokio::sync::mpsc::channel(1).0,
                 None,
                 CancellationToken::new(),
                 buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
                 Arc::new(AtomicU8::new(0)),
                 Arc::new(Mutex::new(HashMap::new())),
                 3,
+                crate::state::CommunityConnectionControl::new(
+                    tokio_util::sync::CancellationToken::new(),
+                ),
             );
             if let Some(pubkey) = pubkey {
                 state.conn_manager.set_authenticated_pubkey(conn_id, pubkey);
@@ -2565,12 +2586,16 @@ mod tests {
                 conn_id,
                 tx,
                 ctrl_tx,
+                tokio::sync::mpsc::channel(1).0,
                 None,
                 CancellationToken::new(),
                 buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
                 Arc::new(AtomicU8::new(0)),
                 Arc::new(Mutex::new(HashMap::new())),
                 3,
+                crate::state::CommunityConnectionControl::new(
+                    tokio_util::sync::CancellationToken::new(),
+                ),
             );
             if let Some(pk) = pubkey {
                 state.conn_manager.set_authenticated_pubkey(conn_id, pk);
@@ -2891,12 +2916,16 @@ mod tests {
                 conn_id,
                 tx,
                 ctrl_tx,
+                tokio::sync::mpsc::channel(1).0,
                 None,
                 CancellationToken::new(),
                 community_id,
                 Arc::new(AtomicU8::new(0)),
                 Arc::new(Mutex::new(HashMap::new())),
                 3,
+                crate::state::CommunityConnectionControl::new(
+                    tokio_util::sync::CancellationToken::new(),
+                ),
             );
             if let Some(pk) = pubkey {
                 state.conn_manager.set_authenticated_pubkey(conn_id, pk);
@@ -3046,6 +3075,7 @@ mod tests {
                 nip_fi_assertion: None,
                 session_deadline: Some(deadline),
                 nip_fi_gate: gate,
+                community_control: crate::state::CommunityConnectionControl::new(cancel.clone()),
             });
 
             // Kind:1 TextNote with no #h tag — no DB calls before before_event_ingest.
@@ -3236,6 +3266,7 @@ mod tests {
             nip_fi_assertion: None,
             session_deadline: Some(deadline),
             nip_fi_gate: gate,
+            community_control: crate::state::CommunityConnectionControl::new(cancel.clone()),
         });
 
         // Build a valid KIND_AGENT_OBSERVER_FRAME telemetry event:

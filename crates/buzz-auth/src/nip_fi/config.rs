@@ -60,6 +60,12 @@ pub(crate) const MAX_CLIENT_ID_BYTES: usize = 2_048;
 /// attacker-driven O(keys) scan.
 pub(crate) const MAX_JWKS_KEYS: usize = 64;
 
+/// Maximum accepted command-JWT `jti` length, in bytes. Each reservation
+/// stores the jti in the per-issuer deny shard, so this bounds its memory.
+/// A command-JWT rule, not an assertion bound, so it is not folded into
+/// `assertion_policy_id`.
+pub(crate) const MAX_JTI_BYTES: usize = 512;
+
 /// The compiled-verifier-behavior fingerprint folded into every
 /// [`AssertionPolicyId`]. It stands in for the normative semantic inputs that
 /// are not otherwise field-encoded: duplicate-member rejection, exact-byte

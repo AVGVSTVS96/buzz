@@ -508,6 +508,8 @@ type E2eConfig = {
     oaOwnerIsMe?: boolean;
     /** Whether the mock relay advertises NIP-43 membership support. Defaults to false. */
     relayRequiresMembership?: boolean;
+    /** Reject the membership probe, as an unreachable relay's `/info` does. */
+    relayRequiresMembershipError?: string;
     /** Delay EOSE for membership snapshots after delivering the event. */
     relayMembershipEoseDelayMs?: number;
     relayRole?: "owner" | "admin" | "member" | null;
@@ -1259,6 +1261,8 @@ declare global {
       command: string;
       payload: unknown;
     }>;
+    /** Community ids still saved when `remove_community_relay` ran. */
+    __BUZZ_E2E_SAVED_COMMUNITIES_AT_RELAY_REMOVAL__?: string[];
     /** Release a mock media proxy held at port 0 and return its ready port. */
     __BUZZ_E2E_RELEASE_MEDIA_PROXY__?: () => number;
     /** Release mock send events that were stored but withheld from live subscribers. */
@@ -12906,6 +12910,15 @@ export function maybeInstallE2eTauriMocks() {
         }
         return;
       }
+      case "readd_community_relay":
+        return undefined;
+      case "remove_community_relay":
+        window.__BUZZ_E2E_SAVED_COMMUNITIES_AT_RELAY_REMOVAL__ = (
+          JSON.parse(
+            window.localStorage.getItem("buzz-communities") ?? "[]",
+          ) as Array<{ id: string }>
+        ).map((community) => community.id);
+        return undefined;
       case "update_tray_agent_activity":
       case "clear_tray_agent_activity":
       case "requeue_tray_actions":
@@ -13590,6 +13603,9 @@ export function maybeInstallE2eTauriMocks() {
       case "get_relay_http_url":
         return getRelayHttpUrl(activeConfig);
       case "relay_requires_membership":
+        if (activeConfig?.mock?.relayRequiresMembershipError) {
+          throw new Error(activeConfig.mock.relayRequiresMembershipError);
+        }
         return activeConfig?.mock?.relayRequiresMembership ?? false;
       case "discover_acp_providers":
         return handleDiscoverAcpRuntimes(activeConfig);

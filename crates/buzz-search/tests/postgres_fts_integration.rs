@@ -372,6 +372,98 @@ async fn kind0_prefix_orders_name_match_before_newer_body_match() {
     teardown(pool, &schema).await;
 }
 
+/// Kind 0 is replaceable, but the replaceable path admits that earlier bugs
+/// may have left more than one live row per pubkey, and nothing in the schema
+/// forbids it. Kind-0 queries return one row per pubkey, resolved to the
+/// newest live head, so a bounded page counts people rather than rows.
+///
+/// Mutate-bite: drop the `DISTINCT ON (pubkey)` wrapper in `query.rs` and the
+/// two-slot page fills with both of Wes's heads, pushing Wesley off it.
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn kind0_prefix_collapses_duplicate_live_heads_to_one_row_per_pubkey() {
+    let (pool, schema) = setup().await;
+
+    let c = mk_community(&pool, "duplicate-heads.example").await;
+    // Both heads are inserted directly, bypassing the replaceable path that
+    // would normally retire the older one.
+    let wes_pk = rand_bytes32();
+    let stale_wes = rand_bytes32();
+    let current_wes = rand_bytes32();
+    insert_event(
+        &pool,
+        c,
+        stale_wes,
+        wes_pk,
+        0,
+        r#"{"display_name":"Wes","about":"stale head"}"#,
+        None,
+        1_700_000_010,
+    )
+    .await;
+    insert_event(
+        &pool,
+        c,
+        current_wes,
+        wes_pk,
+        0,
+        r#"{"display_name":"Wes","about":"current head"}"#,
+        None,
+        1_700_000_020,
+    )
+    .await;
+
+    // An older person who also matches. Without deduplication, Wes's two
+    // newer heads fill the two-slot page before this row.
+    let wesley_pk = rand_bytes32();
+    insert_event(
+        &pool,
+        c,
+        rand_bytes32(),
+        wesley_pk,
+        0,
+        r#"{"display_name":"Wesley"}"#,
+        None,
+        1_700_000_000,
+    )
+    .await;
+
+    let svc = SearchService::new(pool.clone());
+    let first_page = svc
+        .search(&SearchQuery {
+            community: c,
+            q: "wes".into(),
+            channel_scope: ChannelScope::Any,
+            kinds: Some(vec![0]),
+            authors: None,
+            since: None,
+            until: None,
+            page: 1,
+            per_page: 2,
+            mode: buzz_search::SearchMode::Prefix,
+        })
+        .await
+        .expect("profile prefix search ok");
+
+    let pubkeys: Vec<[u8; 32]> = first_page.hits.iter().map(|h| h.pubkey).collect();
+    assert_eq!(pubkeys.len(), 2);
+    assert!(
+        pubkeys.contains(&wes_pk) && pubkeys.contains(&wesley_pk),
+        "one row per pubkey, got {pubkeys:?}"
+    );
+    let wes_hit = first_page
+        .hits
+        .iter()
+        .find(|h| h.pubkey == wes_pk)
+        .expect("wes on the first page");
+    assert_eq!(
+        wes_hit.event_id, current_wes,
+        "a duplicate head must resolve to the newest live row"
+    );
+
+    teardown(pool, &schema).await;
+}
+
 #[tokio::test]
 #[ignore = "requires Postgres"]
 async fn prefix_mode_matches_final_token_prefix_without_changing_full_text() {

@@ -122,7 +122,9 @@ pub struct SearchHit {
 /// Result of a search.
 #[derive(Debug, Clone)]
 pub struct SearchResult {
-    /// Hits on this page, ordered by relevance then created_at desc.
+    /// Hits on this page, ordered by relevance then created_at desc. For
+    /// `kinds == [0]` queries there is at most one hit per pubkey: the newest
+    /// matching live row.
     pub hits: Vec<SearchHit>,
     /// 1-indexed page returned.
     pub page: u32,
@@ -201,15 +203,19 @@ fn normalized_search_text(q: &str) -> Option<String> {
 ///
 /// SQL shape (bracketed parts are emitted only for `kinds == [0]`):
 /// ```sql
-/// SELECT id, kind, pubkey, channel_id, EXTRACT(EPOCH FROM created_at)::bigint AS created_at_s,
+/// [SELECT id, kind, pubkey, channel_id, created_at_s, rank FROM (]
+/// SELECT [DISTINCT ON (pubkey)] id, kind, pubkey, channel_id,
+///        EXTRACT(EPOCH FROM created_at)::bigint AS created_at_s,
 ///        ts_rank_cd(search_tsv, query) AS rank
-///        [, <profile name fields as tsvector> @@ query AS name_match]
+///        [, created_at, <profile name fields as tsvector> @@ query AS name_match]
+///        [, search_tsv]                                              -- prefix mode, ≤ 2 chars
 /// FROM events,
 ///      <mode-specific tsquery> AS query
 /// WHERE community_id = $ctx
 ///   AND deleted_at IS NULL
 ///   AND search_tsv @@ query
 ///   [+ channel scope, kinds, authors, since, until]
+/// [ORDER BY pubkey, created_at DESC, id) AS heads]                  -- newest live head per pubkey
 /// ORDER BY [name_match DESC,]
 ///          [search_tsv @@ websearch_to_tsquery('simple', $q) DESC,]  -- prefix mode, ≤ 2 chars
 ///          rank DESC, created_at DESC, id
@@ -249,26 +255,44 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
     let prioritize_exact_profile_lexeme =
         profile_query && query.mode == SearchMode::Prefix && search_text.chars().count() <= 2;
 
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-        "SELECT id, kind, pubkey, channel_id, \
+    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new("");
+    if profile_query {
+        // Kind 0 is replaceable, but earlier bugs may have left more than one
+        // live row per pubkey and nothing in the schema forbids it. Collapse
+        // to the newest matching head per pubkey so page slots count people,
+        // not rows; the outer ORDER BY below restores relevance order.
+        qb.push(
+            "SELECT id, kind, pubkey, channel_id, created_at_s, rank \
+             FROM (SELECT DISTINCT ON (pubkey) ",
+        );
+    } else {
+        qb.push("SELECT ");
+    }
+    qb.push(
+        "id, kind, pubkey, channel_id, \
          EXTRACT(EPOCH FROM created_at)::bigint AS created_at_s, \
          ts_rank_cd(search_tsv, search_query.query) AS rank",
     );
     if profile_query {
-        // The same tsquery as the WHERE clause, applied to the name fields
-        // only, so both sides normalize identically. `CASE` skips the `THEN`
-        // arm when the guard is false, so rows that predate ingest-side JSON
-        // validation never raise on `::jsonb`; a non-object document yields
-        // NULL from `->>`, an empty vector, and `false`. `pg_input_is_valid`
-        // needs PostgreSQL 16 or later.
+        // `created_at` feeds the outer ORDER BY through the wrapper.
+        // `name_match` applies the same tsquery as the WHERE clause to the
+        // name fields only, so both sides normalize identically. `CASE` skips
+        // the `THEN` arm when the guard is false, so rows that predate
+        // ingest-side JSON validation never raise on `::jsonb`; a non-object
+        // document yields NULL from `->>`, an empty vector, and `false`.
+        // `pg_input_is_valid` needs PostgreSQL 16 or later.
         qb.push(
-            ", CASE WHEN pg_input_is_valid(content, 'jsonb') \
+            ", created_at, CASE WHEN pg_input_is_valid(content, 'jsonb') \
              THEN to_tsvector('simple', concat_ws(' ', \
                content::jsonb ->> 'name', \
                content::jsonb ->> 'display_name', \
                content::jsonb ->> 'displayName')) @@ search_query.query \
              ELSE false END AS name_match",
         );
+        if prioritize_exact_profile_lexeme {
+            // The outer exact-lexeme term reads `search_tsv` through the wrapper.
+            qb.push(", search_tsv");
+        }
     }
     qb.push(" FROM events CROSS JOIN LATERAL (SELECT ");
     push_tsquery(&mut qb, query.mode, &search_text);
@@ -330,6 +354,9 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
         qb.push(")");
     }
 
+    if profile_query {
+        qb.push(" ORDER BY pubkey, created_at DESC, id) AS heads");
+    }
     qb.push(" ORDER BY ");
     if profile_query {
         qb.push("name_match DESC, ");

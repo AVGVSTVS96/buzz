@@ -85,7 +85,7 @@ We review as capacity allows — focused PRs that follow this guide move fastest
 | pnpm | 10+ | Required for desktop app commands and `just ci` |
 | Flutter | 3.41+ | Required for mobile app — install via [flutter.dev](https://docs.flutter.dev/get-started/install) |
 | Docker | 24+ | For Postgres, Redis, MinIO |
-| PostgreSQL | 16+ | Docker provides 17; a database you run yourself must be 16 or later because migration 0056 uses `pg_input_is_valid` |
+| PostgreSQL | 16+ | Docker provides 17; only a database you run yourself needs checking |
 | `just` | latest | Task runner — `cargo install just` |
 | `lefthook` | 2.1.3 (Hermit-pinned) | Auto-installed by `just hooks` — no manual install needed |
 | `sqlx` migrations | workspace crate | `just migrate` applies embedded migrations from `migrations/` |
@@ -527,12 +527,7 @@ for team access setup, onboarding, and the full repo inventory. See
    events automatically via the `events.search_tsv` generated column. To
    exclude a privacy-sensitive kind from search, add it to the `CASE WHEN
    kind IN (...)` exclusion in the `search_tsv` definition (see the initial
-   schema migration) rather than wiring a separate indexer. Kind 0 is the one
-   kind with its own arm: `profile_search_tsv(content)` indexes a profile's
-   text fields instead of the whole JSON so avatar bytes never match a name.
-   Changing the generated expression rewrites every `events` partition, so
-   follow the 0008/0056 pattern: rewrite inline only when `events` is empty
-   and ship a `scripts/maintenance/` script for populated databases.
+   schema migration) rather than wiring a separate indexer.
 
 7. **Audit** — the audit log captures all events automatically; no changes
    needed unless you need custom audit metadata.

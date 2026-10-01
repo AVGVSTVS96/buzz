@@ -960,6 +960,15 @@ mod postgres_tests {
         let profile_search = migrations[55].sql.as_str();
         assert!(profile_search.contains("CREATE FUNCTION profile_search_tsv(content TEXT)"));
         assert!(profile_search.contains("pg_input_is_valid(content, 'jsonb')"));
+        // PostgreSQL 16 floor: the preflight must run before CREATE FUNCTION so
+        // an older server reports the requirement, not a missing-function error.
+        let preflight = profile_search
+            .find("current_setting('server_version_num')::int < 160000")
+            .expect("0056 preflights the PostgreSQL 16 floor");
+        let create_function = profile_search
+            .find("CREATE FUNCTION profile_search_tsv")
+            .expect("0056 creates profile_search_tsv");
+        assert!(preflight < create_function);
         assert!(profile_search.contains("IF NOT EXISTS (SELECT 1 FROM events LIMIT 1)"));
         assert!(profile_search.contains("CASE WHEN kind = 0 THEN profile_search_tsv(content)"));
         assert!(!migrations[0].sql.as_str().contains("profile_search_tsv"));

@@ -85,6 +85,7 @@ We review as capacity allows — focused PRs that follow this guide move fastest
 | pnpm | 10+ | Required for desktop app commands and `just ci` |
 | Flutter | 3.41+ | Required for mobile app — install via [flutter.dev](https://docs.flutter.dev/get-started/install) |
 | Docker | 24+ | For Postgres, Redis, MinIO |
+| PostgreSQL | 16+ | Docker provides 17; a database you run yourself must be 16 or later because migration 0056 uses `pg_input_is_valid` |
 | `just` | latest | Task runner — `cargo install just` |
 | `lefthook` | 2.1.3 (Hermit-pinned) | Auto-installed by `just hooks` — no manual install needed |
 | `sqlx` migrations | workspace crate | `just migrate` applies embedded migrations from `migrations/` |

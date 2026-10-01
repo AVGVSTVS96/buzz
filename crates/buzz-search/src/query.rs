@@ -207,10 +207,11 @@ fn normalized_search_text(q: &str) -> Option<String> {
 /// SELECT [DISTINCT ON (pubkey)] id, kind, pubkey, channel_id,
 ///        EXTRACT(EPOCH FROM created_at)::bigint AS created_at_s,
 ///        ts_rank_cd(search_tsv, query) AS rank
-///        [, created_at, <profile name fields as tsvector> @@ query AS name_match]
+///        [, created_at, <profile.j name fields as tsvector> @@ query AS name_match]
 ///        [, search_tsv]                                              -- prefix mode, ≤ 2 chars
 /// FROM events,
 ///      <mode-specific tsquery> AS query
+///      [, LATERAL (SELECT <content::jsonb, NULL if invalid> AS j OFFSET 0) AS profile]
 /// WHERE community_id = $ctx
 ///   AND deleted_at IS NULL
 ///   AND search_tsv @@ query
@@ -276,18 +277,15 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
     if profile_query {
         // `created_at` feeds the outer ORDER BY through the wrapper.
         // `name_match` applies the same tsquery as the WHERE clause to the
-        // name fields only, so both sides normalize identically. `CASE` skips
-        // the `THEN` arm when the guard is false, so rows that predate
-        // ingest-side JSON validation never raise on `::jsonb`; a non-object
-        // document yields NULL from `->>`, an empty vector, and `false`.
-        // `pg_input_is_valid` needs PostgreSQL 16 or later.
+        // name fields only, so both sides normalize identically. `profile.j`
+        // is the row's content parsed once by the LATERAL below: NULL for
+        // invalid JSON, and `->>` is NULL for a non-object document, so either
+        // yields an empty vector and `false`; `name_match` is never NULL.
         qb.push(
-            ", created_at, CASE WHEN pg_input_is_valid(content, 'jsonb') \
-             THEN to_tsvector('simple', concat_ws(' ', \
-               content::jsonb ->> 'name', \
-               content::jsonb ->> 'display_name', \
-               content::jsonb ->> 'displayName')) @@ search_query.query \
-             ELSE false END AS name_match",
+            ", created_at, to_tsvector('simple', concat_ws(' ', \
+               profile.j ->> 'name', \
+               profile.j ->> 'display_name', \
+               profile.j ->> 'displayName')) @@ search_query.query AS name_match",
         );
         if prioritize_exact_profile_lexeme {
             // The outer exact-lexeme term reads `search_tsv` through the wrapper.
@@ -296,7 +294,20 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
     }
     qb.push(" FROM events CROSS JOIN LATERAL (SELECT ");
     push_tsquery(&mut qb, query.mode, &search_text);
-    qb.push(" AS query) AS search_query WHERE community_id = ");
+    qb.push(" AS query) AS search_query");
+    if profile_query {
+        // Parse `content` once per candidate row rather than once per
+        // reference. `CASE` skips the cast when the guard is false, so rows
+        // that predate ingest-side JSON validation never raise on `::jsonb`.
+        // `OFFSET 0` keeps the planner from pulling the subquery up and
+        // re-expanding the cast at every `profile.j` reference.
+        // `pg_input_is_valid` needs PostgreSQL 16 or later.
+        qb.push(
+            " CROSS JOIN LATERAL (SELECT CASE WHEN pg_input_is_valid(content, 'jsonb') \
+             THEN content::jsonb END AS j OFFSET 0) AS profile",
+        );
+    }
+    qb.push(" WHERE community_id = ");
     qb.push_bind(*query.community.as_uuid());
     qb.push(" AND deleted_at IS NULL AND search_tsv @@ search_query.query");
 

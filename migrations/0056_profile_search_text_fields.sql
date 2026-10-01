@@ -4,6 +4,19 @@
 -- make a hundred profiles match a name prefix that none of them carry and push
 -- the person actually named that off the first page.
 --
+-- This is the first migration to require PostgreSQL 16. `check_function_bodies`
+-- validates the SQL body at CREATE FUNCTION, so on an older server the function
+-- below would fail with a bare "function pg_input_is_valid(text, unknown) does
+-- not exist" and the relay would refuse to start without saying why. Name the
+-- real cause first.
+DO $$
+BEGIN
+    IF current_setting('server_version_num')::int < 160000 THEN
+        RAISE EXCEPTION 'Buzz requires PostgreSQL 16 or later (migration 0056 uses pg_input_is_valid); this server is %',
+            current_setting('server_version');
+    END IF;
+END $$;
+
 -- Requires PostgreSQL 16 or later: `pg_input_is_valid` guards the
 -- `content::jsonb` cast so rows that predate ingest-side JSON validation never
 -- raise. It is STABLE, so this IMMUTABLE SQL wrapper is what lets a

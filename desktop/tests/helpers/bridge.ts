@@ -317,6 +317,8 @@ type MockBridgeOptions = {
   }>;
   /** Delay (ms) for `apply_workspace`; see e2eBridge mock config. */
   applyCommunityDelayMs?: number;
+  /** Hold `apply_workspace` until the E2E release seam is called. */
+  deferApplyCommunity?: boolean;
   /** Reject `clear_pending_navigation_deep_links` with this message. */
   clearPendingNavigationDeepLinksError?: string;
   openDmDelayMs?: number;

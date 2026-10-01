@@ -403,6 +403,8 @@ type E2eConfig = {
     /** Delay (ms) for `apply_workspace` so e2e tests can observe the
      *  community-switch gate. 0/undefined = instant. */
     applyCommunityDelayMs?: number;
+    /** Hold `apply_workspace` until the E2E release seam is called. */
+    deferApplyCommunity?: boolean;
     /** Reject `clear_pending_navigation_deep_links` with this message. */
     clearPendingNavigationDeepLinksError?: string;
     openDmDelayMs?: number;
@@ -1275,6 +1277,14 @@ declare global {
     /** Last payload written through the native clipboard command. */
     __BUZZ_E2E_LAST_CLIPBOARD__?: { html: string | null; text: string };
     __BUZZ_E2E_COMMANDS__?: string[];
+    /** Number of community-scoped reset passes through useCommunityInit. */
+    __BUZZ_E2E_COMMUNITY_RESETS__?: number;
+    /** Number of AppReady component mounts across the community boundary. */
+    __BUZZ_E2E_APP_READY_MOUNTS__?: number;
+    /** Release `apply_workspace` calls held by `deferApplyCommunity`. */
+    __BUZZ_E2E_RELEASE_APPLY_WORKSPACES__?: () => number;
+    /** Number of held `apply_workspace` calls. */
+    __BUZZ_E2E_APPLY_WORKSPACES_PENDING__?: () => number;
     __BUZZ_E2E_COMMAND_PAYLOADS__?: Array<{
       command: string;
       payload: unknown;
@@ -1797,6 +1807,7 @@ type DeferredProfileUpdate = {
 let deferredProfileReadQueue: DeferredProfileRead[] = [];
 let nextProfileReadOrdinal = 1;
 let profileReadsReleased = false;
+let deferredApplyCommunityQueue: Array<() => void> = [];
 let deferredProfileUpdateQueue: DeferredProfileUpdate[] = [];
 let nextProfileUpdateOrdinal = 1;
 let profileUpdatesReleased = false;
@@ -11526,6 +11537,7 @@ export function maybeInstallE2eTauriMocks() {
   deferredProfileReadQueue = [];
   nextProfileReadOrdinal = 1;
   profileReadsReleased = false;
+  deferredApplyCommunityQueue = [];
   deferredProfileUpdateQueue = [];
   nextProfileUpdateOrdinal = 1;
   profileUpdatesReleased = false;
@@ -11557,6 +11569,13 @@ export function maybeInstallE2eTauriMocks() {
   };
   window.__BUZZ_E2E_THREAD_REPLIES_PENDING__ = () =>
     deferredThreadRepliesQueue.length;
+  window.__BUZZ_E2E_RELEASE_APPLY_WORKSPACES__ = () => {
+    const queued = deferredApplyCommunityQueue.splice(0);
+    for (const release of queued) release();
+    return queued.length;
+  };
+  window.__BUZZ_E2E_APPLY_WORKSPACES_PENDING__ = () =>
+    deferredApplyCommunityQueue.length;
   const releaseProfileRead = () => {
     const deferred = deferredProfileReadQueue.shift();
     if (!deferred) return 0;
@@ -11663,6 +11682,8 @@ export function maybeInstallE2eTauriMocks() {
   }
   mockWindows(config.mock?.windowLabel ?? "main");
   window.__BUZZ_E2E_COMMANDS__ = [];
+  window.__BUZZ_E2E_COMMUNITY_RESETS__ = 0;
+  window.__BUZZ_E2E_APP_READY_MOUNTS__ = 0;
   window.__BUZZ_E2E_COMMAND_PAYLOADS__ = [];
   window.__BUZZ_E2E_COMMAND_LOG__ = [];
   window.__BUZZ_E2E_OBSERVER_CONTROLS__ = [];
@@ -13088,6 +13109,17 @@ export function maybeInstallE2eTauriMocks() {
         return activeConfig?.mock?.linkPreviewMetadata ?? null;
       }
       case "apply_workspace": {
+        if (activeConfig?.mock?.deferApplyCommunity) {
+          return new Promise<void>((resolve) => {
+            deferredApplyCommunityQueue.push(() => {
+              window.__BUZZ_E2E_COMMAND_LOG__?.push({
+                command: "apply_workspace:released",
+                payload: null,
+              });
+              resolve();
+            });
+          });
+        }
         const applyDelayMs = activeConfig?.mock?.applyCommunityDelayMs ?? 0;
         if (applyDelayMs > 0) {
           return new Promise((resolve) =>

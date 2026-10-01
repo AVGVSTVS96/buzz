@@ -71,6 +71,13 @@ async function resetCommunityState({
 }: {
   resetAvatarState: boolean;
 }): Promise<void> {
+  if (import.meta.env.MODE === "e2e") {
+    const e2eWindow = window as Window & {
+      __BUZZ_E2E_COMMUNITY_RESETS__?: number;
+    };
+    e2eWindow.__BUZZ_E2E_COMMUNITY_RESETS__ =
+      (e2eWindow.__BUZZ_E2E_COMMUNITY_RESETS__ ?? 0) + 1;
+  }
   relayClient.disconnect();
   await resetNavigationDeepLinkDrain();
   resetRateLimitGate();

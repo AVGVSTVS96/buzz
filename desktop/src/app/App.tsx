@@ -90,6 +90,24 @@ const BOOT_SPLASH_MIN_VISIBLE_MS = 1_200;
 const BOOT_SPLASH_FADE_MS = 200;
 const INITIAL_RENDER_READY_EVENT = "initial-render-ready";
 
+function incrementE2eAppReadyMounts() {
+  const e2eWindow = window as Window & {
+    __BUZZ_E2E__?: unknown;
+    __BUZZ_E2E_APP_READY_MOUNTS__?: number;
+  };
+  if (!e2eWindow.__BUZZ_E2E__) return;
+  e2eWindow.__BUZZ_E2E_APP_READY_MOUNTS__ =
+    (e2eWindow.__BUZZ_E2E_APP_READY_MOUNTS__ ?? 0) + 1;
+}
+
+function E2eAppReadyMountTelemetry() {
+  useEffect(() => {
+    incrementE2eAppReadyMounts();
+  }, []);
+
+  return null;
+}
+
 type BootSplashPhase = "holding" | "fading" | "done";
 
 type CommunityOnboardingWorkOwner = {
@@ -335,17 +353,34 @@ function AppReady({
   isCommunitySwitch: boolean;
 }) {
   const onboarding = useAppOnboardingState(isSharedIdentity);
+  const isE2eBuild = import.meta.env.MODE === "e2e";
+  const e2eTelemetry = isE2eBuild ? <E2eAppReadyMountTelemetry /> : null;
 
   if (onboarding.stage === "reset-failed") {
-    return <ResetFailedScreen />;
+    return (
+      <>
+        {e2eTelemetry}
+        <ResetFailedScreen />
+      </>
+    );
   }
 
   if (onboarding.stage === "keyring-locked") {
-    return <KeyringLockedScreen />;
+    return (
+      <>
+        {e2eTelemetry}
+        <KeyringLockedScreen />
+      </>
+    );
   }
 
   if (onboarding.stage === "relaunch-required") {
-    return <RelaunchRequiredScreen />;
+    return (
+      <>
+        {e2eTelemetry}
+        <RelaunchRequiredScreen />
+      </>
+    );
   }
 
   if (
@@ -353,35 +388,46 @@ function AppReady({
     (continueOnboarding && onboarding.stage === "blocking")
   ) {
     return (
-      <OnboardingFlow
-        actions={onboarding.flow.actions}
-        identityLost={onboarding.identityLost}
-        initialProfile={onboarding.flow.initialProfile}
-        initialProfileDecisionSettled={
-          onboarding.flow.initialProfileDecisionSettled
-        }
-        key={onboarding.currentPubkey ?? "anonymous"}
-      />
+      <>
+        {e2eTelemetry}
+        <OnboardingFlow
+          actions={onboarding.flow.actions}
+          identityLost={onboarding.identityLost}
+          initialProfile={onboarding.flow.initialProfile}
+          initialProfileDecisionSettled={
+            onboarding.flow.initialProfileDecisionSettled
+          }
+          key={onboarding.currentPubkey ?? "anonymous"}
+        />
+      </>
     );
   }
 
   if (onboarding.stage === "blocking") {
-    return isCommunitySwitch ? <CommunitySwitchGate /> : <AppLoadingGate />;
+    return (
+      <>
+        {e2eTelemetry}
+        {isCommunitySwitch ? <CommunitySwitchGate /> : <AppLoadingGate />}
+      </>
+    );
   }
 
   return (
-    <EncryptedBackupProvider
-      onOpenSettings={() =>
-        void router.navigate({
-          to: "/settings",
-          search: { section: "profile" },
-        })
-      }
-    >
-      <KnownAgentPubkeysProvider>
-        <RouterProvider router={router} />
-      </KnownAgentPubkeysProvider>
-    </EncryptedBackupProvider>
+    <>
+      {e2eTelemetry}
+      <EncryptedBackupProvider
+        onOpenSettings={() =>
+          void router.navigate({
+            to: "/settings",
+            search: { section: "profile" },
+          })
+        }
+      >
+        <KnownAgentPubkeysProvider>
+          <RouterProvider router={router} />
+        </KnownAgentPubkeysProvider>
+      </EncryptedBackupProvider>
+    </>
   );
 }
 
@@ -457,9 +503,28 @@ function CommunityApp({
   const isContinuingOnboarding = continueOnboarding && !isCommunitySwitch;
 
   const transaction = communityOnboarding.transaction;
+  // The onboarding transaction is temporary control-plane state. Retiring it
+  // must not change the generation of an init that already applied this
+  // community, or useCommunityInit will tear down and apply the same
+  // workspace again. Update this during render so the clear() render already
+  // has the retired transaction's generation; keep the community id with it so
+  // another community can never inherit the value.
+  const lastCommunityInitAttemptRef = useRef<{
+    communityId: string;
+    initAttempt: number;
+  } | null>(null);
+  const transactionOwnsActiveCommunity =
+    transaction !== null && transaction.communityId === activeCommunity?.id;
+  if (transactionOwnsActiveCommunity && activeCommunity) {
+    lastCommunityInitAttemptRef.current = {
+      communityId: activeCommunity.id,
+      initAttempt: transaction.initAttempt ?? 0,
+    };
+  }
   const communityInitAttempt =
-    transaction && transaction.communityId === activeCommunity?.id
-      ? (transaction.initAttempt ?? 0)
+    activeCommunity &&
+    lastCommunityInitAttemptRef.current?.communityId === activeCommunity.id
+      ? lastCommunityInitAttemptRef.current.initAttempt
       : -1;
   const community = useCommunityInit(
     activeCommunity,

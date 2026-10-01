@@ -74,6 +74,11 @@ async function setRelayConnectionState(
 const HOME_SEEN_STORAGE_KEY_PREFIX = "buzz-home-feed-seen.v1:";
 const COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY =
   "buzz-community-onboarding-transaction.v1";
+const WELCOME_SURFACE_READY_EVENT = "buzz:onboarding-welcome-surface-ready";
+const ENTERING_CURTAIN_FADE_MS = 500;
+const ENTERING_CURTAIN_SAFETY_MS = 8_000;
+const ENTERING_CLOCK_STEP_MS = 100;
+const ENTERING_CLOCK_MAX_ADVANCE_MS = 7_500;
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
@@ -142,12 +147,14 @@ async function seedCommunityProfileStage(page: Page, id: string) {
 async function seedConnectingCorporateProfileTransaction(
   page: Page,
   {
+    addedCommunity = true,
     communityId = "e2e-enterprise-community",
     communityName = "Enterprise",
     pubkey = BLANK_TYLER_IDENTITY.pubkey,
     relayUrl,
     transactionId,
   }: {
+    addedCommunity?: boolean;
     communityId?: string;
     communityName?: string;
     pubkey?: string;
@@ -157,7 +164,14 @@ async function seedConnectingCorporateProfileTransaction(
 ) {
   await seedActiveIdentity(page, { ...BLANK_TYLER_IDENTITY, pubkey });
   await page.addInitScript(
-    ({ communityId, communityName, pubkey, relayUrl, transactionId }) => {
+    ({
+      addedCommunity,
+      communityId,
+      communityName,
+      pubkey,
+      relayUrl,
+      transactionId,
+    }) => {
       window.localStorage.setItem(
         `buzz-machine-onboarding-complete.v2:${pubkey}`,
         "true",
@@ -185,13 +199,20 @@ async function seedConnectingCorporateProfileTransaction(
           relayUrl,
           communityName,
           communityId,
-          addedCommunity: true,
+          addedCommunity,
           createdAt: timestamp,
           updatedAt: timestamp,
         }),
       );
     },
-    { communityId, communityName, pubkey, relayUrl, transactionId },
+    {
+      addedCommunity,
+      communityId,
+      communityName,
+      pubkey,
+      relayUrl,
+      transactionId,
+    },
   );
 }
 
@@ -208,6 +229,64 @@ async function readCommunityOnboardingTransaction(page: Page) {
         })
       : null;
   }, COMMUNITY_ONBOARDING_TRANSACTION_STORAGE_KEY);
+}
+
+async function readCommunityInitMetrics(page: Page) {
+  return page.evaluate(() => ({
+    applyWorkspaceCalls: (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+      (command) => command === "apply_workspace",
+    ).length,
+    communityResets: window.__BUZZ_E2E_COMMUNITY_RESETS__ ?? 0,
+    appReadyMounts: window.__BUZZ_E2E_APP_READY_MOUNTS__ ?? 0,
+  }));
+}
+
+async function readCommunityRetirementState(page: Page) {
+  return page.evaluate(() => {
+    const testWindow = window as Window & {
+      __BUZZ_E2E_WELCOME_SURFACE_READY_AT__?: number | null;
+    };
+    const rawTransaction = window.localStorage.getItem(
+      "buzz-community-onboarding-transaction.v1",
+    );
+    const transaction = rawTransaction
+      ? (JSON.parse(rawTransaction) as { stage?: string })
+      : null;
+    const welcomeContent = document.querySelector(
+      '[data-testid="message-channel-intro"]',
+    );
+    const chatTitle = document.querySelector('[data-testid="chat-title"]');
+    return {
+      clockNow: Date.now(),
+      transactionStage: transaction?.stage ?? null,
+      welcomeSurfaceReadyAt:
+        testWindow.__BUZZ_E2E_WELCOME_SURFACE_READY_AT__ ?? null,
+      applyWorkspaceCalls: (window.__BUZZ_E2E_COMMANDS__ ?? []).filter(
+        (command) => command === "apply_workspace",
+      ).length,
+      communityResets: window.__BUZZ_E2E_COMMUNITY_RESETS__ ?? 0,
+      appReadyMounts: window.__BUZZ_E2E_APP_READY_MOUNTS__ ?? 0,
+      enteringCurtainMounted:
+        document.querySelector(
+          '[data-testid="onboarding-entering-curtain"]',
+        ) !== null,
+      appLoadingGateMounted:
+        document.querySelector('[data-testid="app-loading-gate"]') !== null,
+      communitySwitchGateMounted:
+        document.querySelector('[data-testid="community-switch-gate"]') !==
+        null,
+      welcomeChatTitle: chatTitle?.textContent?.trim() ?? null,
+      welcomeContentMounted: welcomeContent !== null,
+      welcomeContentVisible:
+        welcomeContent !== null && welcomeContent.getClientRects().length > 0,
+      welcomeContentText: welcomeContent?.textContent ?? "",
+    };
+  });
+}
+
+async function waitForCommunityLoadingGatesToSettle(page: Page) {
+  await expect(page.getByTestId("app-loading-gate")).toHaveCount(0);
+  await expect(page.getByTestId("community-switch-gate")).toHaveCount(0);
 }
 
 async function reopenSameRelayCommunityLink(page: Page, relayUrl: string) {
@@ -247,6 +326,42 @@ async function releaseOneProfileRead(page: Page) {
   });
   expect(releasedOrdinal).toBeGreaterThan(0);
   return releasedOrdinal;
+}
+
+async function releaseAllProfileReads(page: Page) {
+  const released = await page.evaluate(() => {
+    const release = window.__BUZZ_E2E_RELEASE_PROFILE_READS__;
+    if (!release) {
+      throw new Error("Profile read release helper is not installed.");
+    }
+    return release();
+  });
+  expect(released).toBeGreaterThan(0);
+  return released;
+}
+
+async function waitForApplyWorkspacePending(page: Page, expected = 1) {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_APPLY_WORKSPACES_PENDING__?.() ?? 0,
+        ),
+      { message: "waiting for a held apply_workspace call" },
+    )
+    .toBeGreaterThanOrEqual(expected);
+}
+
+async function releaseApplyWorkspaces(page: Page) {
+  const released = await page.evaluate(() => {
+    const release = window.__BUZZ_E2E_RELEASE_APPLY_WORKSPACES__;
+    if (!release) {
+      throw new Error("apply_workspace release helper is not installed.");
+    }
+    return release();
+  });
+  expect(released).toBeGreaterThan(0);
+  return released;
 }
 
 async function waitForScopedProfileUpdatePending(page: Page) {
@@ -3239,6 +3354,243 @@ test("first-community direct join reaches profile", async ({ page }) => {
     .toEqual({ communityCount: 1, transactionMatchesOnlyCommunity: true });
 });
 
+test("completing a community join does not reinitialize after transaction clear", async ({
+  page,
+}) => {
+  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
+  await page.addInitScript((pubkey) => {
+    window.localStorage.setItem(
+      `buzz-machine-onboarding-complete.v2:${pubkey}`,
+      "true",
+    );
+  }, BLANK_TYLER_IDENTITY.pubkey);
+  await page.addInitScript((eventName) => {
+    const testWindow = window as Window & {
+      __BUZZ_E2E_WELCOME_SURFACE_READY_AT__?: number | null;
+    };
+    testWindow.__BUZZ_E2E_WELCOME_SURFACE_READY_AT__ = null;
+    window.addEventListener(eventName, () => {
+      testWindow.__BUZZ_E2E_WELCOME_SURFACE_READY_AT__ ??= Date.now();
+    });
+  }, WELCOME_SURFACE_READY_EVENT);
+  await installMockBridge(
+    page,
+    {
+      deferProfileReads: true,
+      profileHasEvent: false,
+    },
+    {
+      relayWsUrl: "ws://localhost:3000",
+      skipOnboardingSeed: true,
+      skipCommunitySeed: true,
+    },
+  );
+  // Install before navigation so every app timer uses the same clock. Keep
+  // page time flowing during startup and the profile flow; pausing too early
+  // would also pause the timers that make those screens actionable.
+  await page.clock.install({
+    time: new Date("2026-10-01T00:00:00.000Z"),
+  });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /Join a community/ }).click();
+  await page
+    .getByTestId("invite-redeem-input")
+    .fill("wss://onboarding.communities.buzz.xyz");
+  await page.getByTestId("invite-redeem-submit").click();
+
+  await expect.poll(() => commandCount(page, "apply_workspace")).toBe(1);
+  await waitForProfileReadPending(page);
+  await releaseOneProfileRead(page);
+  await expect(
+    page.getByRole("heading", { name: "Build your profile" }),
+  ).toBeVisible();
+  await expect
+    .poll(() => commandCount(page, "get_profile"))
+    .toBeGreaterThanOrEqual(3);
+  await waitForProfileReadPending(page, 2);
+  await releaseAllProfileReads(page);
+
+  await page.getByTestId("community-profile-name-key").fill("New user");
+  await page.getByTestId("community-profile-next").click();
+  await expect(
+    page.getByRole("heading", { name: "Meet your starter team" }),
+  ).toBeVisible();
+  await expect
+    .poll(() => readCommunityOnboardingTransaction(page))
+    .toMatchObject({ stage: "team-intro" });
+  // Pause at a strictly future virtual instant before entering. The one-second
+  // guard absorbs the clock RPC latency without reaching the 500 ms retirement
+  // timer, which does not exist until the entering curtain is ready.
+  const pauseAt = await page.evaluate(() => Date.now() + 1_000);
+  await page.clock.pauseAt(pauseAt);
+  await page.getByTestId("community-team-intro-enter").click();
+  // Keep page time paused while the lazy Welcome route settles. Each bounded
+  // step gives timer-driven Suspense retries a chance to commit, but never
+  // crosses the real Welcome-ready fade or the entering safety deadline.
+  const isReadyForRetirement = (
+    state: Awaited<ReturnType<typeof readCommunityRetirementState>>,
+  ) =>
+    state.transactionStage === "entering" &&
+    state.welcomeSurfaceReadyAt !== null &&
+    state.clockNow < state.welcomeSurfaceReadyAt + ENTERING_CURTAIN_FADE_MS &&
+    state.enteringCurtainMounted &&
+    !state.appLoadingGateMounted &&
+    !state.communitySwitchGateMounted &&
+    state.welcomeChatTitle?.includes("Welcome") === true &&
+    state.welcomeContentMounted &&
+    state.welcomeContentVisible &&
+    state.welcomeContentText.includes("private welcome channel");
+  let beforeRetirement:
+    | Awaited<ReturnType<typeof readCommunityRetirementState>>
+    | undefined;
+  let enteringStartedAt: number | null = null;
+  let advancedMs = 0;
+  while (!beforeRetirement) {
+    const state = await readCommunityRetirementState(page);
+    if (enteringStartedAt === null && state.transactionStage === "entering") {
+      enteringStartedAt = state.clockNow;
+    }
+    if (isReadyForRetirement(state)) {
+      beforeRetirement = state;
+      break;
+    }
+
+    const deadlines = [
+      ENTERING_CLOCK_MAX_ADVANCE_MS - advancedMs,
+      state.welcomeSurfaceReadyAt === null
+        ? Number.POSITIVE_INFINITY
+        : state.welcomeSurfaceReadyAt +
+          ENTERING_CURTAIN_FADE_MS -
+          state.clockNow,
+      enteringStartedAt === null
+        ? Number.POSITIVE_INFINITY
+        : enteringStartedAt + ENTERING_CURTAIN_SAFETY_MS - state.clockNow,
+    ];
+    const stepMs = Math.min(
+      ENTERING_CLOCK_STEP_MS,
+      ...deadlines.map((deadline) => deadline - 1),
+    );
+    if (stepMs < 1) {
+      throw new Error(
+        `Welcome surface did not settle before its production deadline: ${JSON.stringify(state)}`,
+      );
+    }
+    await page.clock.fastForward(stepMs);
+    advancedMs += stepMs;
+    // Yield the host turn so React can commit work released by the timer tick;
+    // this does not advance the paused page clock.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  if (!beforeRetirement) {
+    throw new Error("The entering curtain never exposed the Welcome surface.");
+  }
+  expect(beforeRetirement).toMatchObject({
+    transactionStage: "entering",
+    applyWorkspaceCalls: 1,
+    communityResets: 0,
+    appReadyMounts: 1,
+    enteringCurtainMounted: true,
+    welcomeContentMounted: true,
+    welcomeContentVisible: true,
+  });
+
+  const welcomeSurfaceReadyAt = beforeRetirement.welcomeSurfaceReadyAt;
+  if (welcomeSurfaceReadyAt === null) {
+    throw new Error("The Welcome surface-ready event was not captured.");
+  }
+  const retirementDeadline = welcomeSurfaceReadyAt + ENTERING_CURTAIN_FADE_MS;
+  const remainingToRetirement = retirementDeadline - beforeRetirement.clockNow;
+  expect(remainingToRetirement).toBeGreaterThan(0);
+  // Advance exactly to the deadline recorded from the actual production event.
+  // This fires the real fade callback; it does not fabricate or directly clear
+  // the onboarding transaction.
+  await page.clock.fastForward(remainingToRetirement);
+  await expect.poll(() => readCommunityOnboardingTransaction(page)).toBeNull();
+  // Only after the production callback has retired the transaction may normal
+  // UI timers resume for the shared Welcome assertions.
+  await page.clock.resume();
+
+  await expect
+    .poll(async () => {
+      const state = await readCommunityRetirementState(page);
+      return {
+        applyWorkspaceCalls: state.applyWorkspaceCalls,
+        communityResets: state.communityResets,
+        appReadyMounts: state.appReadyMounts,
+      };
+    })
+    .toEqual({
+      applyWorkspaceCalls: beforeRetirement.applyWorkspaceCalls,
+      communityResets: beforeRetirement.communityResets,
+      appReadyMounts: beforeRetirement.appReadyMounts,
+    });
+  await waitForCommunityLoadingGatesToSettle(page);
+  await expectWelcomeView(page);
+  const afterRetirement = await readCommunityRetirementState(page);
+  expect(afterRetirement.applyWorkspaceCalls).toBe(
+    beforeRetirement.applyWorkspaceCalls,
+  );
+  expect(afterRetirement.communityResets).toBe(
+    beforeRetirement.communityResets,
+  );
+  expect(afterRetirement.appReadyMounts).toBe(beforeRetirement.appReadyMounts);
+  await expect(page.getByTestId("app-loading-gate")).toHaveCount(0);
+});
+
+test("first-community profile skip retires onboarding without reinitializing", async ({
+  page,
+}) => {
+  await seedActiveIdentity(page, BLANK_TYLER_IDENTITY);
+  await page.addInitScript((pubkey) => {
+    window.localStorage.setItem(
+      `buzz-machine-onboarding-complete.v2:${pubkey}`,
+      "true",
+    );
+  }, BLANK_TYLER_IDENTITY.pubkey);
+  await installMockBridge(
+    page,
+    { deferProfileReads: true, profileHasEvent: true },
+    {
+      relayWsUrl: "ws://localhost:3000",
+      skipOnboardingSeed: true,
+      skipCommunitySeed: true,
+    },
+  );
+  await page.goto("/");
+
+  await page.getByRole("button", { name: /Join a community/ }).click();
+  await page
+    .getByTestId("invite-redeem-input")
+    .fill("wss://onboarding.communities.buzz.xyz");
+  await page.getByTestId("invite-redeem-submit").click();
+
+  await expect.poll(() => commandCount(page, "apply_workspace")).toBe(1);
+  await waitForProfileReadPending(page);
+  await waitForCommunityLoadingGatesToSettle(page);
+  const beforeRetirement = await readCommunityInitMetrics(page);
+  await releaseOneProfileRead(page);
+
+  await expect.poll(() => readCommunityOnboardingTransaction(page)).toBeNull();
+  await expect
+    .poll(() => readCommunityInitMetrics(page))
+    .toMatchObject({
+      applyWorkspaceCalls: 1,
+      communityResets: beforeRetirement.communityResets,
+      appReadyMounts: beforeRetirement.appReadyMounts + 1,
+    });
+  await waitForCommunityLoadingGatesToSettle(page);
+  const afterRetirement = await readCommunityInitMetrics(page);
+  expect(afterRetirement.communityResets).toBe(
+    beforeRetirement.communityResets,
+  );
+  expect(afterRetirement.appReadyMounts).toBe(
+    beforeRetirement.appReadyMounts + 1,
+  );
+  await expect(page.getByTestId("app-loading-gate")).toHaveCount(0);
+});
+
 test("community onboarding reuses an existing relay profile", async ({
   page,
 }) => {
@@ -3311,6 +3663,99 @@ test("community onboarding reuses an existing relay profile", async ({
       .getByTestId("community-onboarding-flow")
       .locator(".buzz-onboarding-transition-line"),
   ).toHaveAttribute("data-onboarding-direction", "backward");
+});
+
+test("returning-user profile skip retires onboarding without reinitializing", async ({
+  page,
+}) => {
+  const relayUrl = "wss://returning-profile-skip.example";
+  await seedConnectingCorporateProfileTransaction(page, {
+    relayUrl,
+    transactionId: "txn-returning-profile-skip",
+  });
+  await installMockBridge(
+    page,
+    {
+      deferProfileReads: true,
+      profileHasEvent: true,
+    },
+    {
+      relayWsUrl: relayUrl,
+      skipOnboardingSeed: true,
+      skipCommunitySeed: true,
+    },
+  );
+  await page.goto("/");
+
+  await expect.poll(() => commandCount(page, "apply_workspace")).toBe(1);
+  await waitForProfileReadPending(page);
+  await waitForCommunityLoadingGatesToSettle(page);
+  const beforeRetirement = await readCommunityInitMetrics(page);
+  await releaseOneProfileRead(page);
+
+  await expect.poll(() => readCommunityOnboardingTransaction(page)).toBeNull();
+  await expect
+    .poll(() => readCommunityInitMetrics(page))
+    .toMatchObject({
+      applyWorkspaceCalls: 1,
+      communityResets: beforeRetirement.communityResets,
+      appReadyMounts: beforeRetirement.appReadyMounts + 1,
+    });
+  await waitForCommunityLoadingGatesToSettle(page);
+  const afterRetirement = await readCommunityInitMetrics(page);
+  expect(afterRetirement.communityResets).toBe(
+    beforeRetirement.communityResets,
+  );
+  expect(afterRetirement.appReadyMounts).toBe(
+    beforeRetirement.appReadyMounts + 1,
+  );
+  await expect(page.getByTestId("app-loading-gate")).toHaveCount(0);
+});
+
+test("canceling onboarding while retaining the active community does not reinitialize", async ({
+  page,
+}) => {
+  const relayUrl = "wss://cancel-retained-community.example";
+  await seedConnectingCorporateProfileTransaction(page, {
+    addedCommunity: false,
+    relayUrl,
+    transactionId: "txn-cancel-retained-community",
+  });
+  await installMockBridge(
+    page,
+    { deferApplyCommunity: true },
+    {
+      relayWsUrl: relayUrl,
+      skipOnboardingSeed: true,
+      skipCommunitySeed: true,
+    },
+  );
+  await page.goto("/");
+
+  await expect(page.getByText("Connecting securely…")).toBeVisible();
+  await expect.poll(() => commandCount(page, "apply_workspace")).toBe(1);
+  await waitForApplyWorkspacePending(page);
+  const beforeRetirement = await readCommunityInitMetrics(page);
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  await expect.poll(() => readCommunityOnboardingTransaction(page)).toBeNull();
+  await releaseApplyWorkspaces(page);
+  await expect
+    .poll(() =>
+      readCommunityInitMetrics(page).then((m) => m.applyWorkspaceCalls),
+    )
+    .toBe(1);
+  await waitForCommunityLoadingGatesToSettle(page);
+  await expect
+    .poll(() => readCommunityInitMetrics(page).then((m) => m.appReadyMounts))
+    .toBe(beforeRetirement.appReadyMounts + 1);
+  const afterRetirement = await readCommunityInitMetrics(page);
+  expect(afterRetirement.communityResets).toBe(
+    beforeRetirement.communityResets,
+  );
+  expect(afterRetirement.appReadyMounts).toBe(
+    beforeRetirement.appReadyMounts + 1,
+  );
 });
 
 test("first-community direct join cancel returns to request access", async ({

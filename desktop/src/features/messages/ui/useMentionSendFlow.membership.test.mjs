@@ -21,10 +21,15 @@ async function membershipSetup(delay) {
     agentRead: null,
   };
   window.__TAURI_INTERNALS__ = {
-    invoke: async (command) => {
+    invoke: async (command, args) => {
       if (command === "get_channel_members") {
         if (live.gate) await live.gate.promise;
-        return { members: live.members };
+        // Model the native command: it snapshots the roster, then (unless
+        // roster only) awaits a profile lookup before it returns that
+        // snapshot. A removal during the lookup is not in the answer.
+        const snapshot = live.members;
+        if (!args?.rosterOnly && live.duringProfiles) live.duringProfiles();
+        return { members: snapshot };
       }
       throw new Error(`unmocked ${command}`);
     },
@@ -155,3 +160,26 @@ test("Send without inviting still publishes: a declined person becomes a referen
   assert.deepEqual(sends[0][2], [HUMAN]);
   assert.equal(s.events("error").length, 0);
 });
+
+// The publish gate must not accept a snapshot that a later await inside the
+// member read made stale. Every signed recipient must be a member when the
+// message is sent.
+for (const removed of ["person", "agent"]) {
+  test(`chat publish never signs the ${removed} removed during the member read's profile lookup`, async () => {
+    const { s, live } = await membershipSetup("invite");
+    await s.prompt(TEXT);
+    live.members = [...live.members, AGENT_MEMBER];
+    live.duringProfiles = () => {
+      if (live.phase === "publish")
+        live.members = REMOVALS[removed](live.members);
+    };
+    await s.invite();
+    await s.flush();
+    const sends = s.events("SEND");
+    const membersAtSend = new Set(live.members.map(({ pubkey }) => pubkey));
+    for (const [, , recipients] of sends)
+      for (const pubkey of recipients)
+        assert.ok(membersAtSend.has(pubkey), `${pubkey} was not a member`);
+    assert.equal(sends.length, 1, "the roster-only read saw everyone");
+  });
+}

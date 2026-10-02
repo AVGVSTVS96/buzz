@@ -48,13 +48,16 @@ export function isMentionAuthorizationError(error: unknown): error is Error {
  * agents alike. Selection, Invite and agent attach prove membership only at
  * their own time, so read the destination's member list fresh and fail
  * closed for any recipient who is not a member now (from the writer: a
- * lagging replica can still list someone just removed). Send without
- * inviting has already moved declined people to reference tags.
+ * lagging replica can still list someone just removed). Read the roster
+ * only: a profile lookup after the snapshot would let a removal land before
+ * the answer returns. Send without inviting has already moved declined
+ * people to reference tags.
  */
 export async function revalidateRecipientMembership({
   pubkeys,
   channelId,
-  fetchMembers = (id) => getChannelMembers(id, { readYourWrites: true }),
+  fetchMembers = (id) =>
+    getChannelMembers(id, { readYourWrites: true, rosterOnly: true }),
 }: {
   pubkeys: readonly string[];
   channelId: string;

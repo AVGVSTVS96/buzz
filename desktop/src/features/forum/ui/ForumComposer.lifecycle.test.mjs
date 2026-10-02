@@ -310,11 +310,16 @@ async function setup(options = {}) {
     control.cachedMembers = [];
     control.liveMembers = [];
     window.__TAURI_INTERNALS__ = {
-      invoke: async (command) => {
+      invoke: async (command, args) => {
         if (command === "get_channel_members") {
           calls.push(["members"]);
           if (control.members) await control.members.promise;
-          return { members: control.liveMembers };
+          // Model the native command: it snapshots the roster, then (unless
+          // roster only) awaits a profile lookup before returning it.
+          const snapshot = control.liveMembers;
+          if (!args?.rosterOnly && control.duringProfiles)
+            control.duringProfiles();
+          return { members: snapshot };
         }
         if (command === "get_channels")
           return { hash: "h", channels: [], last_messages: {} };
@@ -1264,4 +1269,42 @@ for (const choice of ["invite", "cancel"]) {
     assert.equal(sends.length, 1);
     assert.ok(sends[0].flat(2).includes(HUMAN), "the invited person is tagged");
   });
+}
+
+// A removal during a later await inside the member read must not reach the
+// publish gate as a stale "still a member" answer.
+for (const main of [false, true]) {
+  for (const removed of ["person", "agent"]) {
+    test(`mounted ${main ? "main" : "forum"} publish never signs the ${removed} removed during the member read's profile lookup`, async () => {
+      const s = await setup({ realMentions: true, main });
+      s.control.cachedMembers = [
+        { pubkey: HUMAN, role: "member", isAgent: false, displayName: "Pat" },
+        { pubkey: KEY, role: "bot", isAgent: true, displayName: "Scout" },
+      ];
+      s.control.liveMembers = [PAT, SCOUT];
+      s.navigate("b");
+      await s.open();
+      await s.choose("Pat");
+      await s.open();
+      await s.choose("Scout");
+      const gone = removed === "agent" ? KEY : HUMAN;
+      s.control.duringProfiles = () => {
+        if (s.control.phase === "publish")
+          s.control.liveMembers = s.control.liveMembers.filter(
+            (member) => member.pubkey !== gone,
+          );
+      };
+      await s.submit();
+      await act(async () => {});
+      const sends = s.calls.filter(([name]) => name === "send");
+      const members = new Set(s.control.liveMembers.map((m) => m.pubkey));
+      for (const pubkey of [HUMAN, KEY])
+        if (sends.some((send) => send.flat(2).includes(pubkey)))
+          assert.ok(
+            members.has(pubkey),
+            `${pubkey} was signed as a non-member`,
+          );
+      assert.equal(sends.length, 1, "the roster-only read saw everyone");
+    });
+  }
 }

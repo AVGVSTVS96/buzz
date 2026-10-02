@@ -149,6 +149,11 @@ impl BatchEvent {
     pub fn routing_thread_tags(&self) -> ThreadTags {
         routing_thread_tags(&self.event, self.edit.as_ref())
     }
+
+    /// See [`reply_thread`].
+    pub fn reply_thread(&self) -> String {
+        reply_thread(&self.event, self.edit.as_ref())
+    }
 }
 
 /// Why a batch's prior turn was cancelled — controls how `format_prompt`
@@ -236,6 +241,9 @@ pub struct EventQueue {
     in_flight_deadlines: HashMap<SessionScope, Instant>,
     /// Number of events in each in-flight batch (for expiry logging).
     in_flight_batch_sizes: HashMap<SessionScope, usize>,
+    /// Reply thread of each in-flight turn: the [`reply_thread`] of the batch
+    /// event whose `<context>` routes the turn's replies (its last event).
+    in_flight_reply_threads: HashMap<SessionScope, String>,
     retry_after: HashMap<SessionScope, Instant>,
     /// Per-scope retry attempt counter for exponential backoff / dead-lettering.
     retry_counts: HashMap<SessionScope, u32>,
@@ -277,6 +285,7 @@ impl EventQueue {
             in_flight_scopes: HashSet::new(),
             in_flight_deadlines: HashMap::new(),
             in_flight_batch_sizes: HashMap::new(),
+            in_flight_reply_threads: HashMap::new(),
             retry_after: HashMap::new(),
             retry_counts: HashMap::new(),
             dedup_mode,
@@ -424,6 +433,7 @@ impl EventQueue {
             );
             self.in_flight_scopes.remove(&scope);
             self.in_flight_deadlines.remove(&scope);
+            self.in_flight_reply_threads.remove(&scope);
             // Recover any withheld goose-native steer events for the expired
             // scope back to the queue front so normal dispatch delivers
             // them. Unlike the in-flight batch above (already delivered to a
@@ -467,6 +477,7 @@ impl EventQueue {
                             .insert(scope.clone(), now + self.in_flight_deadline);
                         self.in_flight_batch_sizes
                             .insert(scope.clone(), cancelled.len());
+                        self.record_in_flight_reply_thread(&scope, &cancelled);
                         return Some(FlushBatch {
                             channel_id: scope.channel_id(),
                             scope,
@@ -504,6 +515,7 @@ impl EventQueue {
             .insert(scope.clone(), now + self.in_flight_deadline);
         self.in_flight_batch_sizes
             .insert(scope.clone(), events.len());
+        self.record_in_flight_reply_thread(&scope, &events);
 
         // Merge any cancelled events stored by requeue_as_cancelled().
         let cancelled_events = self.cancelled_batches.remove(&scope).unwrap_or_default();
@@ -523,6 +535,24 @@ impl EventQueue {
         })
     }
 
+    /// Earliest retry throttle for queued work not already in flight.
+    ///
+    /// Includes expired deadlines: an event-loop iteration can cross eligibility
+    /// before it arms its timer. The caller must gate on idle pool capacity and
+    /// dispatch when woken. Dispatch either makes the scope in-flight or releases
+    /// it with `mark_complete`, which clears the expired throttle even when a
+    /// busy session owner holds the batch. Empty/removed scopes never arm a timer.
+    pub fn next_retry_deadline(&self) -> Option<Instant> {
+        self.retry_after
+            .iter()
+            .filter(|(scope, _)| {
+                !self.in_flight_scopes.contains(*scope)
+                    && self.queues.get(*scope).is_some_and(|q| !q.is_empty())
+            })
+            .map(|(_, &deadline)| deadline)
+            .min()
+    }
+
     /// Mark the prompt for `channel_id` as complete.
     ///
     /// Removes the channel from `in_flight_channels` and `in_flight_deadlines`.
@@ -538,6 +568,7 @@ impl EventQueue {
         self.in_flight_scopes.remove(&scope);
         self.in_flight_deadlines.remove(&scope);
         self.in_flight_batch_sizes.remove(&scope);
+        self.in_flight_reply_threads.remove(&scope);
         let now = Instant::now();
         match self.retry_after.get(&scope) {
             // Active throttle → scope was requeued; keep retry_counts intact.
@@ -756,6 +787,7 @@ impl EventQueue {
             );
             self.in_flight_scopes.remove(&scope);
             self.in_flight_deadlines.remove(&scope);
+            self.in_flight_reply_threads.remove(&scope);
             // Symmetric with the flush_next expiry block: recover withheld
             // goose-native steer events for the expired scope so they are
             // not permanently orphaned in the side table.
@@ -909,6 +941,29 @@ impl EventQueue {
     /// treated as its conversation scope).
     pub fn is_scope_in_flight<K: IntoScope>(&self, scope: K) -> bool {
         self.in_flight_scopes.contains(&scope.into_scope())
+    }
+
+    /// The reply thread of the turn in flight for `scope`, if any.
+    ///
+    /// A native steer adds a message to a running turn without a new
+    /// `<context>`, so the turn keeps replying where its own `<context>`
+    /// points. A message whose [`reply_thread`] differs (possible under the
+    /// channel session policy) must not be steered natively; the cancel+merge
+    /// path re-dispatches it with its own full `<context>`.
+    pub fn in_flight_reply_thread(&self, scope: &SessionScope) -> Option<&str> {
+        self.in_flight_reply_threads.get(scope).map(String::as_str)
+    }
+
+    fn record_in_flight_reply_thread(&mut self, scope: &SessionScope, events: &[BatchEvent]) {
+        match events.last() {
+            Some(last) => {
+                self.in_flight_reply_threads
+                    .insert(scope.clone(), last.reply_thread());
+            }
+            None => {
+                self.in_flight_reply_threads.remove(scope);
+            }
+        }
     }
 
     /// Whether any scope currently has a turn in flight.
@@ -1155,6 +1210,19 @@ pub fn edit_target_id(event: &Event) -> Option<String> {
 /// message. This holds even when fetching the original failed.
 pub(crate) fn reaction_target_id(event: &Event) -> String {
     edit_target_id(event).unwrap_or_else(|| event.id.to_hex())
+}
+
+/// The thread that replies to `event` belong to: its routed thread root, or
+/// the routed event itself when it is top-level (a reply opens a thread
+/// rooted there). Lowercase, so equivalent hex spellings compare equal.
+///
+/// This is the thread-session key, and it decides whether a message may be
+/// steered natively into a running turn (see [`EventQueue::in_flight_reply_thread`]).
+pub(crate) fn reply_thread(event: &Event, edit: Option<&ResolvedEdit>) -> String {
+    routing_thread_tags(event, edit)
+        .root_event_id
+        .unwrap_or_else(|| reaction_target_id(event))
+        .to_ascii_lowercase()
 }
 
 /// Thread tags that route replies for `event`. See
@@ -2333,6 +2401,95 @@ mod tests {
     use super::*;
     use nostr::{EventBuilder, Keys, Kind, Timestamp};
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn retry_wake_redelivers_before_and_after_replacement_eligibility() {
+        use crate::recovery_wake::{wait, RecoveryWake};
+        for replacement_first in [true, false] {
+            let mut queue = EventQueue::new(DedupMode::Queue);
+            let channel = Uuid::new_v4();
+            let event = make_queued(channel, "original batch");
+            let id = event.event.id;
+            let received_at = event.received_at;
+            queue.push(event);
+            let batch = queue.flush_next().unwrap();
+            assert!(queue.requeue(batch).is_none());
+            queue.mark_complete(channel);
+            // Production requeue installs a future throttle, not an immediate
+            // dispatch. Accelerate only the test's clock boundary.
+            assert!(queue.next_retry_deadline().unwrap() > Instant::now());
+            let deadline = if replacement_first {
+                Instant::now() + Duration::from_millis(30)
+            } else {
+                Instant::now() - Duration::from_millis(30)
+            };
+            queue.retry_after.insert(conv(channel), deadline);
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            tx.send(crate::RespawnResult {
+                index: 0,
+                result: Err(anyhow::anyhow!("wake token")),
+            })
+            .await
+            .unwrap();
+            // With no idle agent the event loop disables the retry timer,
+            // even if its deadline is already past. Respawn is the wake owner.
+            assert!(matches!(
+                wait(&mut rx, None, None).await,
+                RecoveryWake::Respawn(_)
+            ));
+            if replacement_first {
+                assert!(
+                    queue.flush_next().is_none(),
+                    "respawn must not bypass backoff"
+                );
+            }
+            assert!(matches!(
+                wait(&mut rx, queue.next_retry_deadline(), None).await,
+                RecoveryWake::Retry
+            ));
+            let retried = queue.flush_next().unwrap();
+            assert_eq!(retried.events.len(), 1);
+            assert_eq!(retried.events[0].event.id, id);
+            assert_eq!(retried.events[0].received_at, received_at);
+            assert_eq!(
+                queue.next_retry_deadline(),
+                None,
+                "in-flight work cannot hot-loop"
+            );
+            queue.mark_complete(channel);
+            assert!(
+                queue.flush_next().is_none(),
+                "completed work must not duplicate"
+            );
+            assert_eq!(queue.next_retry_deadline(), None);
+            assert!(tokio::time::timeout(
+                Duration::from_millis(20),
+                wait(&mut rx, queue.next_retry_deadline(), None)
+            )
+            .await
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn retry_deadline_excludes_empty_removed_and_held_scopes() {
+        let mut queue = EventQueue::new(DedupMode::Queue);
+        let channel = Uuid::new_v4();
+        let past = Instant::now() - Duration::from_secs(1);
+        queue.retry_after.insert(conv(channel), past);
+        assert_eq!(queue.next_retry_deadline(), None);
+        queue.push(make_queued(channel, "held"));
+        assert_eq!(queue.next_retry_deadline(), Some(past));
+        let held = queue.flush_next().unwrap();
+        assert_eq!(queue.next_retry_deadline(), None);
+        // This is dispatch_pending's busy-owner / no-slot release path.
+        queue.requeue_preserve_timestamps(held);
+        queue.mark_complete(channel);
+        assert_eq!(queue.next_retry_deadline(), None);
+        queue.retry_after.insert(conv(channel), past);
+        queue.drain_channel(channel);
+        assert_eq!(queue.next_retry_deadline(), None);
+    }
 
     /// Build a test event with the given content and kind.
     fn make_event(content: &str) -> Event {

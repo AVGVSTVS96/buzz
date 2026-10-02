@@ -348,14 +348,14 @@ async fn run_relay_main(boot: BootTracker) -> anyhow::Result<()> {
         }
     };
 
-    // Non-fatal: 0056 leaves a populated database on its old kind-0 search
-    // expression until an operator runs the maintenance rewrite. Say so at
-    // every boot until then; profile search works meanwhile, only noisier.
+    // Non-fatal: 0056 leaves a database that held events on its old kind-0
+    // search expression until an operator runs the maintenance rewrite. Say so
+    // at every boot until then; profile search works meanwhile, only noisier.
     match db.profile_search_policy().await {
         Ok(Some(policy)) if policy.rewrite_pending() => warn!(
             script = buzz_db::search_policy::PROFILE_SEARCH_MAINTENANCE_SCRIPT,
             procedure = buzz_db::search_policy::PROFILE_SEARCH_DEPLOYMENT_DOC,
-            "Profile search still indexes whole kind-0 JSON on this populated database; \
+            "Profile search still indexes whole kind-0 JSON on this database; \
              run the maintenance rewrite"
         ),
         Ok(Some(_)) => {}

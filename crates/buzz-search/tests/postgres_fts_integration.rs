@@ -441,8 +441,9 @@ async fn kind0_prefix_orders_name_match_before_newer_body_match() {
 /// forbids it. Kind-0 queries return one row per pubkey, resolved to the
 /// newest live head, so a bounded page counts people rather than rows.
 ///
-/// Mutate-bite: drop the `DISTINCT ON (pubkey)` wrapper in `query.rs` and the
-/// two-slot page fills with both of Wes's heads, pushing Wesley off it.
+/// Mutate-bite: drop `DISTINCT ON (pubkey)` from the head subquery in
+/// `query.rs` and the two-slot page fills with both of Wes's heads, pushing
+/// Wesley off it.
 #[tokio::test]
 #[ignore = "requires Postgres"]
 async fn kind0_prefix_collapses_duplicate_live_heads_to_one_row_per_pubkey() {
@@ -523,6 +524,98 @@ async fn kind0_prefix_collapses_duplicate_live_heads_to_one_row_per_pubkey() {
     assert_eq!(
         wes_hit.event_id, current_wes,
         "a duplicate head must resolve to the newest live row"
+    );
+
+    teardown(pool, &schema).await;
+}
+
+/// The head is resolved before the search predicate runs. Matching first
+/// would let a superseded row that still matches stand in for the current one
+/// that does not: a user who renamed from Wes to Alice would keep appearing
+/// for `wes`, with the name and `about` text they removed. A store holding one
+/// row per person would return nothing here, and so must this query. Time
+/// fences likewise apply to the head, not to the rows it superseded.
+///
+/// Mutate-bite: move `search_tsv @@ search_query.query` into the head
+/// subquery's WHERE (the pre-fix shape) and the stale Wes row comes back for
+/// both `wes` searches.
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn kind0_search_resolves_the_current_head_before_matching() {
+    let (pool, schema) = setup().await;
+
+    let c = mk_community(&pool, "superseded-head.example").await;
+    let pk = rand_bytes32();
+    let stale = rand_bytes32();
+    let current = rand_bytes32();
+    insert_event(
+        &pool,
+        c,
+        stale,
+        pk,
+        0,
+        r#"{"display_name":"Wes","about":"old contact details"}"#,
+        None,
+        1_700_000_010,
+    )
+    .await;
+    insert_event(
+        &pool,
+        c,
+        current,
+        pk,
+        0,
+        r#"{"display_name":"Alice"}"#,
+        None,
+        1_700_000_020,
+    )
+    .await;
+
+    let svc = SearchService::new(pool.clone());
+    let profile_query = |q: &str, until: Option<i64>| SearchQuery {
+        community: c,
+        q: q.into(),
+        channel_scope: ChannelScope::Any,
+        kinds: Some(vec![0]),
+        authors: None,
+        since: None,
+        until,
+        page: 1,
+        per_page: 10,
+        mode: buzz_search::SearchMode::Prefix,
+    };
+
+    let wes = svc
+        .search(&profile_query("wes", None))
+        .await
+        .expect("profile prefix search ok");
+    assert!(
+        wes.hits.is_empty(),
+        "a superseded head must not match: {:?}",
+        wes.hits
+    );
+
+    let alice = svc
+        .search(&profile_query("alice", None))
+        .await
+        .expect("profile prefix search ok");
+    let ids: Vec<[u8; 32]> = alice.hits.iter().map(|h| h.event_id).collect();
+    assert_eq!(
+        ids,
+        vec![current],
+        "the current head matches on its own name"
+    );
+
+    // A window that excludes the current head finds nobody, rather than the
+    // superseded row that falls inside it.
+    let windowed = svc
+        .search(&profile_query("wes", Some(1_700_000_015)))
+        .await
+        .expect("profile prefix search ok");
+    assert!(
+        windowed.hits.is_empty(),
+        "`until` fences the head, it does not resurrect a superseded row: {:?}",
+        windowed.hits
     );
 
     teardown(pool, &schema).await;

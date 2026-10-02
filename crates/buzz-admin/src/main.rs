@@ -995,7 +995,6 @@ mod tests {
     fn profile_search_outcome_exit_codes_follow_the_pending_rewrite() {
         let pending = ProfileSearchPolicy {
             expression: "to_tsvector('simple'::regconfig, content)".into(),
-            events_populated: true,
         };
         let (outcome, code, next_step) = profile_search_outcome(Some(&pending));
         assert_eq!((outcome, code), ("rewrite_pending", 2));
@@ -1005,7 +1004,6 @@ mod tests {
         let rewritten = ProfileSearchPolicy {
             expression: "CASE WHEN (kind = 0) THEN profile_search_tsv(content) ELSE NULL END"
                 .into(),
-            events_populated: true,
         };
         assert_eq!(
             profile_search_outcome(Some(&rewritten)).0,

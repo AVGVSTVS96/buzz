@@ -22,23 +22,25 @@ startup probe can kill and repeat. The query-side name-first ordering in
 this at every boot until the rewrite has run:
 
 ```text
-WARN Profile search still indexes whole kind-0 JSON on this populated database; run the maintenance rewrite script=scripts/maintenance/profile_search_text_fields.sql procedure=docs/profile-search-deployment.md
+WARN Profile search still indexes whole kind-0 JSON on this database; run the maintenance rewrite script=scripts/maintenance/profile_search_text_fields.sql procedure=docs/profile-search-deployment.md
 ```
 
 ## Who needs the rewrite
 
 Any deployment that held events before starting a relay version with migration
-0056. Fresh installs do not. Check without side effects, from a shell with the
-relay's `DATABASE_URL`:
+0056. Fresh installs do not. Emptying `events` later does not help: the
+migration has already run, so the old expression stays and every profile
+published afterwards indexes its whole JSON again. Check without side effects,
+from a shell with the relay's `DATABASE_URL`:
 
 ```sh
 buzz-admin profile-search-policy
 ```
 
-The command opens one read-only session and prints the live expression,
-whether `events` has rows, and `outcome`: `ok` (exit 0), `rewrite_pending`
-(exit 2), or `missing` (exit 5, the column does not exist yet). The same probe
-drives the startup warning, so the two never disagree.
+The command opens one read-only session and prints the live expression and
+`outcome`: `ok` (exit 0), `rewrite_pending` (exit 2), or `missing` (exit 5,
+the column does not exist yet). The same probe drives the startup warning, so
+the two never disagree.
 
 The equivalent SQL:
 

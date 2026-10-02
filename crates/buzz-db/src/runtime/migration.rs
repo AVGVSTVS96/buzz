@@ -2768,12 +2768,15 @@ mod postgres_tests {
 
     /// The relay's startup warning and `buzz-admin profile-search-policy` read
     /// one probe. It owes nothing before the schema exists, reports the rewrite
-    /// pending on a populated database that upgraded through 0056, clears once
-    /// the maintenance script runs, and never flags a fresh install.
+    /// pending on a populated database that upgraded through 0056, keeps
+    /// reporting it after that table is emptied (0056 does not rerun, so a
+    /// profile published then still indexes its avatar bytes), clears once the
+    /// maintenance script runs, and never flags a fresh install.
     ///
     /// Mutate-bite: make 0056 rewrite unconditionally and the pending assertion
-    /// fails; drop the `events_populated` term from `rewrite_pending` and the
-    /// fresh-install assertion fails.
+    /// fails; gate `rewrite_pending` on a populated table again and the
+    /// emptied-table assertion fails while the profile published after it
+    /// still matches `needle` through its avatar.
     #[tokio::test]
     #[ignore = "requires Postgres"]
     async fn profile_search_policy_probe_tracks_the_maintenance_rewrite() {
@@ -2798,11 +2801,48 @@ mod postgres_tests {
             .expect("probe populated database")
             .expect("events.search_tsv exists");
         assert_eq!(policy.expression, search_tsv_expression(&pool).await);
-        assert!(policy.events_populated);
         assert!(!policy.indexes_profile_text_fields());
         assert!(
             policy.rewrite_pending(),
             "populated upgrade must report the rewrite pending: {policy:?}"
+        );
+
+        // Emptying the table afterwards changes nothing: the migration has
+        // already run, the expression stays, and the next profile published
+        // indexes whole JSON again.
+        sqlx::query("DELETE FROM events")
+            .execute(&pool)
+            .await
+            .expect("empty events after the populated upgrade");
+        let policy = db
+            .profile_search_policy()
+            .await
+            .expect("probe emptied database")
+            .expect("events.search_tsv exists");
+        assert!(
+            policy.rewrite_pending(),
+            "an emptied table still owes the rewrite: {policy:?}"
+        );
+        let community_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM communities")
+            .fetch_one(&pool)
+            .await
+            .expect("brownfield community survives the delete");
+        sqlx::query(
+            "INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig) \
+             VALUES ($1, $2, $3, NOW(), 0, '[]'::jsonb, $4, $5)",
+        )
+        .bind(community_id)
+        .bind(vec![5_u8; 32])
+        .bind(vec![15_u8; 32])
+        .bind(AVATAR_NEEDLE_PROFILE)
+        .bind(vec![25_u8; 64])
+        .execute(&pool)
+        .await
+        .expect("publish a profile after the table emptied");
+        assert_eq!(
+            needle_matches_by_kind(&pool).await,
+            vec![(0, Some(true))],
+            "a profile published after the table emptied still matches through its avatar"
         );
 
         sqlx::raw_sql(include_str!(
@@ -2816,9 +2856,13 @@ mod postgres_tests {
             .await
             .expect("probe rewritten database")
             .expect("events.search_tsv exists");
-        assert!(policy.events_populated);
         assert!(policy.indexes_profile_text_fields());
         assert!(!policy.rewrite_pending(), "rewrite must clear: {policy:?}");
+        assert_eq!(
+            needle_matches_by_kind(&pool).await,
+            vec![(0, Some(false))],
+            "the rewrite reindexes the profile on its text fields"
+        );
 
         reset_public_schema(&pool).await;
         run_migrations(&pool).await.expect("fresh install");
@@ -2827,7 +2871,6 @@ mod postgres_tests {
             .await
             .expect("probe fresh install")
             .expect("events.search_tsv exists");
-        assert!(!policy.events_populated);
         assert!(policy.indexes_profile_text_fields());
         assert!(
             !policy.rewrite_pending(),

@@ -26,8 +26,6 @@ pub const PROFILE_SEARCH_DEPLOYMENT_DOC: &str = "docs/profile-search-deployment.
 pub struct ProfileSearchPolicy {
     /// The generated expression as `pg_get_expr` prints it.
     pub expression: String,
-    /// Whether `events` holds at least one row.
-    pub events_populated: bool,
 }
 
 impl ProfileSearchPolicy {
@@ -37,11 +35,13 @@ impl ProfileSearchPolicy {
         self.expression.contains("profile_search_tsv(content)")
     }
 
-    /// Whether the operator rewrite is still owed: rows exist, and kind 0 is
-    /// still tokenized as whole JSON. An empty table is never pending because
-    /// 0056 rewrites it at startup.
+    /// Whether the operator rewrite is still owed: kind 0 is still tokenized
+    /// as whole JSON. Judged on the live expression alone. The row count says
+    /// nothing about it: 0056 runs once, so a database that was populated then
+    /// and emptied since keeps the old expression for every profile published
+    /// from now on.
     pub fn rewrite_pending(&self) -> bool {
-        self.events_populated && !self.indexes_profile_text_fields()
+        !self.indexes_profile_text_fields()
     }
 }
 
@@ -65,13 +65,7 @@ impl Db {
             return Ok(None);
         };
         let expression: String = row.try_get("expression")?;
-        let events_populated: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM events)")
-            .fetch_one(&mut *connection)
-            .await?;
-        Ok(Some(ProfileSearchPolicy {
-            expression,
-            events_populated,
-        }))
+        Ok(Some(ProfileSearchPolicy { expression }))
     }
 }
 
@@ -86,32 +80,20 @@ mod tests {
          THEN NULL::tsvector ELSE to_tsvector('simple'::regconfig, content) END";
 
     #[test]
-    fn populated_database_on_old_expression_is_pending() {
+    fn old_expression_is_pending() {
         let policy = ProfileSearchPolicy {
             expression: BLOCKLIST_EXPRESSION.to_owned(),
-            events_populated: true,
         };
         assert!(!policy.indexes_profile_text_fields());
         assert!(policy.rewrite_pending());
     }
 
     #[test]
-    fn rewritten_database_is_not_pending() {
+    fn rewritten_expression_is_not_pending() {
         let policy = ProfileSearchPolicy {
             expression: POST_0056_EXPRESSION.to_owned(),
-            events_populated: true,
         };
         assert!(policy.indexes_profile_text_fields());
-        assert!(!policy.rewrite_pending());
-    }
-
-    #[test]
-    fn empty_table_is_never_pending() {
-        // 0056 rewrites an empty table itself; nothing is owed to an operator.
-        let policy = ProfileSearchPolicy {
-            expression: BLOCKLIST_EXPRESSION.to_owned(),
-            events_populated: false,
-        };
         assert!(!policy.rewrite_pending());
     }
 }

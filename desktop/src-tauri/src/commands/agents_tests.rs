@@ -794,8 +794,9 @@ fn owner_only_access_deploy_payload_clamps_stale_access() {
     );
 }
 
-/// Runs the real create in a child process: temp app-data and nest paths, a
-/// fake keychain, and no background work outliving the test.
+/// Runs the real create in a child process: temp app-data and nest paths,
+/// keychain use turned off so agent keys stay inline in the temp agent file,
+/// and no background work outliving the test.
 #[test]
 fn create_managed_agent_persists_picked_effort_and_drops_env_aliases() {
     const CHILD: &str = "BUZZ_CREATE_EFFORT_TEST_HOME";

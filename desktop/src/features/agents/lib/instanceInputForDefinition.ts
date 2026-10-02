@@ -158,6 +158,6 @@ export async function buildInstanceInputForDefinition(
     spawnAfterCreate: true,
     startOnAppLaunch: true,
     backend: { type: "local" },
-    effortLevel: effortLevel ?? undefined,
+    ...(effortLevel && { effortLevel }),
   };
 }

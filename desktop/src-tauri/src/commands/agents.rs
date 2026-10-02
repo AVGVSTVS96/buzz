@@ -388,6 +388,14 @@ pub async fn list_managed_agents(app: AppHandle) -> Result<Vec<ManagedAgentSumma
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
 }
 
+/// Pins a create's picked effort with the same canonical write as Edit: the
+/// column wins and env aliases go. No pick leaves the record untouched.
+fn apply_create_effort(record: &mut ManagedAgentRecord, input: &CreateManagedAgentRequest) {
+    if let Some(level) = input.effort_level.clone() {
+        crate::commands::agent_config::apply_picker_effort_level(record, Some(level));
+    }
+}
+
 #[tauri::command]
 pub async fn create_managed_agent(
     input: CreateManagedAgentRequest,
@@ -743,10 +751,7 @@ pub async fn create_managed_agent(
             },
             effort_level: None,
         };
-        if let Some(level) = input.effort_level.clone() {
-            // Same canonical write as Edit: the column wins, env aliases go.
-            crate::commands::agent_config::apply_picker_effort_level(&mut record, Some(level));
-        }
+        apply_create_effort(&mut record, &input);
 
         records.push(record);
 

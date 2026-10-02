@@ -793,3 +793,31 @@ fn owner_only_access_deploy_payload_clamps_stale_access() {
         "owner-only-access deploy payload retained a stale allowlist"
     );
 }
+
+#[test]
+fn apply_create_effort_pins_effort_and_drops_env_aliases() {
+    let alias = crate::managed_agents::config_bridge::effort::effort_suppress_keys()[0];
+    let request = |effort: Option<&str>| -> CreateManagedAgentRequest {
+        serde_json::from_value(serde_json::json!({
+            "name": "Effort", "relayUrl": null, "acpCommand": null,
+            "agentCommand": null, "idleTimeoutSeconds": null,
+            "maxTurnDurationSeconds": null, "parallelism": null,
+            "systemPrompt": null, "avatarUrl": null, "model": null,
+            "provider": null, "effortLevel": effort,
+        }))
+        .unwrap()
+    };
+    let mut record = bare_agent_record(None, None, None);
+    record.env_vars.insert(alias.to_string(), "low".to_string());
+
+    apply_create_effort(&mut record, &request(None));
+    assert_eq!(record.effort_level, None);
+    assert!(
+        record.env_vars.contains_key(alias),
+        "no pick leaves env alone"
+    );
+
+    apply_create_effort(&mut record, &request(Some("high")));
+    assert_eq!(record.effort_level.as_deref(), Some("high"));
+    assert!(!record.env_vars.contains_key(alias));
+}

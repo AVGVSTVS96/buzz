@@ -196,8 +196,7 @@ function AgentCreateDialogRouter({
             input,
             "definition_start",
             backendIntent,
-            !backendIntent &&
-              isSavableEffort(effortLevel, effortOptionsRef.current)
+            isSavableEffort(effortLevel, effortOptionsRef.current)
               ? effortLevel
               : null,
           );

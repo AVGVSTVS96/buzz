@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   EFFORT_DEFAULT_DROPDOWN_VALUE,
   effortPickerState,
+  effortChoices,
   effortSelectionToPersistedValue,
+  isSavableEffort,
 } from "./effortPicker.ts";
 
 const localBackend = { type: "local" };
@@ -17,7 +19,6 @@ const options = [
 test("effort picker renders for a local backend with a discovered configId", () => {
   const state = effortPickerState({
     backend: localBackend,
-    effortConfigId: "thought_level",
     effortOptions: options,
     currentEffort: null,
   });
@@ -27,7 +28,6 @@ test("effort picker renders for a local backend with a discovered configId", () 
 test("effort picker is hidden for a provider backend even when a configId exists", () => {
   const state = effortPickerState({
     backend: providerBackend,
-    effortConfigId: "thought_level",
     effortOptions: options,
     currentEffort: "high",
   });
@@ -37,7 +37,6 @@ test("effort picker is hidden for a provider backend even when a configId exists
 test("effort picker is hidden for a local backend without a discovered configId", () => {
   const state = effortPickerState({
     backend: localBackend,
-    effortConfigId: undefined,
     effortOptions: undefined,
     currentEffort: null,
   });
@@ -47,7 +46,6 @@ test("effort picker is hidden for a local backend without a discovered configId"
 test("options lead with the adapter-default sentinel then adapter values", () => {
   const state = effortPickerState({
     backend: localBackend,
-    effortConfigId: "thought_level",
     effortOptions: options,
     currentEffort: null,
   });
@@ -61,7 +59,6 @@ test("options lead with the adapter-default sentinel then adapter values", () =>
 test("option label falls back to the raw value when displayName is absent", () => {
   const state = effortPickerState({
     backend: localBackend,
-    effortConfigId: "thought_level",
     effortOptions: [{ value: "medium" }],
     currentEffort: null,
   });
@@ -71,7 +68,6 @@ test("option label falls back to the raw value when displayName is absent", () =
 test("current effort preselects the matching option", () => {
   const state = effortPickerState({
     backend: localBackend,
-    effortConfigId: "thought_level",
     effortOptions: options,
     currentEffort: "high",
   });
@@ -81,7 +77,6 @@ test("current effort preselects the matching option", () => {
 test("an unknown current effort falls back to the adapter-default sentinel", () => {
   const state = effortPickerState({
     backend: localBackend,
-    effortConfigId: "thought_level",
     effortOptions: options,
     currentEffort: "extreme",
   });
@@ -91,7 +86,6 @@ test("an unknown current effort falls back to the adapter-default sentinel", () 
 test("a null current effort selects the adapter-default sentinel", () => {
   const state = effortPickerState({
     backend: localBackend,
-    effortConfigId: "thought_level",
     effortOptions: options,
     currentEffort: null,
   });
@@ -107,4 +101,83 @@ test("the sentinel selection persists as null (clear to adapter default)", () =>
 
 test("a concrete selection persists as its explicit effort level", () => {
   assert.equal(effortSelectionToPersistedValue("high"), "high");
+});
+
+const values = (choices) => choices?.map((choice) => choice.value);
+const storedOpusSession = {
+  effortConfigId: "thought_level",
+  effortOptions: [{ value: "low" }, { value: "max" }],
+};
+
+test("effortChoices_blankModel_usesAdapterDefaultOpus1mAlias", () => {
+  const choices = effortChoices({
+    runtimeId: "claude",
+    models: ["", null, "opus[1m]"],
+    sessionApplies: false,
+  });
+  assert.deepEqual(values(choices), ["low", "medium", "high"]);
+});
+
+test("effortChoices_haikuGlobalOverride_beatsAdapterDefault", () => {
+  const choices = effortChoices({
+    runtimeId: "claude",
+    models: ["", "claude-haiku-4-5", "opus[1m]"],
+    sessionApplies: false,
+  });
+  assert.equal(choices, undefined);
+});
+
+test("effortChoices_explicitModel_beatsGlobalOverride", () => {
+  const choices = effortChoices({
+    runtimeId: "claude",
+    models: ["claude-opus-4-8", "claude-haiku-4-5", null],
+    sessionApplies: false,
+  });
+  assert.deepEqual(values(choices), ["low", "medium", "high", "xhigh", "max"]);
+});
+
+test("effortChoices_storedOpusSession_ignoredAfterSwitchToHaiku", () => {
+  const choices = effortChoices({
+    runtimeId: "claude",
+    models: ["claude-haiku-4-5"],
+    sessionApplies: false,
+    session: storedOpusSession,
+  });
+  assert.equal(choices, undefined);
+});
+
+test("effortChoices_storedSession_winsForUnchangedModel", () => {
+  const choices = effortChoices({
+    runtimeId: "claude",
+    models: ["claude-haiku-4-5"],
+    sessionApplies: true,
+    session: storedOpusSession,
+  });
+  assert.deepEqual(values(choices), ["low", "max"]);
+});
+
+test("effortChoices_nonClaudeRuntime_keepsNativeOnlyBehavior", () => {
+  const choices = effortChoices({
+    runtimeId: "codex",
+    models: ["opus[1m]"],
+    sessionApplies: false,
+  });
+  assert.equal(choices, undefined);
+});
+
+test("effortChoices_discoveryPendingOrFailed_hidesWithoutAModel", () => {
+  // The hook returns agentDefaultModel: null until its keyed response lands.
+  const choices = effortChoices({
+    runtimeId: "claude",
+    models: ["", null, null],
+    sessionApplies: false,
+  });
+  assert.equal(choices, undefined);
+});
+
+test("isSavableEffort_rejectsLevelTheModelDoesNotOffer", () => {
+  assert.equal(isSavableEffort("high", undefined), false);
+  assert.equal(isSavableEffort("max", [{ value: "high" }]), false);
+  assert.equal(isSavableEffort("high", [{ value: "high" }]), true);
+  assert.equal(isSavableEffort(null, undefined), true);
 });

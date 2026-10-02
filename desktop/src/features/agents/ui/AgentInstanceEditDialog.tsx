@@ -29,6 +29,7 @@ import { ChooserDialogContent } from "@/shared/ui/chooser-dialog-content";
 import { Dialog } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
 import { setManagedAgentAutoRestart } from "@/shared/api/tauriManagedAgents";
+import { effortChoices } from "./effortPicker";
 import { EffortPickerField } from "./EffortPickerField";
 import { EditAgentAdvancedFields } from "./EditAgentAdvancedFields";
 import {
@@ -153,11 +154,7 @@ export function AgentInstanceEditDialog({
   const [envVars, setEnvVars] = React.useState<EnvVarsValue>(agent.envVars);
   const [autoRestartOnConfigChange, setAutoRestartOnConfigChange] =
     React.useState(agent.autoRestartOnConfigChange);
-  // Effort picker is Save-gated: hold the pending selection in dialog state and
-  // embed it in the locked update payload on Save alone (see
-  // resolveEffortSubmission / handleSubmit — PR #4625), never on selection.
-  // `effortTouched` distinguishes "user picked a value" from "showing the
-  // config-surface effective value", so an untouched Save writes nothing.
+  // Save-gated effort (PR #4625); untouched Saves write nothing.
   const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
   const effortTouched = React.useRef(false);
   const personasQuery = usePersonasQuery();
@@ -434,6 +431,7 @@ export function AgentInstanceEditDialog({
     discoveredModelOptions,
     modelDiscoveryLoading,
     modelDiscoveryStatus,
+    agentDefaultModel,
   } = usePersonaModelDiscovery({
     envVars: envVarsForDiscovery,
     isCustomProviderEditing,
@@ -748,16 +746,14 @@ export function AgentInstanceEditDialog({
             : undefined,
       };
 
-      // Resolve effort before the update so access-change restarts can
-      // snapshot and launch the NEW effort value atomically.
+      // Effort rides the locked update so restarts launch the new value.
       const effortSubmission = resolveEffortSubmission({
         effortLevel,
         originalEffortLevel:
           configSurfaceQuery.data?.normalized.thinkingEffort?.value ?? null,
         inheritTransition: agentCommandUpdate === "",
+        choices: effortOptions,
       });
-      // Include effort in the locked update when touched (tri-state: absent =
-      // don't touch; null = clear; string = set). Only when effortSubmission.persist.
       if (effortTouched.current && effortSubmission.persist) {
         input.effortLevel = effortSubmission.level;
       }
@@ -777,11 +773,7 @@ export function AgentInstanceEditDialog({
             autoRestartOnConfigChange,
           );
         }
-        // Effort disk write happened inside the locked update. Only need to
-        // invalidate the cache here (when effortTouched && effortSubmission.persist).
-        // If effort was not included (!effortSubmission.persist), nothing to do.
         if (effortTouched.current && effortSubmission.persist) {
-          // Disk write already done; invalidate so the panel tier reflects it.
           await queryClient.invalidateQueries({
             queryKey: agentConfigSurfaceQueryKey(agent.pubkey),
           });
@@ -858,6 +850,16 @@ export function AgentInstanceEditDialog({
     loading: modelDiscoveryLoading && discoveredModelOptions === null,
     loadingValue: MODEL_DISCOVERY_LOADING_VALUE,
     options: effectiveModelOptions,
+  });
+  const effortOptions = effortChoices({
+    runtimeId: selectedRuntime?.id,
+    models: [
+      inheritedSubmission.model,
+      inheritedModelDefault.value,
+      agentDefaultModel,
+    ],
+    sessionApplies: !runtimeTouched.current && model === (agent.model ?? ""),
+    session: configSurfaceQuery.data,
   });
   const modelStatusMessage = resolveModelFieldStatusMessage({
     discoveredModelOptions,
@@ -1106,10 +1108,8 @@ export function AgentInstanceEditDialog({
             />
 
             <EffortPickerField
-              agent={agent}
-              config={
-                runtimeTouched.current ? undefined : configSurfaceQuery.data
-              }
+              backend={agent.backend}
+              choices={effortOptions}
               disabled={isSaving}
               value={
                 effortTouched.current

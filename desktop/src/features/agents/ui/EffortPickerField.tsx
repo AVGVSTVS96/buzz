@@ -28,6 +28,7 @@ export function EffortPickerField({
   choices,
   disabled,
   value,
+  storedEffort,
   onChange,
 }: {
   backend: ManagedAgentBackend;
@@ -36,12 +37,15 @@ export function EffortPickerField({
   disabled: boolean;
   /** The pending persisted effort form (`null` = adapter default). */
   value: string | null;
+  /** The saved effort, kept selectable when the model doesn't list it. */
+  storedEffort?: string | null;
   onChange: (level: string | null) => void;
 }) {
-  const { visible, options, selectValue } = effortPickerState({
+  const { visible, options, selectValue, unlisted } = effortPickerState({
     backend,
     effortOptions: choices,
     currentEffort: value,
+    storedEffort,
   });
 
   if (!visible) {
@@ -68,7 +72,9 @@ export function EffortPickerField({
         value={selectValue}
       />
       <p className="text-xs text-muted-foreground">
-        Applied at the next session start.
+        {unlisted
+          ? `This model may not support ${selectValue}. Applied at the next session start.`
+          : "Applied at the next session start."}
       </p>
     </div>
   );

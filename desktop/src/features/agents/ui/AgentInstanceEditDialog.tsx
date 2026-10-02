@@ -749,8 +749,7 @@ export function AgentInstanceEditDialog({
       // Effort rides the locked update so restarts launch the new value.
       const effortSubmission = resolveEffortSubmission({
         effortLevel,
-        originalEffortLevel:
-          configSurfaceQuery.data?.normalized.thinkingEffort?.value ?? null,
+        originalEffortLevel: storedEffort,
         inheritTransition: agentCommandUpdate === "",
         choices: effortOptions,
       });
@@ -851,11 +850,13 @@ export function AgentInstanceEditDialog({
     loadingValue: MODEL_DISCOVERY_LOADING_VALUE,
     options: effectiveModelOptions,
   });
+  const storedEffort =
+    configSurfaceQuery.data?.normalized.thinkingEffort?.value ?? null;
   const effortOptions = effortChoices({
     runtimeId: selectedRuntime?.id,
     models: [
       linkedPersona ? linkedPersona.model : inheritedSubmission.model, // Save never sends a linked model
-      inheritedModelDefault.value,
+      globalConfig.model, // build/provider fallbacks never reach Claude
       agentDefaultModel,
     ],
     sessionApplies: !runtimeTouched.current,
@@ -1111,12 +1112,9 @@ export function AgentInstanceEditDialog({
               backend={agent.backend}
               choices={effortOptions}
               disabled={isSaving}
-              value={
-                effortTouched.current
-                  ? effortLevel
-                  : (configSurfaceQuery.data?.normalized.thinkingEffort
-                      ?.value ?? null)
-              }
+              // A stored level belongs to the saved runtime.
+              storedEffort={runtimeTouched.current ? null : storedEffort}
+              value={effortTouched.current ? effortLevel : storedEffort}
               onChange={(level) => {
                 effortTouched.current = true;
                 setEffortLevel(level);

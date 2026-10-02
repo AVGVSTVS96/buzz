@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   EFFORT_DEFAULT_DROPDOWN_VALUE,
+  EFFORT_LEVELS_UNKNOWN,
   effortPickerState,
   effortChoices,
   effortSelectionToPersistedValue,
@@ -166,14 +167,14 @@ test("effortChoices_nonClaudeRuntime_keepsNativeOnlyBehavior", () => {
   assert.equal(choices, undefined);
 });
 
-test("effortChoices_discoveryPendingOrFailed_hidesWithoutAModel", () => {
+test("effortChoices_discoveryPendingOrFailed_reportsUnknownModel", () => {
   // The hook returns agentDefaultModel: null until its keyed response lands.
   const choices = effortChoices({
     runtimeId: "claude",
     models: ["", null, null],
     sessionApplies: false,
   });
-  assert.equal(choices, undefined);
+  assert.equal(choices, EFFORT_LEVELS_UNKNOWN);
 });
 
 test("isSavableEffort_rejectsLevelTheModelDoesNotOffer", () => {
@@ -181,4 +182,47 @@ test("isSavableEffort_rejectsLevelTheModelDoesNotOffer", () => {
   assert.equal(isSavableEffort("max", [{ value: "high" }]), false);
   assert.equal(isSavableEffort("high", [{ value: "high" }]), true);
   assert.equal(isSavableEffort(null, undefined), true);
+});
+
+test("isSavableEffort_unknownModel_keepsThePick", () => {
+  assert.equal(isSavableEffort("high", EFFORT_LEVELS_UNKNOWN), true);
+});
+
+test("effortPickerState_unknownModel_hidesThePicker", () => {
+  const state = effortPickerState({
+    backend: localBackend,
+    effortOptions: EFFORT_LEVELS_UNKNOWN,
+    currentEffort: "high",
+    storedEffort: "high",
+  });
+  assert.equal(state.visible, false);
+});
+
+test("effortPickerState_storedLevelTheModelDoesNotList_staysSelectable", () => {
+  const state = effortPickerState({
+    backend: localBackend,
+    effortOptions: undefined,
+    currentEffort: "max",
+    storedEffort: "max",
+  });
+  assert.equal(state.visible, true);
+  assert.equal(state.unlisted, true);
+  assert.equal(state.selectValue, "max");
+  assert.deepEqual(state.options, [
+    { label: "Adapter default", value: EFFORT_DEFAULT_DROPDOWN_VALUE },
+    { label: "max", value: "max" },
+  ]);
+});
+
+test("effortPickerState_clearedUnlistedStoredLevel_staysOfferedButUnselected", () => {
+  const state = effortPickerState({
+    backend: localBackend,
+    effortOptions: options,
+    currentEffort: null,
+    storedEffort: "max",
+  });
+  assert.equal(state.visible, true);
+  assert.equal(state.unlisted, false);
+  assert.equal(state.selectValue, EFFORT_DEFAULT_DROPDOWN_VALUE);
+  assert.equal(state.options.at(-1).value, "max");
 });

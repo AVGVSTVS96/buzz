@@ -624,7 +624,7 @@ export function AgentDefinitionDialog({
     isCreateMode &&
     createRunSection?.(runtime, [
       model,
-      inheritedModelDefault.value,
+      globalConfig.model, // build/provider fallbacks never reach Claude
       agentDefaultModel,
     ]);
   const advancedFieldsTransition = shouldReduceMotion

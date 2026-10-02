@@ -1,5 +1,4 @@
-import type { AcpConfigOptionValue } from "@/shared/api/types";
-import { isSavableEffort } from "./effortPicker";
+import { type EffortOptions, isSavableEffort } from "./effortPicker";
 
 /** Runtime provider-capability tri-state used by the submit path. */
 export type ProviderRuntimeCapability = "capable" | "locked" | "unknown";
@@ -109,13 +108,14 @@ export function resolveAgentCommandUpdate(input: {
  *
  * Otherwise persist only a real change: an unchanged selection is a no-op, so
  * a name-only edit never rewrites the effort column. A level the model being
- * saved doesn't offer (`choices`, e.g. after switching to Haiku) is dropped.
+ * saved doesn't offer (`choices`, e.g. after switching to Haiku) is dropped;
+ * while that model is still unknown the pick is kept.
  */
 export function resolveEffortSubmission(input: {
   effortLevel: string | null;
   originalEffortLevel: string | null;
   inheritTransition: boolean;
-  choices: readonly AcpConfigOptionValue[] | undefined;
+  choices: EffortOptions;
 }): { persist: boolean; level: string | null } {
   if (
     input.inheritTransition ||

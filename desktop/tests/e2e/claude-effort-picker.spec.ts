@@ -49,7 +49,10 @@ const CLAUDE_MODELS = {
   ],
 };
 
-function surface(effort?: { configId: string; options: string[] }) {
+function surface(
+  effort?: { configId: string; options: string[] },
+  storedEffort?: string,
+) {
   return {
     runtimeId: "claude",
     runtimeLabel: "Claude Code",
@@ -58,7 +61,16 @@ function surface(effort?: { configId: string; options: string[] }) {
       model: null,
       provider: null,
       mode: null,
-      thinkingEffort: null,
+      thinkingEffort: storedEffort
+        ? {
+            value: storedEffort,
+            origin: "buzzManaged",
+            writeVia: "envVar",
+            overriddenValue: null,
+            overriddenOrigin: null,
+            isRequired: false,
+          }
+        : null,
       maxOutputTokens: null,
       contextLimit: null,
       systemPrompt: null,
@@ -128,6 +140,23 @@ async function pick(page: Page, trigger: Locator, name: string) {
   // Keyboard selection avoids racing the menu's open animation.
   await option.press("Enter");
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
+}
+
+const ADAPTER_LEVELS = ["Adapter default", "low", "medium", "high"];
+
+/** A build-baked model, which never launches with Claude. */
+function bakedModel(value: string) {
+  return { bakedBuildEnv: [{ key: "BUZZ_AGENT_MODEL", value, masked: false }] };
+}
+
+/** Make the next discovery hang (`pending`) or reject (`failed`). */
+async function stallDiscovery(page: Page, mode: "pending" | "failed") {
+  await page.evaluate((nextMode) => {
+    const mock = window.__BUZZ_E2E__?.mock;
+    if (!mock) throw new Error("mock bridge missing");
+    if (nextMode === "pending") mock.discoverAgentModelsDelayMs = 60_000;
+    else mock.discoverAgentModelsError = "discovery failed";
+  }, mode);
 }
 
 async function openEdit(page: Page) {
@@ -208,6 +237,98 @@ test.describe("edit dialog", () => {
     ).toEqual(["Adapter default", "low", "medium", "high"]);
   });
 
+  for (const baked of ["gpt-5.5", "claude-haiku-4-5"]) {
+    test(`a baked ${baked} build model does not decide Claude levels`, async ({
+      page,
+    }) => {
+      await install(page, bakedModel(baked));
+      const dialog = await openEdit(page);
+      expect(
+        await menuValues(page, dialog.locator("#edit-agent-effort")),
+      ).toEqual(ADAPTER_LEVELS);
+    });
+  }
+
+  for (const mode of ["pending", "failed"] as const) {
+    test(`a pick survives Save while rediscovery is ${mode}`, async ({
+      page,
+    }) => {
+      await install(page, {
+        managedAgents: [{ ...AGENT, envVars: { EFFORT_TEST: "one" } }],
+      });
+      const dialog = await openEdit(page);
+      const effort = dialog.locator("#edit-agent-effort");
+      await pick(page, effort, "high");
+
+      await stallDiscovery(page, mode);
+      await dialog
+        .getByRole("button", { name: "Advanced", exact: true })
+        .click();
+      await dialog.getByTestId("env-vars-value").first().fill("two");
+      await expect(effort).toHaveCount(0);
+
+      await dialog.getByRole("button", { name: "Save changes" }).click();
+      await expect(dialog).toHaveCount(0);
+      const updates = await payloadsFor(page, "update_managed_agent");
+      expect(updates).toHaveLength(1);
+      expect(updates[0].input.effortLevel).toBe("high");
+    });
+  }
+
+  test("a stored level the new model doesn't list stays visible and clearable", async ({
+    page,
+  }) => {
+    await install(page, {
+      managedAgents: [{ ...AGENT, model: "claude-opus-4-8" }],
+      agentConfigSurface: surface(undefined, "max"),
+      discoverAgentModels: {
+        ...CLAUDE_MODELS,
+        models: [
+          ...CLAUDE_MODELS.models,
+          { id: "claude-opus-4-8", name: "Opus 4.8" },
+        ],
+      },
+    });
+    const dialog = await openEdit(page);
+    const effort = dialog.locator("#edit-agent-effort");
+    const model = dialog.locator("#edit-agent-model");
+    await expect(effort).toHaveText("max");
+
+    await pick(page, model, "Opus");
+    await expect(effort).toHaveText("max");
+    await expect(dialog).toContainText("This model may not support max.");
+
+    await pick(page, model, "Haiku");
+    await expect(effort).toHaveText("max");
+    expect(await menuValues(page, effort)).toEqual(["Adapter default", "max"]);
+
+    await dialog.getByRole("button", { name: "Save changes" }).click();
+    await expect(dialog).toHaveCount(0);
+    const updates = await payloadsFor(page, "update_managed_agent");
+    expect(updates).toHaveLength(1);
+    expect(updates[0].input).not.toHaveProperty("effortLevel");
+  });
+
+  test("clearing an unlisted stored level saves the adapter default", async ({
+    page,
+  }) => {
+    await install(page, {
+      managedAgents: [{ ...AGENT, model: "haiku" }],
+      agentConfigSurface: surface(undefined, "max"),
+    });
+    const dialog = await openEdit(page);
+    const effort = dialog.locator("#edit-agent-effort");
+    await expect(effort).toHaveText("max");
+    await pick(page, effort, "Adapter default");
+    await expect(effort).toBeVisible();
+
+    await dialog.getByRole("button", { name: "Save changes" }).click();
+    await expect(dialog).toHaveCount(0);
+    const updates = await payloadsFor(page, "update_managed_agent");
+    expect(updates).toHaveLength(1);
+    expect(updates[0].input).toHaveProperty("effortLevel", null);
+  });
+
   test("a runtime switch while discovery is pending leaks no Claude levels", async ({
     page,
   }) => {
@@ -235,6 +356,41 @@ test.describe("create dialog", () => {
     expect(creates).toHaveLength(1);
     expect(creates[0].input.effortLevel).toBe("high");
   });
+
+  for (const baked of ["gpt-5.5", "claude-haiku-4-5"]) {
+    test(`a baked ${baked} build model does not decide Claude levels`, async ({
+      page,
+    }) => {
+      await install(page, bakedModel(baked));
+      const dialog = await openCreate(page);
+      expect(
+        await menuValues(page, dialog.locator("#edit-agent-effort")),
+      ).toEqual(ADAPTER_LEVELS);
+    });
+  }
+
+  for (const mode of ["pending", "failed"] as const) {
+    test(`a pick survives create while rediscovery is ${mode}`, async ({
+      page,
+    }) => {
+      await install(page);
+      const dialog = await openCreate(page);
+      const effort = dialog.locator("#edit-agent-effort");
+      await pick(page, effort, "high");
+
+      await stallDiscovery(page, mode);
+      await dialog.getByTestId("env-vars-add").click();
+      await dialog.getByTestId("env-vars-key").last().fill("EFFORT_TEST");
+      await dialog.getByTestId("env-vars-value").last().fill("two");
+      await expect(effort).toHaveCount(0);
+
+      await dialog.getByRole("button", { name: "Add agent" }).click();
+      await expect(dialog).toHaveCount(0);
+      const creates = await payloadsFor(page, "create_managed_agent");
+      expect(creates).toHaveLength(1);
+      expect(creates[0].input.effortLevel).toBe("high");
+    });
+  }
 
   test("switching to Haiku hides the picker and sends no effort", async ({
     page,

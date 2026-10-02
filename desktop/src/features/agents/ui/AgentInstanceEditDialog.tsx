@@ -187,14 +187,13 @@ export function AgentInstanceEditDialog({
   // Tracks whether the user has made an in-dialog runtime selection.
   const runtimeTouched = React.useRef(false);
 
-  const savedRuntimeId = React.useMemo(
+  const savedRuntime = React.useMemo(
     () =>
-      (
-        runtimes.find((r) => r.command?.trim() === agent.agentCommand.trim()) ??
-        runtimes.find((r) => r.id === agent.agentCommand.trim())
-      )?.id ?? "custom",
+      runtimes.find((r) => r.command?.trim() === agent.agentCommand.trim()) ??
+      runtimes.find((r) => r.id === agent.agentCommand.trim()),
     [runtimes, agent.agentCommand],
   );
+  const savedRuntimeId = savedRuntime?.id ?? "custom";
 
   // Reset form state only when the dialog opens or when switching to a different agent.
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — including agent fields would re-fire on every 5s poll and wipe edits
@@ -235,10 +234,10 @@ export function AgentInstanceEditDialog({
     if (!open || runtimeTouched.current || runtimes.length === 0) {
       return;
     }
-    if (savedRuntimeId !== "custom") {
-      setSelectedRuntimeId(savedRuntimeId);
+    if (savedRuntime) {
+      setSelectedRuntimeId(savedRuntime.id);
     }
-  }, [open, runtimes, savedRuntimeId]);
+  }, [open, runtimes, savedRuntime]);
 
   // Build the sorted runtime catalog for the dropdown.
   const sortedRuntimes = React.useMemo(

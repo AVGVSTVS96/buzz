@@ -1,17 +1,18 @@
 import * as React from "react";
+import { Check, Copy } from "lucide-react";
 
 import { HostedCommunityOnboarding } from "@/features/communities/ui/HostedCommunityOnboarding";
 import { useCommunityOnboarding } from "@/features/onboarding/communityOnboarding";
 import { InviteRedeemForm } from "@/features/onboarding/ui/InviteRedeemForm";
 import { OnboardingChrome } from "@/features/onboarding/ui/OnboardingChrome";
-import {
-  OnboardingFooter,
-  OnboardingFooterProvider,
-} from "@/features/onboarding/ui/OnboardingFooter";
+import { OnboardingFooterProvider } from "@/features/onboarding/ui/OnboardingFooter";
 import {
   type OnboardingTransitionDirection,
   OnboardingSlideTransition,
 } from "@/features/onboarding/ui/OnboardingSlideTransition";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import { writeTextToClipboard } from "@/shared/lib/clipboard";
+import { pubkeyToNpub } from "@/shared/lib/nostrUtils";
 import { useSystemColorScheme } from "@/shared/theme/useSystemColorScheme";
 import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
@@ -23,7 +24,7 @@ type WelcomeTransitionMode = "initial" | OnboardingTransitionDirection;
 type WelcomeSetupProps = {
   initialPage?: WelcomeSetupPage;
   initialTransitionMode?: WelcomeTransitionMode;
-  onBack: () => void;
+  onBack?: () => void;
 };
 
 const COMMUNITY_OPTION_CARD_CLASS =
@@ -41,8 +42,18 @@ export function WelcomeSetup({
   // we only navigate to the hosted stage once sign-in completes, so the page
   // behind the modal never changes out from under the user.
   const [isHostedSignInOpen, setIsHostedSignInOpen] = React.useState(false);
+  const [copiedNpub, setCopiedNpub] = React.useState(false);
   const communityOnboarding = useCommunityOnboarding();
+  const identityQuery = useIdentityQuery();
   const systemColorScheme = useSystemColorScheme();
+  const npub = identityQuery.data?.pubkey
+    ? pubkeyToNpub(identityQuery.data.pubkey)
+    : "";
+  const npubError = identityQuery.error
+    ? identityQuery.error instanceof Error
+      ? identityQuery.error.message
+      : "Could not load your public key."
+    : null;
 
   const showPage = React.useCallback(
     (nextPage: WelcomeSetupPage, direction?: OnboardingTransitionDirection) => {
@@ -78,27 +89,49 @@ export function WelcomeSetup({
     [communityOnboarding, page],
   );
 
+  const beginHostedCommunity = React.useCallback(
+    () => setIsHostedSignInOpen(true),
+    [],
+  );
+
   const transitionDirection =
     transitionMode === "backward" ? "backward" : "forward";
-  const welcomeEffect =
-    transitionMode === "backward" ? "line-slide" : "mask-reveal-up";
+  const backAction =
+    page === "welcome" && onBack
+      ? { onClick: onBack, testId: "welcome-setup-back" }
+      : page === "existing"
+        ? {
+            onClick: () => showPage("welcome"),
+            testId: "existing-back",
+          }
+        : page === "join"
+          ? {
+              onClick: () => showPage("welcome"),
+              testId: "welcome-join-back",
+            }
+          : page === "member"
+            ? {
+                onClick: () => showPage("existing"),
+                testId: "welcome-member-back",
+              }
+            : undefined;
 
   return (
     <div
       className="buzz-onboarding-neutral-theme buzz-startup-shell flex h-dvh items-start justify-center overflow-y-auto bg-background px-4 pb-36 pt-[106px] text-foreground"
       data-system-color-scheme={systemColorScheme}
+      data-testid="welcome-setup"
     >
       <StartupWindowDragRegion />
       <OnboardingChrome current={5} />
-      <OnboardingFooterProvider>
+      <OnboardingFooterProvider backAction={backAction}>
         <div className="relative flex min-h-0 w-full max-w-[920px] flex-1 flex-col items-center text-center">
           {page === "welcome" ? (
             <OnboardingSlideTransition
               className="flex h-full min-h-0 w-full flex-col items-center text-center"
               containerClassName="h-full min-h-0 [&>.buzz-onboarding-transition-line]:h-full"
               direction={transitionDirection}
-              effect={welcomeEffect}
-              transitionKey={`welcome-${welcomeEffect}-${transitionDirection}`}
+              transitionKey={`welcome-${transitionDirection}`}
             >
               <div className="w-full max-w-[760px]">
                 <h1 className="text-title font-normal">
@@ -130,7 +163,7 @@ export function WelcomeSetup({
                 >
                   <button
                     data-testid="community-choice-create"
-                    onClick={() => setIsHostedSignInOpen(true)}
+                    onClick={beginHostedCommunity}
                     type="button"
                   >
                     Create a community
@@ -150,17 +183,6 @@ export function WelcomeSetup({
                   </button>
                 </Card>
               </div>
-              <OnboardingFooter>
-                <Button
-                  className="h-9 rounded-full bg-foreground/10 px-6 hover:bg-foreground/15"
-                  data-testid="welcome-setup-back"
-                  onClick={onBack}
-                  type="button"
-                  variant="ghost"
-                >
-                  Back
-                </Button>
-              </OnboardingFooter>
             </OnboardingSlideTransition>
           ) : page === "existing" ? (
             <OnboardingSlideTransition
@@ -185,7 +207,7 @@ export function WelcomeSetup({
                 >
                   <button
                     data-testid="existing-choice-owner"
-                    onClick={() => setIsHostedSignInOpen(true)}
+                    onClick={beginHostedCommunity}
                     type="button"
                   >
                     I own the community
@@ -205,17 +227,6 @@ export function WelcomeSetup({
                   </button>
                 </Card>
               </div>
-              <OnboardingFooter>
-                <Button
-                  className="h-9 rounded-full bg-foreground/10 px-6 hover:bg-foreground/15"
-                  data-testid="existing-back"
-                  onClick={() => showPage("welcome")}
-                  type="button"
-                  variant="ghost"
-                >
-                  Back
-                </Button>
-              </OnboardingFooter>
             </OnboardingSlideTransition>
           ) : page === "owned" ? (
             <OnboardingSlideTransition
@@ -243,7 +254,7 @@ export function WelcomeSetup({
                     : "Enter the invite link or community URL you received."}
                 </p>
               </div>
-              <div className="flex w-full flex-1 items-center justify-center">
+              <div className="flex w-full flex-1 flex-col items-center justify-center gap-16">
                 <InviteRedeemForm
                   error={null}
                   isRedeeming={false}
@@ -255,6 +266,52 @@ export function WelcomeSetup({
                   placeholder="Invite link or community URL"
                   variant="onboarding-spotlight"
                 />
+                {page === "join" ? (
+                  <div className="w-full max-w-[560px] text-left">
+                    <p className="text-sm font-medium text-foreground">
+                      Joining a private community?
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-foreground/75">
+                      Some communities need the owner to add you before you can
+                      join. Copy your public ID and send it to the community
+                      owner.
+                    </p>
+                    <div className="mt-4 flex items-center gap-3 rounded-xl border border-foreground/10 bg-background/35 px-4 py-3">
+                      <code
+                        className="min-w-0 flex-1 truncate font-mono text-xs text-foreground/80"
+                        data-testid="welcome-join-npub"
+                      >
+                        {npub || "Loading…"}
+                      </code>
+                      <Button
+                        aria-label="Copy public ID"
+                        className="h-9 shrink-0 rounded-full px-3"
+                        disabled={!npub}
+                        onClick={() => {
+                          void writeTextToClipboard(npub).then(() => {
+                            setCopiedNpub(true);
+                            window.setTimeout(() => setCopiedNpub(false), 1500);
+                          });
+                        }}
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                      >
+                        {copiedNpub ? (
+                          <Check className="h-4 w-4" aria-hidden="true" />
+                        ) : (
+                          <Copy className="h-4 w-4" aria-hidden="true" />
+                        )}
+                        <span>{copiedNpub ? "Copied" : "Copy"}</span>
+                      </Button>
+                    </div>
+                    {npubError ? (
+                      <p className="mt-3 text-sm text-destructive">
+                        {npubError}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </OnboardingSlideTransition>
           )}

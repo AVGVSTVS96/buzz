@@ -80,6 +80,7 @@ pub(crate) fn run_git(
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
+    crate::util::configure_no_window(&mut command);
 
     let mut child = command
         .spawn()
@@ -172,10 +173,21 @@ fn configure_git_auth(command: &mut Command, auth: &GitAuthConfig, needs_credent
             return apply_git_config(command, &entries);
         };
         command.env("NOSTR_PRIVATE_KEY", &auth.nsec);
-        entries.push(("credential.helper", cred_helper.display().to_string()));
+        entries.push((
+            "credential.helper",
+            credential_helper_config_value(cred_helper),
+        ));
         entries.push(("credential.useHttpPath", "true".to_string()));
     }
     apply_git_config(command, &entries);
+}
+
+/// Format a path for git `credential.helper`.
+///
+/// Git for Windows invokes helpers via MinGW bash, which treats `\` as
+/// escapes. Forward slashes work on every platform git supports.
+fn credential_helper_config_value(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn apply_git_config(command: &mut Command, entries: &[(&str, String)]) {
@@ -189,6 +201,22 @@ fn apply_git_config(command: &mut Command, entries: &[(&str, String)]) {
 pub(crate) fn build_git_auth_config(state: &AppState) -> Result<GitAuthConfig, String> {
     let keys = state.signing_keys()?;
     build_git_auth_config_for_keys(&keys)
+}
+
+pub(crate) fn build_git_clone_auth_config(
+    clone_url: &str,
+    state: &AppState,
+) -> Result<GitAuthConfig, String> {
+    if validate_github_clone_url(clone_url).is_ok() {
+        return Ok(GitAuthConfig {
+            git_path: resolve_command("git")
+                .ok_or_else(|| "git was not found on PATH".to_string())?,
+            credential_helper: None,
+            nsec: String::new(),
+            allow_file_transport: false,
+        });
+    }
+    build_git_auth_config(state)
 }
 
 pub(crate) fn build_git_auth_config_for_keys(keys: &Keys) -> Result<GitAuthConfig, String> {
@@ -237,6 +265,17 @@ pub(crate) fn clean_branch(value: Option<String>) -> Option<String> {
         .map(ToString::to_string)
 }
 
+pub(crate) fn clean_target_ref(value: Option<String>) -> Option<String> {
+    let value = value?.trim().to_string();
+    for prefix in ["refs/tags/", "refs/nostr/"] {
+        if let Some(name) = value.strip_prefix(prefix) {
+            let clean_name = clean_branch(Some(name.to_string()))?;
+            return (clean_name == name).then_some(format!("{prefix}{clean_name}"));
+        }
+    }
+    None
+}
+
 pub(crate) fn validate_clone_url(clone_url: &str) -> Result<(), String> {
     let parsed = Url::parse(clone_url).map_err(|error| format!("invalid clone URL: {error}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -263,6 +302,56 @@ pub(crate) fn validate_clone_url(clone_url: &str) -> Result<(), String> {
         return Err("clone URL must point at a Buzz git repository".into());
     }
     Ok(())
+}
+
+fn validate_github_clone_url(clone_url: &str) -> Result<(), String> {
+    let parsed = Url::parse(clone_url).map_err(|error| format!("invalid clone URL: {error}"))?;
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("github.com")
+        || parsed.port().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("GitHub clone URL must use public https://github.com/owner/repository".into());
+    }
+    let segments = parsed
+        .path_segments()
+        .map(|segments| {
+            segments
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let valid_segment = |segment: &&str| {
+        !segment.starts_with('-')
+            && !segment.contains("..")
+            && segment.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+            })
+    };
+    if segments.len() != 2 || !segments.iter().all(valid_segment) {
+        return Err("GitHub clone URL must name one owner and repository".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_local_clone_url(clone_url: &str) -> Result<(), String> {
+    if validate_clone_url(clone_url).is_ok() || validate_github_clone_url(clone_url).is_ok() {
+        return Ok(());
+    }
+    Err("clone URL must point at a Buzz repository or public GitHub repository".into())
+}
+
+pub(crate) fn validate_local_clone_url_for_workspace(
+    clone_url: &str,
+    state: &AppState,
+) -> Result<(), String> {
+    if validate_github_clone_url(clone_url).is_ok() {
+        return Ok(());
+    }
+    validate_workspace_clone_url(clone_url, state)
 }
 
 pub(crate) fn clone_url_owner(clone_url: &str) -> Option<String> {
@@ -304,9 +393,20 @@ fn validate_clone_url_against_relay(clone_url: &str, relay_base: &str) -> Result
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_branch, git_needs_credentials, git_subcommand, validate_clone_url,
-        validate_clone_url_against_relay,
+        clean_branch, clean_target_ref, credential_helper_config_value, git_needs_credentials,
+        git_subcommand, validate_clone_url, validate_clone_url_against_relay,
+        validate_local_clone_url,
     };
+
+    #[test]
+    fn credential_helper_config_value_uses_forward_slashes() {
+        let path =
+            std::path::PathBuf::from(r"C:\Users\x\AppData\Local\Buzz\git-credential-nostr.exe");
+        assert_eq!(
+            credential_helper_config_value(&path),
+            "C:/Users/x/AppData/Local/Buzz/git-credential-nostr.exe",
+        );
+    }
 
     #[test]
     fn git_subcommand_skips_global_config_options() {
@@ -363,6 +463,20 @@ mod tests {
     }
 
     #[test]
+    fn clean_target_ref_accepts_only_tags_and_pull_request_refs() {
+        assert_eq!(
+            clean_target_ref(Some("refs/tags/v1.0.0".into())),
+            Some("refs/tags/v1.0.0".to_string())
+        );
+        assert_eq!(
+            clean_target_ref(Some("refs/nostr/abc123".into())),
+            Some("refs/nostr/abc123".to_string())
+        );
+        assert_eq!(clean_target_ref(Some("refs/heads/main".into())), None);
+        assert_eq!(clean_target_ref(Some("refs/tags/../main".into())), None);
+    }
+
+    #[test]
     fn validate_clone_url_requires_buzz_repo_shape() {
         let owner = "a".repeat(64);
         assert!(validate_clone_url(&format!("https://relay.example/git/{owner}/repo")).is_ok());
@@ -393,5 +507,16 @@ mod tests {
             "https://relay.example/prefix",
         )
         .is_err());
+    }
+
+    #[test]
+    fn local_clone_url_allows_only_public_github_https_urls() {
+        assert!(validate_local_clone_url("https://github.com/block/buzz").is_ok());
+        assert!(validate_local_clone_url("https://github.com/block/buzz.git").is_ok());
+        assert!(validate_local_clone_url("http://github.com/block/buzz").is_err());
+        assert!(validate_local_clone_url("https://github.com/block/buzz/issues").is_err());
+        assert!(validate_local_clone_url("https://user@github.com/block/buzz").is_err());
+        assert!(validate_local_clone_url("https://github.com.evil.test/block/buzz").is_err());
+        assert!(validate_local_clone_url("https://gitlab.com/block/buzz").is_err());
     }
 }

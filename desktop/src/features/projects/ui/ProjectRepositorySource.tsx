@@ -2,88 +2,130 @@ import {
   ChevronDown,
   Cloud,
   DownloadCloud,
+  ExternalLink,
   GitBranch,
+  Globe,
   HardDrive,
   Loader2,
   Plus,
   RefreshCw,
+  Tag,
   Trash2,
   UploadCloud,
 } from "lucide-react";
 
 import { Button } from "@/shared/ui/button";
+import { projectExternalRefUrl } from "@/features/projects/lib/projectExternalUrl";
+import { shortenProjectPath } from "@/features/projects/lib/projectPathDisplay";
+import type { ProjectRepoUnavailableReason } from "@/features/projects/lib/projectRepoAvailability";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
-import { PROJECT_PANEL_ACTION_BUTTON_CLASS } from "./projectPanelStyles";
+import { GitHubMark } from "./GitHubMark";
+import {
+  PROJECT_PANEL_ACTION_BUTTON_CLASS,
+  PROJECT_PICKER_TRIGGER_CLASS,
+} from "./projectPanelStyles";
 
 /** Branch picker shared by the readme and files panel headers. */
 export function RepositoryBranchDropdown({
   branch,
   branchOptions,
-  compact,
+  selectedTag,
+  tagOptions = [],
   createBranchDisabled,
   createBranchTitle,
   deleteBranchDisabled,
   deleteBranchTitle,
   onBranchChange,
+  onTagChange,
   onCreateBranch,
   onDeleteBranch,
 }: {
   branch: string;
   branchOptions: string[];
-  /** Smaller trigger for inline headers. */
-  compact?: boolean;
+  selectedTag?: string | null;
+  tagOptions?: Array<{ name: string; commit: string }>;
   createBranchDisabled?: boolean;
   createBranchTitle?: string;
   deleteBranchDisabled?: boolean;
   deleteBranchTitle?: string;
   onBranchChange: (branch: string) => void;
+  onTagChange?: (tag: string) => void;
   onCreateBranch?: () => void;
   onDeleteBranch?: () => void;
 }) {
   const selectableBranches =
     branchOptions.length > 0 ? branchOptions : [branch];
+  const selectedValue = selectedTag ? `tag:${selectedTag}` : `branch:${branch}`;
+  const RefIcon = selectedTag ? Tag : GitBranch;
   if (!branch) {
     return (
-      <span className="truncate font-mono text-sm font-semibold text-foreground">
-        —
-      </span>
+      <span className="truncate text-sm font-semibold text-foreground">—</span>
     );
   }
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
-          className={
-            compact
-              ? "h-7 max-w-full gap-1.5 rounded-md px-3 font-mono text-sm font-medium hover:border-input"
-              : "h-6 max-w-full gap-1.5 px-2 font-mono text-sm font-semibold hover:border-input"
-          }
+          className={PROJECT_PICKER_TRIGGER_CLASS}
+          data-testid="project-repository-branch-trigger"
           size="sm"
           type="button"
           variant="outline"
         >
-          <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <span className="truncate">{branch}</span>
+          <RefIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate text-left">
+            {selectedTag ?? branch}
+          </span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-56">
-        <DropdownMenuRadioGroup onValueChange={onBranchChange} value={branch}>
+        <DropdownMenuRadioGroup
+          onValueChange={(value) => {
+            if (value.startsWith("tag:")) {
+              onTagChange?.(value.slice("tag:".length));
+            } else {
+              onBranchChange(value.slice("branch:".length));
+            }
+          }}
+          value={selectedValue}
+        >
+          <DropdownMenuLabel>Branches</DropdownMenuLabel>
           {selectableBranches.map((option) => (
-            <DropdownMenuRadioItem key={option} value={option}>
-              <span className="truncate font-mono">{option}</span>
+            <DropdownMenuRadioItem key={option} value={`branch:${option}`}>
+              <GitBranch className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{option}</span>
             </DropdownMenuRadioItem>
           ))}
+          {tagOptions.length > 0 ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Tags</DropdownMenuLabel>
+              {tagOptions.map((option) => (
+                <DropdownMenuRadioItem
+                  key={option.name}
+                  value={`tag:${option.name}`}
+                >
+                  <Tag className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate">{option.name}</span>
+                  <span className="ml-auto font-mono text-xs text-muted-foreground">
+                    {option.commit.slice(0, 7)}
+                  </span>
+                </DropdownMenuRadioItem>
+              ))}
+            </>
+          ) : null}
         </DropdownMenuRadioGroup>
-        {onCreateBranch || onDeleteBranch ? (
+        {!selectedTag && (onCreateBranch || onDeleteBranch) ? (
           <>
             <DropdownMenuSeparator />
             {onCreateBranch ? (
@@ -127,7 +169,10 @@ export function RepositoryBranchDropdown({
 export type RepoSourceHeaderControls = {
   branch: string;
   branchOptions: string[];
+  selectedTag?: string | null;
+  tagOptions?: Array<{ name: string; commit: string }>;
   onBranchChange: (branch: string) => void;
+  onTagChange?: (tag: string) => void;
   onCreateBranch?: () => void;
   createBranchDisabled?: boolean;
   createBranchTitle?: string;
@@ -138,7 +183,13 @@ export type RepoSourceHeaderControls = {
   onSourceChange: (source: "remote" | "local") => void;
   localDisabled: boolean;
   localLabel: string;
+  localPath?: string | null;
   remoteLabel: string;
+  remoteKind?: "buzz" | "external";
+  remoteUnavailableReason?: ProjectRepoUnavailableReason;
+  externalUrl?: string | null;
+  /** Opens repository-scoped assistance when remote access is restricted. */
+  onAskForAccess?: () => void;
   /** Clones the repository when no local checkout is available. */
   onCloneLocal?: () => void;
   clonePending?: boolean;
@@ -171,19 +222,40 @@ export function RepoSourceDropdown({
 }) {
   const isLocal = controls.source === "local";
   const cloneLocal = controls.localDisabled && controls.onCloneLocal;
-  const SourceIcon = isLocal ? HardDrive : Cloud;
+  const localPath = controls.localPath?.trim() || null;
+  const shortLocalPath = localPath ? shortenProjectPath(localPath) : null;
+  const RemoteIcon =
+    controls.remoteKind === "external"
+      ? controls.remoteLabel === "github.com"
+        ? GitHubMark
+        : Globe
+      : Cloud;
+  const SourceIcon = isLocal ? HardDrive : RemoteIcon;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
-          className="h-7 max-w-full shrink-0 gap-1.5 rounded-md px-3 text-sm font-medium hover:border-input"
+          className={PROJECT_PICKER_TRIGGER_CLASS}
           size="sm"
           type="button"
           variant="outline"
         >
           <SourceIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <span className="truncate">
-            {isLocal ? controls.localLabel : controls.remoteLabel}
+          <span
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+            title={isLocal && localPath ? localPath : undefined}
+          >
+            <span className="shrink-0">
+              {isLocal ? controls.localLabel : controls.remoteLabel}
+            </span>
+            {isLocal && shortLocalPath ? (
+              <span
+                className="min-w-0 truncate text-xs text-muted-foreground"
+                data-testid="project-repository-local-path"
+              >
+                {shortLocalPath}
+              </span>
+            ) : null}
           </span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
@@ -196,7 +268,7 @@ export function RepoSourceDropdown({
           value={controls.source}
         >
           <DropdownMenuRadioItem value="remote">
-            <Cloud className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
+            <RemoteIcon className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
             {controls.remoteLabel}
           </DropdownMenuRadioItem>
           {!cloneLocal ? (
@@ -205,7 +277,15 @@ export function RepoSourceDropdown({
               value="local"
             >
               <HardDrive className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
-              {controls.localLabel}
+              <span>{controls.localLabel}</span>
+              {shortLocalPath ? (
+                <span
+                  className="ml-auto max-w-48 truncate text-xs text-muted-foreground"
+                  title={localPath ?? undefined}
+                >
+                  {shortLocalPath}
+                </span>
+              ) : null}
             </DropdownMenuRadioItem>
           ) : null}
         </DropdownMenuRadioGroup>
@@ -238,6 +318,27 @@ export function RepoSyncActionButton({
 }: {
   controls: RepoSourceHeaderControls;
 }) {
+  const externalOpenUrl = projectExternalRefUrl(
+    controls.externalUrl,
+    controls.selectedTag ?? controls.branch,
+  );
+  if (controls.remoteKind === "external") {
+    return externalOpenUrl ? (
+      <Button
+        asChild
+        className={PROJECT_PANEL_ACTION_BUTTON_CLASS}
+        size="sm"
+        title={`Open repository on ${controls.remoteLabel}`}
+        variant="ghost"
+      >
+        <a href={externalOpenUrl} rel="noreferrer" target="_blank">
+          <ExternalLink className="h-4 w-4" />
+          Open
+        </a>
+      </Button>
+    ) : null;
+  }
+
   const pull = controls.canPull && controls.onPull;
   const push = controls.canPush && controls.onPush;
 

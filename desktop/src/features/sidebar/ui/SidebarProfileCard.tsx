@@ -10,8 +10,12 @@ import {
 } from "@/features/profile/ui/MaskedAvatarBadgeFrame";
 import { ProfilePopover } from "@/features/profile/ui/ProfilePopover";
 import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
+import type { UserStatusInput } from "@/features/user-status/types";
+import type { LeaveCommunityResult } from "@/features/communities/leaveCommunity";
 import type { Community } from "@/features/communities/types";
 import { CommunitySwitcher } from "@/features/communities/ui/CommunitySwitcher";
+import { useMyRelayMembershipLookupQuery } from "@/features/community-members/hooks";
+import type { SettingsSection } from "@/features/settings/ui/SettingsPanels";
 import type { PresenceStatus, Profile, UserStatus } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 
@@ -19,11 +23,12 @@ type SidebarProfileCardProps = {
   activeCommunity: Community | null;
   isPresencePending?: boolean;
   onOpenAddCommunity: () => void;
-  onOpenSettings: (section?: "profile" | "appearance") => void;
-  onRemoveCommunity: (id: string) => void;
+  onOpenSettings: (section?: SettingsSection) => void;
+  onLeaveCommunity: (id: string) => Promise<LeaveCommunityResult | undefined>;
+  onRemoveCommunityFromDevice: (id: string) => Promise<void>;
   onSendFeedback?: () => void;
   onSetPresenceStatus?: (status: PresenceStatus) => void;
-  onSetUserStatus: (text: string, emoji: string) => void;
+  onSetUserStatus: (status: UserStatusInput) => void;
   onClearUserStatus: () => void;
   onSwitchCommunity: (id: string) => void;
   onUpdateCommunity: (
@@ -43,7 +48,8 @@ export function SidebarProfileCard({
   onOpenAddCommunity,
   onOpenSettings,
   onSendFeedback,
-  onRemoveCommunity,
+  onLeaveCommunity,
+  onRemoveCommunityFromDevice,
   onSetPresenceStatus,
   onSetUserStatus,
   onClearUserStatus,
@@ -56,6 +62,9 @@ export function SidebarProfileCard({
   communities,
 }: SidebarProfileCardProps) {
   const selfProfileCache = useSelfProfileCache();
+  const myMembershipQuery = useMyRelayMembershipLookupQuery();
+  const activeRole = myMembershipQuery.data?.membership?.role;
+  const canInvite = activeRole === "owner" || activeRole === "admin";
   const [profilePopoverOpen, setProfilePopoverOpen] = React.useState(false);
   const profileCardRef = React.useRef<HTMLDivElement | null>(null);
   const toggleProfilePopover = React.useCallback(
@@ -95,7 +104,7 @@ export function SidebarProfileCard({
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: child buttons provide keyboard access; wrapper fills pointer gaps between them.
     <div
-      className="group/profile-card cursor-pointer rounded-xl px-2 py-2 transition-colors hover:bg-sidebar-border/35 dark:hover:bg-sidebar-border/30"
+      className="group/profile-card cursor-pointer rounded-xl px-2 py-2 transition-colors hover:bg-sidebar-border/35"
       data-testid="sidebar-profile-card"
       onClick={handleCardClick}
       ref={profileCardRef}
@@ -155,12 +164,23 @@ export function SidebarProfileCard({
             onSetUserStatus={onSetUserStatus}
             triggerContainerRef={profileCardRef}
             userStatusEmoji={selfUserStatus?.emoji}
+            userStatusExpiresAt={selfUserStatus?.expiresAt}
             userStatusText={selfUserStatus?.text}
+            userStatusUpdatedAt={selfUserStatus?.updatedAt}
             communitySwitcherSlot={
               <CommunitySwitcher
                 activeCommunity={activeCommunity}
-                onAddCommunity={onOpenAddCommunity}
-                onRemoveCommunity={onRemoveCommunity}
+                canInvite={canInvite}
+                onAddCommunity={() => {
+                  setProfilePopoverOpen(false);
+                  onOpenAddCommunity();
+                }}
+                onInvite={() => {
+                  setProfilePopoverOpen(false);
+                  onOpenSettings("community-members");
+                }}
+                onLeaveCommunity={onLeaveCommunity}
+                onRemoveCommunityFromDevice={onRemoveCommunityFromDevice}
                 onSwitchCommunity={onSwitchCommunity}
                 onUpdateCommunity={onUpdateCommunity}
                 variant="profile-menu"

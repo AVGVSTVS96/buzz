@@ -7,20 +7,36 @@ import 'package:nostr/nostr.dart' as nostr;
 import 'relay_provider.dart';
 
 const _mediaGetAuthKind = 24242;
-const _mediaGetAuthLifetimeSeconds = 600;
+const _mediaGetAuthLifetimeSeconds = 60;
+
+/// Re-sign this long before the cached auth event expires, so an in-flight
+/// request signed just before the boundary still lands well within validity.
+/// With a 60-second lifetime, the margin equals the lifetime: each request
+/// mints a fresh token (mint-per-request pattern for NIP-FI compliance).
+const _mediaGetAuthRefreshMarginSeconds = 60;
 
 /// Builds BUD-01 Blossom `t=get` auth headers for relay-host media URLs.
 ///
 /// Returns an empty map for non-relay URLs or when no signing key is available,
 /// so callers can safely use this on arbitrary profile/custom-emoji URLs without
 /// leaking Buzz credentials to third-party hosts.
-@immutable
+///
+/// With a 60-second proof lifetime the refresh margin equals the lifetime, so
+/// `_refreshAt == signedAt` and the cache never hits: every call mints a fresh
+/// proof (mint-per-request pattern). This is intentional for NIP-FI compliance
+/// — caching a 60-second token is staleness-prone and provides no meaningful
+/// reduction in signing work. The service itself is rebuilt whenever the relay
+/// config — base URL or signing identity — changes, via
+/// [mediaGetAuthServiceProvider].
 class MediaGetAuthService {
   final String _baseUrl;
   final String? _nsec;
   final DateTime Function() _now;
 
-  const MediaGetAuthService({
+  Map<String, String>? _cachedHeaders;
+  DateTime? _refreshAt;
+
+  MediaGetAuthService({
     required String baseUrl,
     required String? nsec,
     DateTime Function()? now,
@@ -28,20 +44,41 @@ class MediaGetAuthService {
        _nsec = nsec,
        _now = now ?? DateTime.now;
 
+  bool isRelayMediaUrl(String url) {
+    final uri = Uri.tryParse(url);
+    final relayUri = Uri.tryParse(_baseUrl);
+    if (uri == null || relayUri == null) return false;
+    return _isRelayMediaUrl(uri, relayUri);
+  }
+
   Map<String, String> headersFor(String url) {
     final nsec = _nsec;
     if (nsec == null || nsec.isEmpty) return const {};
-    final uri = Uri.tryParse(url);
-    final relayUri = Uri.tryParse(_baseUrl);
-    if (uri == null || relayUri == null) return const {};
-    if (!_isRelayMediaUrl(uri, relayUri)) return const {};
+    if (!isRelayMediaUrl(url)) return const {};
+
+    final cached = _cachedHeaders;
+    final refreshAt = _refreshAt;
+    if (cached != null && refreshAt != null && _now().isBefore(refreshAt)) {
+      return cached;
+    }
 
     try {
+      final signedAt = _now();
       final authEvent = _buildGetAuthEvent(nsec);
       final encoded = base64Url
           .encode(utf8.encode(authEvent.toJson()))
           .replaceAll('=', '');
-      return {'Authorization': 'Nostr $encoded'};
+      final headers = Map<String, String>.unmodifiable({
+        'Authorization': 'Nostr $encoded',
+      });
+      _cachedHeaders = headers;
+      _refreshAt = signedAt.add(
+        const Duration(
+          seconds:
+              _mediaGetAuthLifetimeSeconds - _mediaGetAuthRefreshMarginSeconds,
+        ),
+      );
+      return headers;
     } catch (_) {
       // Read auth is best-effort: while the relay rollout flag is off, an
       // unsigned fetch still works. Once the flag is on, this request will 403

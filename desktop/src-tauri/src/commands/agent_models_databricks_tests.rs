@@ -145,7 +145,11 @@ async fn databricks_storage_failure_shows_its_message_without_opening_a_browser(
 
             assert_eq!(launched.load(Ordering::SeqCst), sign_ins, "{failure:?}");
             assert_eq!(
-                error.contains("could not securely save the Databricks token cache"),
+                // The `llm credential storage: ` prefix is what the draft-dialog
+                // formatter (personaModelDiscoveryStatus.ts) matches on.
+                error.contains(
+                    "llm credential storage: could not securely save the Databricks token cache"
+                ),
                 failure == AuthError::CacheUnavailable,
                 "{error}"
             );

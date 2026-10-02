@@ -106,6 +106,30 @@ test("Databricks sign-in timeout warns and points at the explicit retry", () => 
   assert.match(status?.message ?? "", /buzz-agent auth databricks/);
 });
 
+// Real shapes from agent_models_databricks.rs when a token cannot be saved
+// privately: a refresh during discovery, and a completed browser sign-in.
+for (const [surface, prefix] of [
+  ["discovery refresh", "Databricks model discovery failed"],
+  ["browser sign-in", "Databricks sign-in failed"],
+]) {
+  test(`Databricks token-storage failure on ${surface} shows the storage remedy, not sign-in advice`, () => {
+    const status = formatModelDiscoveryErrorStatus(
+      `${prefix}: llm credential storage: could not securely save the Databricks token cache; use a writable cache location with owner-only file permissions (Windows FAT/exFAT volumes are not supported)`,
+      "databricks_v2",
+    );
+
+    assert.equal(status?.tone, "warning");
+    assert.equal(
+      status?.message,
+      "Could not securely save the Databricks token cache; use a writable cache location with owner-only file permissions (Windows FAT/exFAT volumes are not supported).",
+    );
+    assert.doesNotMatch(
+      status?.message ?? "",
+      /didn't complete|model picker|built-in model options/,
+    );
+  });
+}
+
 test("other Databricks discovery failures fall through to the generic notice", () => {
   const status = formatModelDiscoveryErrorStatus(
     new Error("Databricks model discovery failed: relay offline"),

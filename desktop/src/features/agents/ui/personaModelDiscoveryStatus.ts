@@ -142,6 +142,9 @@ export function formatModelDiscoveryErrorStatus(
   };
 }
 
+/** Display prefix of `AgentError::LlmCredentialStorage` (buzz-agent `types.rs`). */
+const CREDENTIAL_STORAGE_MARKER = "llm credential storage: ";
+
 /**
  * Maps the terminal Databricks sign-in states to user-facing guidance, or null
  * when the error is not a Databricks sign-in outcome. "Sign-in required" is a
@@ -152,6 +155,20 @@ export function formatModelDiscoveryErrorStatus(
 function formatDatabricksAuthStatus(
   message: string,
 ): PersonaModelDiscoveryStatus | null {
+  // A token that could not be saved privately (`AgentError::LlmCredentialStorage`).
+  // Checked first: it also arrives wrapped as "Databricks sign-in failed", and
+  // another sign-in cannot repair the cache, so show the backend's remedy.
+  const storageAt = message.indexOf(CREDENTIAL_STORAGE_MARKER);
+  if (storageAt !== -1) {
+    const detail = message
+      .slice(storageAt + CREDENTIAL_STORAGE_MARKER.length)
+      .trim();
+    return {
+      message: `${detail.charAt(0).toUpperCase()}${detail.slice(1)}.`,
+      tone: "warning",
+    };
+  }
+
   if (message.includes("Databricks sign-in is required")) {
     return {
       message:

@@ -3129,7 +3129,7 @@ pub async fn reconcile_nip43_membership_snapshots_with_purpose(
 ) -> anyhow::Result<usize> {
     let communities = match purpose {
         Nip43ReconciliationPurpose::Bootstrap => state.db.bootstrap_community_hosts().await?,
-        Nip43ReconciliationPurpose::Maintenance => state.db.usage_community_hosts().await?,
+        Nip43ReconciliationPurpose::Maintenance => state.db.active_community_hosts().await?,
     };
     let mut reconciled = 0usize;
 

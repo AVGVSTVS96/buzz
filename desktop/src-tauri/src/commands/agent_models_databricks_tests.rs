@@ -107,3 +107,49 @@ async fn databricks_interactive_auth_timeout_records_cooldown_and_returns_timeou
     assert_eq!(error, databricks_sign_in_timed_out_error());
     assert!(cooldowns.is_active(host, Instant::now()));
 }
+
+#[tokio::test]
+async fn databricks_storage_failure_shows_its_message_without_opening_a_browser() {
+    use buzz_agent_pkg::{auth::AuthError, AgentError};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let host = "https://example.cloud.databricks.com";
+    let redaction = BTreeMap::new();
+    // What discovery reports when a refreshed token cannot be saved privately,
+    // against an ordinary missing credential as the control.
+    for (failure, sign_ins) in [
+        (AuthError::CacheUnavailable, 0),
+        (AuthError::NoCredential, 1),
+    ] {
+        for auth_intent in [
+            DatabricksAuthIntent::InteractiveModelPicker,
+            DatabricksAuthIntent::PassiveDraftDiscovery,
+        ] {
+            let cooldowns = AuthCooldown::default();
+            let launched = AtomicUsize::new(0);
+
+            let error = discover_entries_or_sign_in(
+                || async { Err(AgentError::from(failure.clone())) },
+                || {
+                    launched.fetch_add(1, Ordering::SeqCst);
+                    async { Ok(()) }
+                },
+                "",
+                auth_intent,
+                host,
+                &cooldowns,
+                &redaction,
+            )
+            .await
+            .expect_err("discovery keeps failing");
+
+            assert_eq!(launched.load(Ordering::SeqCst), sign_ins, "{failure:?}");
+            assert_eq!(
+                error.contains("could not securely save the Databricks token cache"),
+                failure == AuthError::CacheUnavailable,
+                "{error}"
+            );
+            assert!(!error.contains("sign-in is required"), "{error}");
+        }
+    }
+}

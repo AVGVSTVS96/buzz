@@ -93,6 +93,8 @@ impl DatabricksConnection {
     /// and credentials only. Preserves filtering, partial success and labelled
     /// authenticated-empty/no-filter fallback; this is not proof of completeness.
     /// Does not choose or mutate a model. Errors contain no raw provider content.
+    /// [`AgentError::LlmCredentialStorage`] means a refreshed token could not be
+    /// stored privately: present its message, do not prompt another sign-in.
     pub async fn discover_models(
         &self,
         filter: Option<DatabricksModelFilter>,
@@ -109,6 +111,8 @@ impl DatabricksConnection {
                 AgentError::LlmAuth(_) => {
                     AgentError::LlmAuth("Databricks authentication required".into())
                 }
+                // A fixed local message: no provider content, path or token.
+                storage @ AgentError::LlmCredentialStorage(_) => storage,
                 _ => AgentError::Llm("Databricks model discovery unavailable".into()),
             })
     }

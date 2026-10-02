@@ -65,9 +65,13 @@ unprotected write or memory-only success fallback; separate app/agent processes
 need the same private cache. This restriction applies to legacy OAuth too.
 
 A failed token save returns `AuthError::CacheUnavailable` (`cache_unavailable`),
-not `NetworkUnavailable`. The CLI explains that secure token storage failed and
-requests a writable, permission-capable location; automatic inference retries
-stop. App callers of `connect()` should present the storage problem rather than
+not `NetworkUnavailable`. Through `discover_models()` and the token-source APIs
+it is `AgentError::LlmCredentialStorage` (JSON-RPC `-32003`), never `LlmAuth`,
+so it is not mistaken for a sign-in problem. The CLI explains that secure token
+storage failed and requests a writable, permission-capable location. buzz-agent
+fails the request without retrying it; a managed agent's turn queue may still
+requeue the turn until its retry budget runs out. App callers of `connect()`
+and `discover_models()` should present the storage message rather than
 suggesting another browser sign-in. Choose an app-owned local NTFS cache root;
 for the legacy CLI, point `BUZZ_AGENT_CONFIG_DIR` at such a directory and retry.
 The failed candidate is not installed in memory, and the temporary-file guard

@@ -390,6 +390,7 @@ fn catalog_error_kind(error: &AgentError) -> &'static str {
         AgentError::InvalidParams(_) => "invalid-params",
         AgentError::Llm(_) => "llm",
         AgentError::LlmAuth(_) => "auth",
+        AgentError::LlmCredentialStorage(_) => "credential-storage",
         AgentError::LlmModelNotFound(_) => "model-not-found",
         AgentError::LlmContextExceeded(_) => "context-exceeded",
         AgentError::UnsupportedImageInput(_) => "unsupported-image",

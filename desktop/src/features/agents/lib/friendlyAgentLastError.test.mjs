@@ -153,15 +153,37 @@ test("friendlyTurnErrorCopy: unknown code passes raw text through", () => {
 // --- structured-code hardening ---
 
 test("unknown code prevents string-pattern cross-classification", () => {
-  // code -32003 is structured and unrecognized — must NOT fall through to
+  // code -32050 is structured and unrecognized — must NOT fall through to
   // the legacy string path that would wrongly promote this to denied.
   const result = friendlyAgentLastError(
     "llm auth: rate limiter denial",
-    -32003,
+    -32050,
   );
   assert.deepEqual(result, {
     severity: "generic",
     copy: "llm auth: rate limiter denial",
+  });
+});
+
+test("code -32003 credential-storage failure keeps its message, never the denied copy", () => {
+  // buzz-agent's AgentError::LlmCredentialStorage: the token could not be
+  // saved privately. Community membership and signing in again are both the
+  // wrong remedy, so the storage message must reach the agent row and the
+  // turn transcript whether the code arrives structured, embedded, or absent.
+  const raw =
+    "Agent reported error (code -32003): llm credential storage: could not securely save the Databricks token cache";
+  for (const code of [-32003, null]) {
+    assert.deepEqual(friendlyAgentLastError(raw, code), {
+      severity: "generic",
+      copy: raw,
+    });
+  }
+  assert.equal(friendlyTurnErrorCopy(raw, -32003), raw);
+  const unwrapped =
+    "llm credential storage: could not securely save the Databricks token cache";
+  assert.deepEqual(friendlyAgentLastError(unwrapped, null), {
+    severity: "generic",
+    copy: unwrapped,
   });
 });
 

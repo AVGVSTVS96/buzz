@@ -180,77 +180,26 @@ pub(super) async fn discover_databricks_models(
     let redaction_env = redaction_env_with_value(env, "DATABRICKS_TOKEN", &api_key);
     let oauth_cache_dir = crate::build_identity::demo_agent_oauth_cache_dir()?;
 
-    let entries = match buzz_agent_pkg::discover_databricks_models_with_cache_dir(
-        &config,
-        oauth_cache_dir.as_deref(),
-    )
-    .await
-    {
-        Ok(entries) => entries,
-        Err(buzz_agent_pkg::AgentError::LlmAuth(_)) if should_start_interactive_auth(&api_key) => {
-            let _auth = AUTH_GATE.lock().await;
-            match buzz_agent_pkg::discover_databricks_models_with_cache_dir(
+    let entries = discover_entries_or_sign_in(
+        || {
+            buzz_agent_pkg::discover_databricks_models_with_cache_dir(
                 &config,
                 oauth_cache_dir.as_deref(),
             )
-            .await
-            {
-                // A peer sign-in under the gate already succeeded.
-                Ok(entries) => entries,
-                Err(buzz_agent_pkg::AgentError::LlmAuth(_)) => {
-                    // Passive surfaces suppress the browser while a recent
-                    // failure/cancel is cooling down; the explicit picker path
-                    // always launches (and clears any stale cooldown).
-                    if !AUTH_COOLDOWNS.permits_launch(auth_intent, &host, Instant::now()) {
-                        return Err(databricks_sign_in_required_error());
-                    }
-                    run_interactive_databricks_auth(
-                        buzz_agent_pkg::authenticate_databricks_with_cache_dir(
-                            &host,
-                            oauth_cache_dir.as_deref(),
-                        ),
-                        AUTH_FLOW_TIMEOUT,
-                        &AUTH_COOLDOWNS,
-                        &host,
-                        &redaction_env,
-                    )
-                    .await?;
-                    buzz_agent_pkg::discover_databricks_models_with_cache_dir(
-                        &config,
-                        oauth_cache_dir.as_deref(),
-                    )
-                    .await
-                    .map_err(|error| {
-                        format_redacted_error(
-                            "Databricks model discovery failed after sign-in",
-                            &error,
-                            &redaction_env,
-                        )
-                    })?
-                }
-                Err(error) => {
-                    return Err(format_redacted_error(
-                        "Databricks model discovery failed",
-                        &error,
-                        &redaction_env,
-                    ));
-                }
-            }
-        }
-        Err(buzz_agent_pkg::AgentError::LlmAuth(error)) if !api_key.is_empty() => {
-            return Err(databricks_static_token_error(&error, &redaction_env));
-        }
-        Err(buzz_agent_pkg::AgentError::LlmAuth(_)) => {
-            return Err(databricks_sign_in_required_error());
-        }
-        Err(error) => {
-            return Err(format_redacted_error(
-                "Databricks model discovery failed",
-                &error,
-                &redaction_env,
-            ));
-        }
-    };
+        },
+        || {
+            buzz_agent_pkg::authenticate_databricks_with_cache_dir(
+                &host,
+                oauth_cache_dir.as_deref(),
+            )
+        },
+        &api_key,
+        auth_intent,
+        &host,
+        &AUTH_COOLDOWNS,
+        &redaction_env,
+    )
+    .await?;
 
     databricks_models_response(
         provider_name,
@@ -259,6 +208,78 @@ pub(super) async fn discover_databricks_models(
         parsed_filter.as_ref(),
     )
     .map(Some)
+}
+
+/// Resolve the catalog, starting interactive sign-in only for an
+/// authentication failure. Every other failure is reported without opening a
+/// browser — including `LlmCredentialStorage`, which another sign-in cannot
+/// repair. `discover` and `authenticate` are injected (production passes the
+/// buzz-agent entry points) so this policy is unit-testable without a
+/// workspace or a live browser.
+pub(super) async fn discover_entries_or_sign_in<D, DFut, A, AFut>(
+    discover: D,
+    authenticate: A,
+    api_key: &str,
+    auth_intent: DatabricksAuthIntent,
+    host: &str,
+    cooldowns: &AuthCooldown,
+    redaction_env: &BTreeMap<String, String>,
+) -> Result<Vec<buzz_agent_pkg::ModelEntry>, String>
+where
+    D: Fn() -> DFut,
+    DFut: std::future::Future<
+        Output = Result<Vec<buzz_agent_pkg::ModelEntry>, buzz_agent_pkg::AgentError>,
+    >,
+    A: FnOnce() -> AFut,
+    AFut: std::future::Future<Output = Result<(), buzz_agent_pkg::AgentError>>,
+{
+    match discover().await {
+        Ok(entries) => Ok(entries),
+        Err(buzz_agent_pkg::AgentError::LlmAuth(_)) if should_start_interactive_auth(api_key) => {
+            let _auth = AUTH_GATE.lock().await;
+            match discover().await {
+                // A peer sign-in under the gate already succeeded.
+                Ok(entries) => Ok(entries),
+                Err(buzz_agent_pkg::AgentError::LlmAuth(_)) => {
+                    // Passive surfaces suppress the browser while a recent
+                    // failure/cancel is cooling down; the explicit picker path
+                    // always launches (and clears any stale cooldown).
+                    if !cooldowns.permits_launch(auth_intent, host, Instant::now()) {
+                        return Err(databricks_sign_in_required_error());
+                    }
+                    run_interactive_databricks_auth(
+                        authenticate(),
+                        AUTH_FLOW_TIMEOUT,
+                        cooldowns,
+                        host,
+                        redaction_env,
+                    )
+                    .await?;
+                    discover().await.map_err(|error| {
+                        format_redacted_error(
+                            "Databricks model discovery failed after sign-in",
+                            &error,
+                            redaction_env,
+                        )
+                    })
+                }
+                Err(error) => Err(format_redacted_error(
+                    "Databricks model discovery failed",
+                    &error,
+                    redaction_env,
+                )),
+            }
+        }
+        Err(buzz_agent_pkg::AgentError::LlmAuth(error)) if !api_key.is_empty() => {
+            Err(databricks_static_token_error(&error, redaction_env))
+        }
+        Err(buzz_agent_pkg::AgentError::LlmAuth(_)) => Err(databricks_sign_in_required_error()),
+        Err(error) => Err(format_redacted_error(
+            "Databricks model discovery failed",
+            &error,
+            redaction_env,
+        )),
+    }
 }
 
 /// When a catalog query fails, Desktop reports the catalog error to the UI and

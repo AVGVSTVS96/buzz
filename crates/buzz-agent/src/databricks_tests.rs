@@ -72,6 +72,40 @@ async fn strict_headless_empty_never_networks_or_browses() {
 }
 
 #[tokio::test]
+async fn strict_discovery_reports_storage_failure_not_sign_in() {
+    let server = Server::start(true, |base, request| match request.path.as_str() {
+        "/oidc/.well-known/oauth-authorization-server" => discovery(base),
+        "/token" => Reply::Json(
+            200,
+            json!({"access_token":"fresh","refresh_token":"synthetic-refresh","expires_in":3600}),
+        ),
+        _ => panic!("unexpected request {request:?}"),
+    })
+    .await;
+    let root = tempfile::tempdir().unwrap();
+    seed(root.path(), &server.base, "databricks-strict", "old", true);
+    let opener = Arc::new(Opener::default());
+    let c = strict(&server, root.path(), opener.clone());
+    // A directory at the cache filename lets the refresh grant succeed but
+    // makes the atomic rename of the refreshed token fail.
+    let cache = std::fs::read_dir(root.path().join("databricks-strict"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .unwrap();
+    std::fs::remove_file(&cache).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+
+    let Err(AgentError::LlmCredentialStorage(message)) = c.discover_models(None).await else {
+        panic!("a storage failure must not be reported as authentication required");
+    };
+    assert!(message.contains("could not securely save"), "{message}");
+    assert_eq!(server.count("/token"), 1);
+    assert_eq!(server.count("/api/"), 0);
+    assert!(opener.urls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn strict_rejects_discovered_endpoints_before_grants_or_browser() {
     let sink = Server::start(true, |_, _| {
         Reply::Json(200, json!({"access_token":"wrong"}))

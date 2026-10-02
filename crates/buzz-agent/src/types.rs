@@ -568,6 +568,11 @@ pub enum AgentError {
     InvalidParams(String),
     Llm(String),
     LlmAuth(String),
+    /// A valid OAuth credential could not be stored with owner-only
+    /// protection. Kept apart from [`Self::LlmAuth`], which callers answer by
+    /// starting another sign-in: that cannot repair storage, so they must stop
+    /// and show this message instead.
+    LlmCredentialStorage(String),
     LlmModelNotFound(String),
     /// The provider rejected the request because the input exceeded the
     /// model's context window (an HTTP 400 whose body names a context-length
@@ -595,6 +600,7 @@ impl std::fmt::Display for AgentError {
             Self::InvalidParams(s) => write!(f, "invalid params: {s}"),
             Self::Llm(s) => write!(f, "llm: {s}"),
             Self::LlmAuth(s) => write!(f, "llm auth: {s}"),
+            Self::LlmCredentialStorage(s) => write!(f, "llm credential storage: {s}"),
             Self::LlmModelNotFound(s) => write!(f, "llm model not found: {s}"),
             Self::LlmContextExceeded(s) => write!(f, "llm context exceeded: {s}"),
             Self::UnsupportedImageInput(s) => write!(f, "llm image input unsupported: {s}"),
@@ -612,6 +618,7 @@ impl AgentError {
             Self::InvalidParams(_) => -32602,
             Self::LlmAuth(_) => -32001,
             Self::LlmModelNotFound(_) => -32002,
+            Self::LlmCredentialStorage(_) => -32003,
             _ => -32000,
         }
     }

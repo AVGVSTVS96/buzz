@@ -216,20 +216,21 @@ impl From<AuthError> for AgentError {
     /// Map a typed auth failure onto the crate error the [`TokenSource`] trait
     /// returns. Auth-decision failures become [`AgentError::LlmAuth`] so the
     /// caller's retry loop stops instead of hammering a rejected credential.
-    /// Storage failures are terminal too: retrying OAuth cannot fix the cache;
-    /// purely infrastructural failures (network, lock contention) become
-    /// [`AgentError::Llm`], matching the pre-coordinator classification of a
-    /// discovery/network error.
+    /// A storage failure is [`AgentError::LlmCredentialStorage`], never
+    /// `LlmAuth`: callers answer `LlmAuth` with another sign-in, which cannot
+    /// repair the cache. Purely infrastructural failures (network, lock
+    /// contention) become [`AgentError::Llm`], matching the pre-coordinator
+    /// classification of a discovery/network error.
     fn from(e: AuthError) -> Self {
         match e {
             AuthError::NetworkUnavailable | AuthError::LockTimeout => AgentError::Llm(e.message()),
+            AuthError::CacheUnavailable => AgentError::LlmCredentialStorage(e.message()),
             AuthError::NoCredential
             | AuthError::Denied
             | AuthError::TimedOut
             | AuthError::BrowserOpenFailed
             | AuthError::RefreshRejected
-            | AuthError::ExchangeFailed
-            | AuthError::CacheUnavailable => AgentError::LlmAuth(e.message()),
+            | AuthError::ExchangeFailed => AgentError::LlmAuth(e.message()),
         }
     }
 }
@@ -1155,11 +1156,12 @@ impl PkceOAuthTokenSource {
             match self.refresh(eps, &rt).await {
                 RefreshOutcome::Refreshed(fresh) => {
                     let result = self.finish(&mut state, fresh, intent, rejected);
-                    // Record recognized terminal failures (rejected-equal reissuance)
-                    // so a cross-process headless waiter can adopt them rather than
-                    // re-running the same dead refresh. Successes are shared through
-                    // the token cache — a waiter that wins the lock after us finds
-                    // the token via `cached_hit` without reaching the adoption check.
+                    // Record recognized terminal failures (rejected-equal reissuance,
+                    // failed secure save) so a cross-process headless waiter can adopt
+                    // them rather than re-running the same refresh. Successes are
+                    // shared through the token cache — a waiter that wins the lock
+                    // after us finds the token via `cached_hit` without reaching the
+                    // adoption check.
                     if let Err(ref e) = result {
                         write_attempt(attempt_path, intent, e.code(), rejected);
                     }
@@ -1444,7 +1446,8 @@ struct CooldownRecord {
 ///   recognized terminal failure, adopt it rather than re-running.
 /// - Completing attempts **write** a fresh record under the lock. Write
 ///   coverage: the headless no-browser arm (`RefreshRejected`/`NoCredential`),
-///   the refresh arm when `finish()` fails typed (rejected-equal reissuance),
+///   the refresh arm when `finish()` fails typed (rejected-equal reissuance
+///   or `CacheUnavailable`),
 ///   and the browser arm (all outcomes including `"ok"`). Omissions that are
 ///   intentionally not adoption-worthy: transient `Network` errors, discovery
 ///   failures (both non-terminal; next caller retries), and cache/refresh-

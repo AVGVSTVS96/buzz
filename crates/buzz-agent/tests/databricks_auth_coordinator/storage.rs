@@ -36,8 +36,11 @@ async fn successful_grants_report_cache_failure_without_publishing_a_token() {
         let err = src.acquire_with_intent(intent, None).await.unwrap_err();
         assert_eq!(err, AuthError::CacheUnavailable);
         assert_eq!(err.code(), "cache_unavailable");
-        let AgentError::LlmAuth(message) = AgentError::from(err) else {
-            panic!("storage failure must stop automatic inference retries");
+        let error = AgentError::from(err);
+        assert_eq!(error.json_rpc_code(), -32003);
+        assert!(error.to_string().starts_with("llm credential storage: "));
+        let AgentError::LlmCredentialStorage(message) = error else {
+            panic!("storage failure must not be classified as authentication");
         };
         assert!(message.contains("could not securely save"), "{message}");
         assert!(!message.contains("could not reach"), "{message}");

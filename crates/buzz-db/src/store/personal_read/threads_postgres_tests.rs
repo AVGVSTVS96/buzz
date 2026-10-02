@@ -473,6 +473,79 @@ impl ThreadReadSummary {
 
 #[tokio::test]
 #[ignore = "requires Postgres"]
+async fn thread_on_a_never_unread_root_is_selectable_and_readable_by_itself() {
+    let (db, pool, community, channel, actor, root) = fixture().await;
+    let base = root.created_at.as_secs();
+    let mention = || vec![Tag::parse(["p", &actor.public_key().to_hex()]).unwrap()];
+    // A diff is never unread, not even one addressed to the actor.
+    let diff = EventBuilder::new(Kind::Custom(40008), "a diff")
+        .tags(mention())
+        .custom_created_at(nostr::Timestamp::from(base + 1))
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+    db.insert_event(community, &diff, Some(channel))
+        .await
+        .unwrap();
+    let on_diff = reply(&db, &pool, community, channel, &diff, base + 10, mention()).await;
+    let elsewhere = reply(&db, &pool, community, channel, &root, base + 20, mention()).await;
+
+    let row = sidebar(&db, community, &actor).await;
+    assert_eq!(exact(&row.unread), Some(3), "the root and two replies");
+    assert_eq!(row.threads.items.len(), 2);
+    let listed = &row.threads.items[1];
+    assert_eq!(listed.root_id, diff.id.to_hex());
+    assert_eq!(listed.latest_reply_id, on_diff.id.to_hex());
+
+    // The listed thread is a usable context; the diff stays uncounted.
+    let thread = ReadTarget {
+        channel_id: channel,
+        root_id: Some(listed.root_id.clone()),
+    };
+    let timeline = ReadTarget {
+        channel_id: channel,
+        root_id: None,
+    };
+    let queries = [(&thread, &on_diff), (&timeline, &diff)].map(|(target, message)| ContextQuery {
+        target: target.clone(),
+        message_ids: vec![message.id.to_hex()],
+    });
+    let page = db
+        .personal_read_contexts(
+            community,
+            &actor.public_key(),
+            DEFAULT_RETENTION_SECONDS,
+            &queries,
+        )
+        .await
+        .unwrap();
+    let wire = serde_json::to_value(&page).unwrap();
+    assert_eq!(
+        wire["contexts"][0]["messages"][0],
+        serde_json::json!({"message_id":on_diff.id.to_hex(),"status":"unread","reason":"mention"})
+    );
+    assert_eq!(wire["contexts"][1]["messages"][0]["status"], "not_counted");
+
+    // The diff is still no anchor; the listed reply reads its thread alone.
+    let through_diff = ReadIntent::MarkThrough {
+        target: thread,
+        message_id: diff.id.to_hex(),
+    };
+    assert_eq!(
+        apply(&db, community, &actor, through_diff).await,
+        IntentOutcome::Blocked
+    );
+    assert_eq!(
+        apply(&db, community, &actor, listed.clone_target(channel)).await,
+        IntentOutcome::Applied
+    );
+    let row = sidebar(&db, community, &actor).await;
+    assert_eq!(exact(&row.unread), Some(2));
+    assert_eq!(row.threads.items.len(), 1);
+    assert_eq!(row.threads.items[0].latest_reply_id, elsewhere.id.to_hex());
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres"]
 async fn thread_summaries_are_incomplete_when_tag_evidence_could_hide_a_root() {
     let (db, pool, community, channel, actor, root) = fixture().await;
     join(&db, &pool, community, channel, &actor, &root).await;

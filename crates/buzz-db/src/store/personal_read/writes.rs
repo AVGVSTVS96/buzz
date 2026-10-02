@@ -86,20 +86,23 @@ struct Message {
     root: Option<Vec<u8>>,
 }
 
+/// A channel event and its canonical ancestry. `kinds` bounds the lookup: an
+/// anchor must be a kind that can be unread; a thread root need not be.
 async fn message(
     conn: &mut PgConnection,
     community: CommunityId,
     channel: Uuid,
     id: &[u8],
+    kinds: Option<&[i32]>,
 ) -> Result<Option<Message>> {
     let row = sqlx::query(
         "SELECT e.id, e.created_at, e.tags, tm.root_event_id
          FROM events e LEFT JOIN thread_metadata tm ON tm.community_id=e.community_id
              AND tm.event_created_at=e.created_at AND tm.event_id=e.id AND tm.channel_id=e.channel_id
          WHERE e.community_id=$1 AND e.channel_id=$2 AND e.id=$3
-             AND e.kind=ANY($4)
+             AND ($4::int4[] IS NULL OR e.kind=ANY($4))
          LIMIT 1",
-    ).bind(community.as_uuid()).bind(channel).bind(id).bind(ELIGIBLE_KINDS.as_slice()).fetch_optional(&mut *conn).await?;
+    ).bind(community.as_uuid()).bind(channel).bind(id).bind(kinds).fetch_optional(&mut *conn).await?;
     row.map(|row| {
         let timestamp: DateTime<Utc> = row.try_get("created_at")?;
         let id: Vec<u8> = row.try_get("id")?;
@@ -160,9 +163,10 @@ pub(super) async fn valid_target(
         return Ok(None);
     }
     if !root.is_empty() {
-        // Deleted roots still own living replies. Validate actual ancestry,
-        // not absence of metadata: a missing index row is not a top-level proof.
-        let Some(msg) = message(conn, community, target.channel_id, &root).await? else {
+        // Deleted roots still own living replies, and so do roots of a kind
+        // that is never unread itself (a diff). Validate actual ancestry, not
+        // absence of metadata: a missing index row is not a top-level proof.
+        let Some(msg) = message(conn, community, target.channel_id, &root, None).await? else {
             return Ok(None);
         };
         if msg.root.as_ref().is_some_and(|r| r != &msg.id) {
@@ -204,7 +208,15 @@ pub(super) async fn apply(
             let Some(root) = valid_target(conn, community, actor, target).await? else {
                 return Ok(IntentOutcome::Blocked);
             };
-            let Some(msg) = message(conn, community, target.channel_id, &id).await? else {
+            let Some(msg) = message(
+                conn,
+                community,
+                target.channel_id,
+                &id,
+                Some(&ELIGIBLE_KINDS),
+            )
+            .await?
+            else {
                 return Ok(IntentOutcome::Blocked);
             };
             let is_reply = msg.root.as_ref().is_some_and(|r| r != &msg.id);

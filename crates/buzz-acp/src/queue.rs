@@ -154,6 +154,50 @@ impl BatchEvent {
     pub fn reply_thread(&self) -> String {
         reply_thread(&self.event, self.edit.as_ref())
     }
+
+    /// See [`ReplyRoute`].
+    pub fn reply_route(&self) -> ReplyRoute {
+        ReplyRoute {
+            root_event_id: self
+                .routing_thread_tags()
+                .root_event_id
+                .map(|root| root.to_ascii_lowercase()),
+            thread: self.reply_thread(),
+        }
+    }
+}
+
+/// Where a turn's `<context>` sends ordinary replies, as far as the
+/// native-steer guard needs to know.
+///
+/// A native steer adds a message to a running turn without a new `<context>`,
+/// so the turn keeps replying where its own `<context>` points. A message may
+/// be steered natively only when that destination is also right for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyRoute {
+    /// Routed thread root, lowercase; `None` for a top-level message.
+    root_event_id: Option<String>,
+    /// See [`reply_thread`].
+    thread: String,
+}
+
+impl ReplyRoute {
+    /// Whether a turn whose `<context>` was rendered for `self` also replies
+    /// correctly to `incoming`.
+    ///
+    /// In a channel, a top-level message is answered in a new thread rooted at
+    /// that message, so two messages share a destination only when they share
+    /// a [`reply_thread`]. In a DM, a top-level message's `<context>` names no
+    /// reply target (see `format_prompt`): every top-level DM message replies
+    /// at the top of the same conversation. DM messages therefore share a
+    /// destination when they share a thread root, including none.
+    pub fn accepts_steer(&self, incoming: &ReplyRoute, is_dm: bool) -> bool {
+        if is_dm {
+            self.root_event_id == incoming.root_event_id
+        } else {
+            self.thread == incoming.thread
+        }
+    }
 }
 
 /// Why a batch's prior turn was cancelled — controls how `format_prompt`
@@ -241,9 +285,9 @@ pub struct EventQueue {
     in_flight_deadlines: HashMap<SessionScope, Instant>,
     /// Number of events in each in-flight batch (for expiry logging).
     in_flight_batch_sizes: HashMap<SessionScope, usize>,
-    /// Reply thread of each in-flight turn: the [`reply_thread`] of the batch
+    /// Reply route of each in-flight turn: the [`ReplyRoute`] of the batch
     /// event whose `<context>` routes the turn's replies (its last event).
-    in_flight_reply_threads: HashMap<SessionScope, String>,
+    in_flight_reply_routes: HashMap<SessionScope, ReplyRoute>,
     retry_after: HashMap<SessionScope, Instant>,
     /// Per-scope retry attempt counter for exponential backoff / dead-lettering.
     retry_counts: HashMap<SessionScope, u32>,
@@ -285,7 +329,7 @@ impl EventQueue {
             in_flight_scopes: HashSet::new(),
             in_flight_deadlines: HashMap::new(),
             in_flight_batch_sizes: HashMap::new(),
-            in_flight_reply_threads: HashMap::new(),
+            in_flight_reply_routes: HashMap::new(),
             retry_after: HashMap::new(),
             retry_counts: HashMap::new(),
             dedup_mode,
@@ -433,7 +477,7 @@ impl EventQueue {
             );
             self.in_flight_scopes.remove(&scope);
             self.in_flight_deadlines.remove(&scope);
-            self.in_flight_reply_threads.remove(&scope);
+            self.in_flight_reply_routes.remove(&scope);
             // Recover any withheld goose-native steer events for the expired
             // scope back to the queue front so normal dispatch delivers
             // them. Unlike the in-flight batch above (already delivered to a
@@ -477,7 +521,7 @@ impl EventQueue {
                             .insert(scope.clone(), now + self.in_flight_deadline);
                         self.in_flight_batch_sizes
                             .insert(scope.clone(), cancelled.len());
-                        self.record_in_flight_reply_thread(&scope, &cancelled);
+                        self.record_in_flight_reply_route(&scope, &cancelled);
                         return Some(FlushBatch {
                             channel_id: scope.channel_id(),
                             scope,
@@ -515,7 +559,7 @@ impl EventQueue {
             .insert(scope.clone(), now + self.in_flight_deadline);
         self.in_flight_batch_sizes
             .insert(scope.clone(), events.len());
-        self.record_in_flight_reply_thread(&scope, &events);
+        self.record_in_flight_reply_route(&scope, &events);
 
         // Merge any cancelled events stored by requeue_as_cancelled().
         let cancelled_events = self.cancelled_batches.remove(&scope).unwrap_or_default();
@@ -568,7 +612,7 @@ impl EventQueue {
         self.in_flight_scopes.remove(&scope);
         self.in_flight_deadlines.remove(&scope);
         self.in_flight_batch_sizes.remove(&scope);
-        self.in_flight_reply_threads.remove(&scope);
+        self.in_flight_reply_routes.remove(&scope);
         let now = Instant::now();
         match self.retry_after.get(&scope) {
             // Active throttle → scope was requeued; keep retry_counts intact.
@@ -787,7 +831,7 @@ impl EventQueue {
             );
             self.in_flight_scopes.remove(&scope);
             self.in_flight_deadlines.remove(&scope);
-            self.in_flight_reply_threads.remove(&scope);
+            self.in_flight_reply_routes.remove(&scope);
             // Symmetric with the flush_next expiry block: recover withheld
             // goose-native steer events for the expired scope so they are
             // not permanently orphaned in the side table.
@@ -943,25 +987,24 @@ impl EventQueue {
         self.in_flight_scopes.contains(&scope.into_scope())
     }
 
-    /// The reply thread of the turn in flight for `scope`, if any.
+    /// The reply route of the turn in flight for `scope`, if any.
     ///
-    /// A native steer adds a message to a running turn without a new
-    /// `<context>`, so the turn keeps replying where its own `<context>`
-    /// points. A message whose [`reply_thread`] differs (possible under the
-    /// channel session policy) must not be steered natively; the cancel+merge
-    /// path re-dispatches it with its own full `<context>`.
-    pub fn in_flight_reply_thread(&self, scope: &SessionScope) -> Option<&str> {
-        self.in_flight_reply_threads.get(scope).map(String::as_str)
+    /// A message whose route the running turn does not accept (see
+    /// [`ReplyRoute::accepts_steer`]; possible under the channel session
+    /// policy) must not be steered natively; the cancel+merge path
+    /// re-dispatches it with its own full `<context>`.
+    pub fn in_flight_reply_route(&self, scope: &SessionScope) -> Option<&ReplyRoute> {
+        self.in_flight_reply_routes.get(scope)
     }
 
-    fn record_in_flight_reply_thread(&mut self, scope: &SessionScope, events: &[BatchEvent]) {
+    fn record_in_flight_reply_route(&mut self, scope: &SessionScope, events: &[BatchEvent]) {
         match events.last() {
             Some(last) => {
-                self.in_flight_reply_threads
-                    .insert(scope.clone(), last.reply_thread());
+                self.in_flight_reply_routes
+                    .insert(scope.clone(), last.reply_route());
             }
             None => {
-                self.in_flight_reply_threads.remove(scope);
+                self.in_flight_reply_routes.remove(scope);
             }
         }
     }
@@ -1216,8 +1259,8 @@ pub(crate) fn reaction_target_id(event: &Event) -> String {
 /// the routed event itself when it is top-level (a reply opens a thread
 /// rooted there). Lowercase, so equivalent hex spellings compare equal.
 ///
-/// This is the thread-session key, and it decides whether a message may be
-/// steered natively into a running turn (see [`EventQueue::in_flight_reply_thread`]).
+/// This is the thread-session key. Outside DMs it also decides whether a
+/// message may be steered natively into a running turn (see [`ReplyRoute`]).
 pub(crate) fn reply_thread(event: &Event, edit: Option<&ResolvedEdit>) -> String {
     routing_thread_tags(event, edit)
         .root_event_id

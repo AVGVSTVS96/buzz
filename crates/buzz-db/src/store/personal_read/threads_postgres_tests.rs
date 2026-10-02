@@ -16,10 +16,21 @@ async fn post(
     at: u64,
     tags: Vec<Tag>,
 ) -> nostr::Event {
+    post_as(db, community, channel, &Keys::generate(), at, tags).await
+}
+
+async fn post_as(
+    db: &Db,
+    community: CommunityId,
+    channel: Uuid,
+    author: &Keys,
+    at: u64,
+    tags: Vec<Tag>,
+) -> nostr::Event {
     let event = EventBuilder::new(Kind::Custom(9), format!("message at {at}"))
         .tags(tags)
         .custom_created_at(nostr::Timestamp::from(at))
-        .sign_with_keys(&Keys::generate())
+        .sign_with_keys(author)
         .unwrap();
     db.insert_event(community, &event, Some(channel))
         .await
@@ -27,7 +38,7 @@ async fn post(
     event
 }
 
-/// A canonical reply: stored event plus its thread metadata.
+/// A canonical reply to the root: stored event plus its thread metadata.
 async fn reply(
     db: &Db,
     pool: &PgPool,
@@ -38,11 +49,37 @@ async fn reply(
     tags: Vec<Tag>,
 ) -> nostr::Event {
     let event = post(db, community, channel, at, tags).await;
+    link(pool, community, channel, root, &event).await;
+    event
+}
+
+async fn link(
+    pool: &PgPool,
+    community: CommunityId,
+    channel: Uuid,
+    root: &nostr::Event,
+    event: &nostr::Event,
+) {
     sqlx::query("INSERT INTO thread_metadata (community_id,event_id,event_created_at,channel_id,root_event_id,parent_event_id,depth)
         VALUES ($1,$2,to_timestamp($3),$4,$5,$5,1)")
-        .bind(community.as_uuid()).bind(event.id.as_bytes().as_slice()).bind(at as f64)
+        .bind(community.as_uuid()).bind(event.id.as_bytes().as_slice())
+        .bind(event.created_at.as_secs() as f64)
         .bind(channel).bind(root.id.as_bytes().as_slice()).execute(pool).await.unwrap();
-    event
+}
+
+/// Put the actor in the root's conversation, so that plain replies to it
+/// count. The actor's own reply is never unread.
+async fn join(
+    db: &Db,
+    pool: &PgPool,
+    community: CommunityId,
+    channel: Uuid,
+    actor: &Keys,
+    root: &nostr::Event,
+) {
+    let at = root.created_at.as_secs();
+    let own = post_as(db, community, channel, actor, at, vec![]).await;
+    link(pool, community, channel, root, &own).await;
 }
 
 async fn sidebar(db: &Db, community: CommunityId, actor: &Keys) -> ChannelReadSummary {
@@ -83,6 +120,7 @@ fn exact(count: &ReadCount) -> Option<u32> {
 #[ignore = "requires Postgres"]
 async fn mark_channel_read_covers_every_thread_through_a_reply_anchor() {
     let (db, pool, community, channel, actor, root) = fixture().await;
+    join(&db, &pool, community, channel, &actor, &root).await;
     let base = root.created_at.as_secs();
     let first = reply(&db, &pool, community, channel, &root, base + 10, vec![]).await;
     post(&db, community, channel, base + 20, vec![]).await;
@@ -284,6 +322,7 @@ async fn mark_channel_read_validates_anchor_without_ancestry_and_stays_independe
 #[ignore = "requires Postgres"]
 async fn absent_whole_channel_cut_never_covers_epoch_zero_replies() {
     let (db, pool, community, channel, actor, root) = fixture().await;
+    join(&db, &pool, community, channel, &actor, &root).await;
     reply(&db, &pool, community, channel, &root, 0, vec![]).await;
     // A channel row exists, with no whole-channel cut: NULL must stay NULL.
     apply(
@@ -319,7 +358,9 @@ async fn thread_summaries_order_cap_anchor_and_sum_to_reply_unread() {
     let base = fixture_root.created_at.as_secs() + 1;
     let mut roots = Vec::new();
     for i in 0..6 {
-        roots.push(post(&db, community, channel, base + i, vec![]).await);
+        let root = post(&db, community, channel, base + i, vec![]).await;
+        join(&db, &pool, community, channel, &actor, &root).await;
+        roots.push(root);
     }
     let newest_root = roots.last().unwrap().clone();
     apply(
@@ -386,7 +427,6 @@ async fn thread_summaries_order_cap_anchor_and_sum_to_reply_unread() {
     );
     let third = &row.threads.items[2];
     assert_eq!(exact(&third.unread), Some(3));
-    assert_eq!(exact(&third.attention), Some(1));
     assert_eq!(third.latest_reply_at, (base + 140) as i64);
     assert_eq!(
         third.latest_reply_id,
@@ -435,6 +475,7 @@ impl ThreadReadSummary {
 #[ignore = "requires Postgres"]
 async fn thread_summaries_are_incomplete_when_tag_evidence_could_hide_a_root() {
     let (db, pool, community, channel, actor, root) = fixture().await;
+    join(&db, &pool, community, channel, &actor, &root).await;
     let listed = reply(
         &db,
         &pool,

@@ -623,7 +623,9 @@ async fn personal_read_frontier_is_monotonic_and_rejects_malformed_anchors() {
 async fn personal_read_channel_and_thread_never_inherit_each_other() {
     let (db, pool, community, channel, actor, root) = fixture().await;
     let base = root.created_at.as_secs();
+    // Directed, so it counts outside the actor's conversations.
     let reply = EventBuilder::new(Kind::Custom(9), "unseen thread reply")
+        .tags([nostr::Tag::parse(["p", &actor.public_key().to_hex()]).unwrap()])
         .custom_created_at(nostr::Timestamp::from(base + 10))
         .sign_with_keys(&Keys::generate())
         .unwrap();
@@ -716,7 +718,9 @@ async fn personal_read_channel_and_thread_never_inherit_each_other() {
 async fn personal_read_contexts_bound_selectors_and_use_only_matching_frontiers() {
     let (db, pool, community, channel, actor, root) = fixture().await;
     let base = root.created_at.as_secs();
+    // A broadcast counts for every reader, in or out of the conversation.
     let reply = EventBuilder::new(Kind::Custom(9), "thread only")
+        .tags([nostr::Tag::parse(["broadcast", "1"]).unwrap()])
         .custom_created_at(nostr::Timestamp::from(base + 1))
         .sign_with_keys(&Keys::generate())
         .unwrap();
@@ -758,7 +762,7 @@ async fn personal_read_contexts_bound_selectors_and_use_only_matching_frontiers(
     assert_eq!(page["contexts"][0]["messages"][2]["status"], "unavailable");
     assert_eq!(page["contexts"][1]["messages"][0]["status"], "unavailable");
     assert_eq!(page["contexts"][1]["messages"][1]["status"], "unread");
-    assert_eq!(page["contexts"][1]["messages"][1]["attention"], false);
+    assert_eq!(page["contexts"][1]["messages"][1]["reason"], "broadcast");
     let accounts: i64 =
         sqlx::query_scalar("SELECT count(*) FROM personal_read_accounts WHERE community_id=$1")
             .bind(community.as_uuid())
@@ -912,7 +916,7 @@ async fn personal_read_context_author_horizon_unknown_ancestry_and_deletion() {
     )
     .unwrap();
     assert_eq!(page["contexts"][0]["messages"][0]["status"], "unread");
-    assert_eq!(page["contexts"][0]["messages"][0]["attention"], true);
+    assert_eq!(page["contexts"][0]["messages"][0]["reason"], "mention");
     assert_eq!(page["contexts"][0]["messages"][1]["status"], "unknown");
     sqlx::query(
         "UPDATE events SET created_at=created_at-interval '31 days' WHERE community_id=$1 AND id=$2",

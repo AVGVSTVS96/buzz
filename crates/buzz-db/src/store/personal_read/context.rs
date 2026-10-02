@@ -41,6 +41,8 @@ impl Db {
         let actor_bytes = actor.to_bytes();
         let account = read_account(&mut tx, retention_seconds).await?;
         let mut contexts = Vec::with_capacity(queries.len());
+        // Replies whose state turns on conversation membership, by position.
+        let mut pending = Vec::new();
         for query in queries {
             let root =
                 match writes::valid_target(&mut tx, community, &actor_bytes, &query.target).await {
@@ -80,7 +82,7 @@ impl Db {
                 "SELECT encode(e.id,'hex') AS id,e.kind,e.created_at,
                     e.deleted_at IS NOT NULL AS deleted,e.pubkey=$3 AS own,
                     CASE WHEN octet_length(e.tags::text)<=8192 THEN e.tags ELSE NULL END AS tags,
-                    tm.root_event_id,c.channel_type::text AS channel_type
+                    tm.root_event_id,tm.parent_event_id,c.channel_type::text AS channel_type
                  FROM events e JOIN channels c ON c.community_id=e.community_id AND c.id=e.channel_id
                  LEFT JOIN thread_metadata tm ON tm.community_id=e.community_id
                     AND tm.event_id=e.id AND tm.event_created_at=e.created_at AND tm.channel_id=e.channel_id
@@ -91,7 +93,6 @@ impl Db {
                 .into_iter()
                 .map(|row| Ok((row.try_get::<String, _>("id")?, row)))
                 .collect::<Result<_>>()?;
-            let mut participation = None;
             let mut messages = Vec::with_capacity(ids.len());
             for id in &query.message_ids {
                 let state = if let Some(row) = by_id.get(&id.to_ascii_lowercase()) {
@@ -129,32 +130,30 @@ impl Db {
                             } else if prefix.is_some_and(|p| created.timestamp() <= p) {
                                 MessageReadState::Read
                             } else {
-                                let directed = classification::directed(
+                                let reason = classification::reason(
                                     &row.try_get::<String, _>("channel_type")?,
                                     &actor.to_hex(),
                                     &tags,
                                 );
-                                if !directed && is_reply && participation.is_none() {
-                                    participation = Some(
-                                        participation::resolve(
-                                            &mut tx,
-                                            community,
-                                            &actor_bytes,
-                                            &[(query.target.channel_id, root.clone())],
-                                        )
-                                        .await?
-                                        .remove(&(query.target.channel_id, root.clone()))
-                                        .flatten(),
-                                    );
+                                // Membership outranks a broadcast and decides a
+                                // plain reply. A DM or mention needs no lookup.
+                                if is_reply
+                                    && !matches!(reason, Some(Reason::Direct | Reason::Mention))
+                                {
+                                    let parent: Option<Vec<u8>> = row.try_get("parent_event_id")?;
+                                    if let Some(parent) = parent {
+                                        pending.push((
+                                            contexts.len(),
+                                            messages.len(),
+                                            (query.target.channel_id, parent),
+                                        ));
+                                    }
                                 }
-                                MessageReadState::Unread {
-                                    attention: if directed {
-                                        Some(true)
-                                    } else if is_reply {
-                                        participation.flatten()
-                                    } else {
-                                        Some(false)
-                                    },
+                                // Provisional for a pending reply: see `settle`.
+                                if is_reply && reason.is_none() {
+                                    MessageReadState::Unknown
+                                } else {
+                                    MessageReadState::Unread { reason }
                                 }
                             }
                         }
@@ -173,6 +172,13 @@ impl Db {
                 through_timestamp: prefix,
                 messages,
             });
+        }
+        let targets: Vec<_> = pending.iter().map(|(.., key)| key.clone()).collect();
+        let members = participation::resolve(&mut tx, community, &actor_bytes, &targets).await?;
+        for (context, message, key) in pending {
+            if let ContextState::Available { messages, .. } = &mut contexts[context] {
+                settle(&mut messages[message].state, members.get(&key).copied());
+            }
         }
         tx.commit().await?;
         Ok(ContextPage { account, contexts })
@@ -205,5 +211,49 @@ impl Db {
         .bind(actor.to_bytes().as_slice())
         .fetch_all(&mut *conn)
         .await?)
+    }
+}
+
+/// Apply conversation membership to a pending reply's provisional state:
+/// `unknown` for a plain reply, `unread` with reason `broadcast` for a
+/// broadcast. An undecided lookup (`None`) leaves it as it is.
+fn settle(state: &mut MessageReadState, member: Option<bool>) {
+    match member {
+        Some(true) => {
+            *state = MessageReadState::Unread {
+                reason: Some(Reason::Conversation),
+            }
+        }
+        // A broadcast counts outside the actor's conversations too.
+        Some(false) if matches!(state, MessageReadState::Unknown) => {
+            *state = MessageReadState::NotCounted
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn membership_settles_a_pending_reply_and_an_undecided_lookup_fabricates_nothing() {
+        let broadcast = || MessageReadState::Unread {
+            reason: Some(Reason::Broadcast),
+        };
+        for (provisional, member, expected) in [
+            (MessageReadState::Unknown, Some(true), "conversation"),
+            (MessageReadState::Unknown, Some(false), "not_counted"),
+            (MessageReadState::Unknown, None, "unknown"),
+            (broadcast(), Some(true), "conversation"),
+            (broadcast(), Some(false), "broadcast"),
+            (broadcast(), None, "broadcast"),
+        ] {
+            let mut state = provisional;
+            settle(&mut state, member);
+            let wire = serde_json::to_value(&state).unwrap();
+            let got = wire["reason"].as_str().or(wire["status"].as_str());
+            assert_eq!(got, Some(expected), "{member:?}");
+        }
     }
 }

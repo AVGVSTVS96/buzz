@@ -80,7 +80,7 @@ pub enum ReadCount {
     },
     /// Incomplete evidence establishes no positive lower bound. No numeric value.
     Unknown,
-    /// More evidence exists or ancestry/participation could not be proved.
+    /// More evidence exists or ancestry/membership could not be proved.
     AtLeast {
         /// Proven lower bound, not a fabricated badge cap.
         value: u32,
@@ -112,12 +112,12 @@ pub struct ChannelReadSummary {
     pub archived: bool,
     /// Existing DM visibility preference (not an authorization decision).
     pub hidden: bool,
-    /// Ordinary unread lower bound or exact count.
+    /// Unread messages that count: every top-level message, and a reply only
+    /// when it has a [`Reason`]. Other replies are not unread at all.
     pub unread: ReadCount,
-    /// Directed unread: DM, direct mention/broadcast, or a reply in a thread
-    /// with a live eligible message authored by this actor (including the root).
-    /// This is not Desktop notification eligibility: follows, mutes and prior
-    /// mentions elsewhere in a thread do not change this count.
+    /// The unread subset with a [`Reason`]: everything but ordinary top-level
+    /// messages. This is not Desktop notification eligibility: follows and
+    /// mutes do not change this count.
     pub attention: ReadCount,
     /// Latest eligible nondeleted event ID, independent of read progress, author,
     /// and the unread-tracking horizon.
@@ -141,15 +141,14 @@ pub struct ThreadSummaries {
     pub complete: bool,
 }
 
-/// Unread replies in one canonical thread. No conversation bytes.
+/// Unread replies in one canonical thread; every one has a [`Reason`]. No
+/// conversation bytes.
 #[derive(Debug, Serialize)]
 pub struct ThreadReadSummary {
     /// Canonical thread-root event ID.
     pub root_id: String,
     /// Unread replies in this thread (same definition as the row count).
     pub unread: ReadCount,
-    /// Directed subset, with the same definition as the row's attention.
-    pub attention: ReadCount,
     /// Newest observed unread reply: a valid thread mark_through anchor.
     pub latest_reply_id: String,
     /// Author time (Unix seconds) of latest_reply_id.
@@ -183,22 +182,39 @@ pub struct ContextQuery {
     pub message_ids: Vec<String>,
 }
 
+/// Why an unread message is directed at the actor: the first that holds.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Reason {
+    /// Its channel is a DM.
+    Direct,
+    /// It tags the actor with `p`.
+    Mention,
+    /// It replies to a message the actor wrote, or to one the actor also
+    /// replied to, in the same channel. Only live eligible messages qualify.
+    Conversation,
+    /// It carries `broadcast=1`.
+    Broadcast,
+}
+
 /// Read progress and eligibility for one concrete message, not a public receipt.
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum MessageReadState {
     /// Missing, inaccessible, or outside the requested context. No existence oracle.
     Unavailable,
-    /// Evidence cannot safely establish ancestry or eligibility.
+    /// Evidence cannot safely establish ancestry, eligibility or membership.
     Unknown,
-    /// Ineligible for unread counts (own, deleted, auxiliary, or outside horizon).
+    /// Not unread: own, deleted, auxiliary, outside the horizon, or a reply
+    /// with no [`Reason`].
     NotCounted,
     /// Covered by this context's frontier.
     Read,
-    /// Eligible and beyond this context's frontier.
+    /// Counts, and is beyond this context's frontier.
     Unread {
-        /// True for proven directed attention; null means participation unproved.
-        attention: Option<bool>,
+        /// Null only for an ordinary top-level message. A broadcast reply whose
+        /// membership is undecided reports `broadcast`.
+        reason: Option<Reason>,
     },
 }
 

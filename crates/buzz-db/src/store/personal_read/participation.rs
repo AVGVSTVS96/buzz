@@ -1,4 +1,4 @@
-//! Bounded actor participation evidence from the existing conversation store.
+//! Conversation membership from the existing thread store, bounded by time.
 use super::model::ELIGIBLE_KINDS;
 use crate::Result;
 use buzz_core::CommunityId;
@@ -6,24 +6,26 @@ use sqlx::{Acquire, PgConnection, Row};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-const MAX_THREAD_SCAN: i64 = 256;
 // Bound multiplicative work independently of the unread evidence window.
-const MAX_ROOTS: usize = 1024;
+const MAX_PARENTS: usize = 1024;
 
-/// Positive evidence survives truncation; absence requires exhausting the thread.
-/// Participation is independent of unread retention and read frontiers.
+/// Whether each `(channel, parent)` is one of the actor's conversations: the
+/// actor wrote the parent or has a reply to it. Only live eligible messages
+/// qualify. An absent key is undecided: past the target cap, or the statement
+/// deadline expired. Membership is independent of unread retention and read
+/// frontiers.
 pub(super) async fn resolve(
     conn: &mut PgConnection,
     community: CommunityId,
     actor: &[u8],
     targets: &[(Uuid, Vec<u8>)],
-) -> Result<HashMap<(Uuid, Vec<u8>), Option<bool>>> {
+) -> Result<HashMap<(Uuid, Vec<u8>), bool>> {
     if targets.is_empty() {
         return Ok(HashMap::new());
     }
     let targets = select_targets(targets);
     let channels: Vec<_> = targets.iter().map(|(channel, _)| *channel).collect();
-    let roots: Vec<_> = targets.iter().map(|(_, root)| root.clone()).collect();
+    let parents: Vec<_> = targets.iter().map(|(_, parent)| parent.clone()).collect();
     // Optional inference must not abort authoritative unread/frontier reads.
     // A nested transaction is a savepoint; rollback also restores the caller's
     // statement timeout. No state is written in this read-only inference.
@@ -34,33 +36,30 @@ pub(super) async fn resolve(
     sqlx::query("SET LOCAL jit = off")
         .execute(&mut *budget)
         .await?;
+    // Exact: a row cap would lose a real member behind a busy parent's other
+    // replies. LATERAL ... LIMIT 1 keeps the work on the replies under the
+    // requested parents; a plain EXISTS may be hashed over the whole tenant.
     let result = sqlx::query(
-        "SELECT t.channel_id,t.root_id,
-            CASE WHEN COALESCE(root.participated,false) OR COALESCE(replies.participated,false)
-                THEN true WHEN replies.candidates <= $5 THEN false ELSE NULL END AS participated
-         FROM unnest($3::uuid[],$4::bytea[]) t(channel_id,root_id)
+        "SELECT t.channel_id,t.parent_id,(own.hit OR replied.hit) IS TRUE AS member
+         FROM unnest($3::uuid[],$4::bytea[]) t(channel_id,parent_id)
          LEFT JOIN LATERAL (
-            SELECT e.pubkey=$2 AND e.deleted_at IS NULL AND e.kind=ANY($6) AS participated
-            FROM events e WHERE e.community_id=$1 AND e.channel_id=t.channel_id AND e.id=t.root_id
+            SELECT e.pubkey=$2 AND e.deleted_at IS NULL AND e.kind=ANY($5) AS hit
+            FROM events e WHERE e.community_id=$1 AND e.channel_id=t.channel_id AND e.id=t.parent_id
             ORDER BY e.created_at DESC LIMIT 1
-         ) root ON true
+         ) own ON true
          LEFT JOIN LATERAL (
-            WITH candidates AS MATERIALIZED (
-                SELECT event_created_at,event_id FROM thread_metadata
-                WHERE community_id=$1 AND root_event_id=t.root_id
-                ORDER BY event_created_at DESC,event_id LIMIT $5+1
-            )
-            SELECT count(*) AS candidates,
-                bool_or(e.pubkey=$2 AND e.deleted_at IS NULL AND e.kind=ANY($6)) AS participated
-            FROM candidates tm LEFT JOIN events e ON e.community_id=$1
+            SELECT true AS hit FROM thread_metadata tm JOIN events e ON e.community_id=$1
                 AND e.channel_id=t.channel_id AND e.created_at=tm.event_created_at AND e.id=tm.event_id
-         ) replies ON true",
+            WHERE tm.community_id=$1 AND tm.channel_id=t.channel_id AND tm.parent_event_id=t.parent_id
+                AND e.pubkey=$2 AND e.deleted_at IS NULL AND e.kind=ANY($5)
+                AND own.hit IS NOT TRUE
+            LIMIT 1
+         ) replied ON true",
     )
     .bind(community.as_uuid())
     .bind(actor)
     .bind(channels)
-    .bind(roots)
-    .bind(MAX_THREAD_SCAN)
+    .bind(parents)
     .bind(ELIGIBLE_KINDS.as_slice())
     .fetch_all(&mut *budget)
     .await;
@@ -77,8 +76,8 @@ pub(super) async fn resolve(
     rows.into_iter()
         .map(|row| {
             Ok((
-                (row.try_get("channel_id")?, row.try_get("root_id")?),
-                row.try_get("participated")?,
+                (row.try_get("channel_id")?, row.try_get("parent_id")?),
+                row.try_get("member")?,
             ))
         })
         .collect()
@@ -90,7 +89,7 @@ fn select_targets(targets: &[(Uuid, Vec<u8>)]) -> Vec<(Uuid, Vec<u8>)> {
     let mut targets = targets.to_vec();
     targets.sort_unstable();
     targets.dedup();
-    targets.truncate(MAX_ROOTS);
+    targets.truncate(MAX_PARENTS);
     targets
 }
 
@@ -99,8 +98,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn target_selection_caps_unique_roots_independently_of_sql_timeout() {
-        // Literal contract boundaries deliberately do not derive from MAX_ROOTS.
+    fn target_selection_caps_unique_parents_independently_of_sql_timeout() {
+        // Literal contract boundaries deliberately do not derive from MAX_PARENTS.
         for count in [0_u32, 1, 1023, 1024, 1025] {
             let unique: Vec<_> = (0..count)
                 .map(|i| (Uuid::nil(), i.to_be_bytes().to_vec()))

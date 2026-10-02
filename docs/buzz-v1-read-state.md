@@ -68,19 +68,20 @@ Absence says nothing else about access to an open channel.
 
 ```json
 {"items":[{"root_id":"<64-hex>","unread":{"status":"exact","value":2},
-  "attention":{"status":"exact","value":0},"latest_reply_id":"<64-hex>",
-  "latest_reply_at":1700000000}],"complete":true}
+  "latest_reply_id":"<64-hex>","latest_reply_at":1700000000}],"complete":true}
 ```
 
-Items are canonical roots with unread eligible replies, ordered by
-`latest_reply_at` descending, then `root_id`; at most 5. `latest_reply_id` is the
-newest observed unread reply (equal times prefer the smaller ID) and a valid
-thread `mark_through` anchor. `unread` and `attention` use the row's
-definitions. `complete=true` means the unread window was exhausted, no evidence
-had unresolved ancestry or unusable tags, and no thread was omitted; then item
-unread counts sum to the row's unread replies. Otherwise the list is a cut of
-observed evidence and counts may be lower bounds or unknown. Participation
-budget exhaustion affects only `attention`. No message bytes are included.
+Items are canonical roots with unread replies that count (see below), ordered
+by `latest_reply_at` descending, then `root_id`; at most 5. `latest_reply_id` is
+the newest such reply (equal times prefer the smaller ID) and a valid thread
+`mark_through` anchor. Replies that do not count are filtered out before the
+count, the newest reply and the cap are chosen. `unread` uses the row's
+definition; every counted reply is also attention, so items carry no separate
+attention count. `complete=true` means the unread window was exhausted, no
+evidence had unresolved ancestry, unusable tags or undecided membership, and no
+thread was omitted; then item unread counts sum to the row's unread replies.
+Otherwise the list is a cut of observed evidence and counts may be lower bounds
+or unknown. No message bytes are included.
 
 Counts have exactly three representations:
 
@@ -88,15 +89,33 @@ Counts have exactly three representations:
 [{"status":"exact","value":0},{"status":"at_least","value":7},{"status":"unknown"}]
 ```
 
-Only exact zero proves absence. Unknown has no numeric value. Ordinary unread
-counts non-own, nondeleted messages of the advertised `eligible_kinds` beyond
-the matching context frontier. The same kinds alone define latest activity, so
-an edit, reaction or diff (40008) neither makes a channel unread nor moves it.
-Classify live arrivals with the advertised set, not a client copy. Attention is the unread subset consisting
-of DMs, direct actor mentions, `broadcast=1`, and replies in a thread containing
-a live eligible message authored by the actor. Participation is independent of
-read progress and retention. This is not Desktop notification policy: follows,
-mutes and earlier mentions elsewhere in a thread do not affect this count.
+Only exact zero proves absence. Unknown has no numeric value. A message is
+eligible when it is non-own, nondeleted, of the advertised `eligible_kinds` and
+inside the horizon. The same kinds alone define latest activity, so an edit,
+reaction or diff (40008) neither makes a channel unread nor moves it. Classify
+live arrivals with the advertised set, not a client copy.
+
+An eligible message beyond the matching context frontier counts as unread for
+the first reason that holds:
+
+| `reason` | Holds when |
+|---|---|
+| `direct` | its channel is a DM |
+| `mention` | it tags the actor with `p` |
+| `conversation` | it is a reply, and the actor wrote its direct parent or has a reply to that same parent, in that channel |
+| `broadcast` | it carries `broadcast=1` |
+| null | it is top-level |
+
+A reply with no reason does not count: it is not unread and appears in no
+thread list. `unread` counts the messages that count; `attention` is the subset
+with a reason. Conversation membership uses only the actor's live eligible
+messages (a deleted parent proves nothing; a surviving reply to it still does),
+looks at the direct parent only (owning the root or replying elsewhere in the
+thread proves nothing), and is independent of read progress and retention. A
+reply whose membership is undecided is left out, and the row's counts become
+lower bounds or unknown. The sidebar counts a broadcast reply without asking
+which of the two reasons applies. This is not Desktop notification policy:
+follows and mutes do not affect these counts.
 
 The unread horizon defaults to 30 days (`BUZZ_V1_RETENTION_SECONDS`) and, like
 every frontier, is measured in author time (`created_at`): a message counts
@@ -131,9 +150,15 @@ Omitting `root_id` selects the channel timeline. The result contains `account`
 and one `contexts` entry per request entry, in order. Context status is
 `available` (with nullable `through_timestamp` and `messages`), `unknown`, or
 `unavailable`. A thread context's `through_timestamp` is its effective prefix,
-including any whole-channel cut. Message status is `read`, `not_counted`, `unread` (with nullable
-`attention`), `unknown`, or `unavailable`. Wrong-context, missing and forbidden
-selectors share unavailable. Null attention means participation is unproved.
+including any whole-channel cut. Message status is `read`, `not_counted`,
+`unread` (with `reason`), `unknown`, or `unavailable`. Wrong-context, missing
+and forbidden selectors share unavailable. Status is decided in this order:
+ancestry and context; eligibility (`not_counted` for own, deleted, other kinds
+and outside the horizon); the frontier (`read`, with no membership lookup); then
+the reason. A reply past the frontier with no reason is `not_counted` when it is
+proven outside the actor's conversations and `unknown` when membership is
+undecided. A broadcast reply whose membership is undecided is `unread` with
+reason `broadcast` and may report `conversation` on a later request.
 Conversation bytes must still come from the existing Nostr path.
 
 ## Fixed-operand writes
@@ -186,9 +211,10 @@ remains device-local.
   leave latest incomplete even when unread is exact.
 - Tag documents over 8192 bytes or malformed relevant tags yield uncertainty.
   Compact boolean facts cross the database boundary, never raw tag payloads.
-- Optional participation: at most 1024 unique roots and 257 metadata candidates
-  per root, with a 500 ms savepoint budget. Budget exhaustion preserves ordinary
-  counts and leaves unproved attention unknown/lower-bound.
+- Conversation membership: at most 1024 unique parents per request, with a
+  500 ms savepoint budget. The lookup is exact, so its work grows with the
+  replies under each parent. Past either bound a reply is undecided, never
+  absent: counts become lower bounds or unknown and a context reports `unknown`.
 - DB statement/lock deadlines and HTTP read deadlines bound work; writes use a
   shared eight-second intent-processing deadline after admission. Limits are
   containment, not a production capacity claim.

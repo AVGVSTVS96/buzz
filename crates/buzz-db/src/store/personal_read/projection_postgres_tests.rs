@@ -231,7 +231,8 @@ async fn sidebar_directed_fact_matches_selector_classifier() {
         .await
         .unwrap();
         for tags in &cases {
-            let expected = u32::from(classification::directed(channel_type, &actor_hex, tags));
+            let expected =
+                u32::from(classification::reason(channel_type, &actor_hex, tags).is_some());
             sqlx::query("UPDATE events SET tags=$2 WHERE community_id=$1")
                 .bind(community.as_uuid())
                 .bind(json!(tags))

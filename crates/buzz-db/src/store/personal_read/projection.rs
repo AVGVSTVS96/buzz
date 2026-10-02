@@ -6,7 +6,8 @@ use buzz_core::CommunityId;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::{Acquire, PgConnection, Row};
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{hash_map::Entry, HashMap};
 use uuid::Uuid;
 
 use crate::{observability, Db, DbError, Result};
@@ -123,7 +124,7 @@ impl Db {
                     FROM events WHERE community_id=$1 AND channel_id=r.id AND created_at >= $7
                     ORDER BY created_at DESC,id LIMIT $8
                 ), classified AS (
-                    SELECT e.*, tm.root_event_id AS root,
+                    SELECT e.*, tm.root_event_id AS root, tm.parent_event_id AS parent,
                         COALESCE(tm.root_event_id<>e.id,false) AS is_reply,
                         COALESCE(extract(epoch FROM e.created_at)::bigint <=
                             CASE WHEN tm.root_event_id IS NOT NULL AND tm.root_event_id<>e.id
@@ -138,6 +139,7 @@ impl Db {
                 ), grouped AS (
                     SELECT CASE WHEN root IS NULL THEN NULL
                             WHEN is_reply THEN encode(root,'hex') ELSE '' END AS root,
+                        CASE WHEN is_reply THEN encode(parent,'hex') END AS parent,
                         is_reply, covered,
                         -- ->>0 also selects scalar "p"/"e": reject nonarrays first.
                         -- C collation matches Rust's ASCII case/hex rules. Reply
@@ -161,7 +163,7 @@ impl Db {
                         (array_agg(encode(id,'hex') ORDER BY created_at DESC,id))[1] AS newest_id
                     FROM classified
                     WHERE NOT covered OR root IS NULL
-                    GROUP BY 1,2,3,4
+                    GROUP BY 1,2,3,4,5
                 )
                 SELECT (SELECT count(*) FROM candidates) AS scanned,
                     jsonb_agg(to_jsonb(grouped)) AS evidence FROM grouped
@@ -187,7 +189,8 @@ impl Db {
             let mut unread = 0;
             let mut attention = 0;
             let mut unread_complete = complete;
-            let mut threads: HashMap<Vec<u8>, ThreadEvidence> = HashMap::new();
+            let mut threads: HashMap<Vec<u8>, Replies> = HashMap::new();
+            let mut undirected = Vec::new();
             for e in evidence {
                 let n = e["n"]
                     .as_u64()
@@ -204,59 +207,54 @@ impl Db {
                     unread_complete = false;
                     continue;
                 }
-                // Roots are timeline messages; descendants belong exclusively
-                // to their canonical thread. Never inherit the channel prefix.
-                let is_reply = e["is_reply"] == true;
                 if e["covered"] == true {
                     continue;
                 }
-                unread += n;
                 let directed =
                     channel_type == "dm" || facts.get("directed") == Some(&Value::Bool(true));
-                if directed {
-                    attention += n;
+                // Roots are timeline messages; descendants belong exclusively
+                // to their canonical thread. Never inherit the channel prefix.
+                if e["is_reply"] != true {
+                    unread += n;
+                    if directed {
+                        attention += n;
+                    }
+                    continue;
                 }
-                if is_reply {
-                    let Some(root) = e["root"].as_str().and_then(writes::event_id) else {
-                        unread_complete = false;
-                        continue;
-                    };
-                    let newest = (
+                let Some(root) = e["root"].as_str().and_then(writes::event_id) else {
+                    unread_complete = false;
+                    continue;
+                };
+                let replies = Replies {
+                    n,
+                    newest: (
                         e["newest_at"].as_i64().ok_or_else(invalid_newest)?,
                         e["newest_id"]
                             .as_str()
                             .ok_or_else(invalid_newest)?
                             .to_owned(),
-                    );
-                    let thread = threads.entry(root).or_insert_with(|| ThreadEvidence {
-                        unread: 0,
-                        directed: 0,
-                        undirected: 0,
-                        newest: newest.clone(),
-                    });
-                    thread.unread += n;
-                    if directed {
-                        thread.directed += n;
-                    } else {
-                        thread.undirected += n;
-                    }
-                    // Newest first; equal author times break toward the smaller ID.
-                    if (newest.0, std::cmp::Reverse(&newest.1))
-                        > (thread.newest.0, std::cmp::Reverse(&thread.newest.1))
-                    {
-                        thread.newest = newest;
-                    }
+                    ),
+                };
+                // A directed reply counts whatever its conversation. Any other
+                // reply counts only in one of the actor's conversations.
+                if directed {
+                    count(&mut threads, root, replies);
+                } else if let Some(parent) = e["parent"].as_str().and_then(writes::event_id) {
+                    undirected.push((root, parent, replies));
+                } else {
+                    unread_complete = false;
                 }
             }
-            pending.push((threads, attention, unread_complete));
+            pending.push((threads, undirected, unread, attention, unread_complete));
             channels.push(ChannelReadSummary {
                 channel_id: row.try_get("id")?,
                 name: row.try_get("name")?,
                 channel_type,
                 archived: row.try_get("archived")?,
                 hidden: row.try_get("hidden")?,
-                unread: ReadCount::from_evidence(unread, unread_complete),
-                attention: ReadCount::from_evidence(attention, unread_complete),
+                // Counts and threads wait for conversation membership below.
+                unread: ReadCount::Unknown,
+                attention: ReadCount::Unknown,
                 latest_message_id: row.try_get("latest_message_id")?,
                 latest_message_at: row.try_get("latest_message_at")?,
                 latest_message_complete: row.try_get("latest_message_complete")?,
@@ -269,51 +267,38 @@ impl Db {
         let targets: Vec<_> = channels
             .iter()
             .zip(&pending)
-            .flat_map(|(channel, (threads, ..))| {
-                threads
+            .flat_map(|(channel, (_, undirected, ..))| {
+                undirected
                     .iter()
-                    .filter(|(_, t)| t.undirected > 0)
-                    .map(|(root, _)| (channel.channel_id, root.clone()))
+                    .map(|(_, parent, _)| (channel.channel_id, parent.clone()))
             })
             .collect();
-        let participation =
-            participation::resolve(&mut tx, community, &actor_bytes, &targets).await?;
-        for (channel, (threads, mut attention, evidence_complete)) in
+        let members = participation::resolve(&mut tx, community, &actor_bytes, &targets).await?;
+        for (channel, (mut threads, undirected, mut unread, mut attention, mut complete)) in
             channels.iter_mut().zip(pending)
         {
-            let mut complete = evidence_complete;
-            let mut items = Vec::with_capacity(threads.len());
-            for (root, thread) in threads {
-                let participating = if thread.undirected == 0 {
-                    Some(false)
-                } else {
-                    participation
-                        .get(&(channel.channel_id, root.clone()))
-                        .copied()
-                        .flatten()
-                };
-                let thread_attention = match participating {
-                    Some(true) => thread.directed + thread.undirected,
-                    _ => thread.directed,
-                };
-                match participating {
-                    Some(true) => attention += thread.undirected,
+            // Relevance is decided before counts, previews and the thread cap.
+            for (root, parent, replies) in undirected {
+                match members.get(&(channel.channel_id, parent)) {
+                    Some(true) => count(&mut threads, root, replies),
                     Some(false) => {}
                     None => complete = false,
                 }
+            }
+            let mut items = Vec::with_capacity(threads.len());
+            for (root, thread) in threads {
+                unread += thread.n;
+                attention += thread.n;
                 items.push(ThreadReadSummary {
                     root_id: hex::encode(root),
-                    unread: ReadCount::from_evidence(thread.unread, evidence_complete),
-                    attention: ReadCount::from_evidence(
-                        thread_attention,
-                        evidence_complete && participating.is_some(),
-                    ),
+                    unread: ReadCount::from_evidence(thread.n, complete),
                     latest_reply_id: thread.newest.1,
                     latest_reply_at: thread.newest.0,
                 });
             }
+            channel.unread = ReadCount::from_evidence(unread, complete);
             channel.attention = ReadCount::from_evidence(attention, complete);
-            channel.threads = summarize(items, evidence_complete);
+            channel.threads = summarize(items, complete);
         }
         let next_cursor = if has_more {
             channels.last().map(|c| c.channel_id)
@@ -329,13 +314,31 @@ impl Db {
     }
 }
 
-/// Uncovered reply evidence for one canonical thread within a channel scan.
-struct ThreadEvidence {
-    unread: u32,
-    directed: u32,
-    undirected: u32,
-    /// Newest observed unread reply: (author seconds, lowercase hex ID).
+/// Uncovered replies in one canonical thread: one evidence group, or the
+/// thread's counted total.
+struct Replies {
+    n: u32,
+    /// Newest of them: (author seconds, lowercase hex ID).
     newest: (i64, String),
+}
+
+/// Add replies that count to their thread.
+fn count(threads: &mut HashMap<Vec<u8>, Replies>, root: Vec<u8>, replies: Replies) {
+    match threads.entry(root) {
+        Entry::Vacant(slot) => {
+            slot.insert(replies);
+        }
+        Entry::Occupied(mut slot) => {
+            let thread = slot.get_mut();
+            thread.n += replies.n;
+            // Newest first; equal author times break toward the smaller ID.
+            if (replies.newest.0, Reverse(&replies.newest.1))
+                > (thread.newest.0, Reverse(&thread.newest.1))
+            {
+                thread.newest = replies.newest;
+            }
+        }
+    }
 }
 
 fn invalid_newest() -> DbError {
@@ -383,7 +386,6 @@ mod tests {
         ThreadReadSummary {
             root_id: hex::encode([root; 32]),
             unread: ReadCount::Exact { value: 1 },
-            attention: ReadCount::Exact { value: 0 },
             latest_reply_id: hex::encode([root; 32]),
             latest_reply_at: at,
         }

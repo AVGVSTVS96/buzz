@@ -854,11 +854,11 @@ export function AgentInstanceEditDialog({
   const effortOptions = effortChoices({
     runtimeId: selectedRuntime?.id,
     models: [
-      inheritedSubmission.model,
+      linkedPersona ? linkedPersona.model : inheritedSubmission.model, // Save never sends a linked model
       inheritedModelDefault.value,
       agentDefaultModel,
     ],
-    sessionApplies: !runtimeTouched.current && model === (agent.model ?? ""),
+    sessionApplies: !runtimeTouched.current,
     session: configSurfaceQuery.data,
   });
   const modelStatusMessage = resolveModelFieldStatusMessage({

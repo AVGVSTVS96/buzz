@@ -78,9 +78,9 @@ const CLAUDE_ALIAS_EFFORTS = ["low", "medium", "high"];
 
 /**
  * Effort levels to offer for the model that will actually run, or `undefined`
- * to hide the picker. The running session's own list wins only while it
- * describes that model (`sessionApplies`). Otherwise Claude falls back to the
- * capability manifest; other runtimes keep native-only behavior. The first
+ * to hide the picker. Claude levels always come from the capability manifest.
+ * Other runtimes keep native-only behavior: the running session's own list
+ * while the runtime is unchanged (`sessionApplies`). The first
  * non-blank of `models` wins. A blank id must never reach the manifest: its blank
  * fallback is adaptive and would invent levels for an unknown default.
  */
@@ -95,7 +95,13 @@ export function effortChoices({
   sessionApplies: boolean;
   session?: RuntimeConfigSurface;
 }): EffortOptions {
-  if (sessionApplies && session?.effortConfigId !== undefined) {
+  // Claude's stored surface does not record which model its session ran, so
+  // its levels cannot be trusted for the saved model; the manifest decides.
+  if (
+    runtimeId !== "claude" &&
+    sessionApplies &&
+    session?.effortConfigId !== undefined
+  ) {
     return session.effortOptions ?? [];
   }
   const id = models.map((model) => model?.trim()).find(Boolean);

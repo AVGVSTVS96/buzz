@@ -618,6 +618,15 @@ export function AgentDefinitionDialog({
       {runtimeWarningText} Visit Settings &gt; Agents to set it up.
     </p>
   ) : null;
+  // Built every render, not only while Advanced is open: the callback also
+  // tracks which effort levels the submitted model allows.
+  const createRunSectionNode =
+    isCreateMode &&
+    createRunSection?.(runtime, [
+      model,
+      inheritedModelDefault.value,
+      agentDefaultModel,
+    ]);
   const advancedFieldsTransition = shouldReduceMotion
     ? { duration: 0 }
     : ADVANCED_FIELDS_MOTION_TRANSITION;
@@ -969,14 +978,7 @@ export function AgentDefinitionDialog({
                 transition={advancedFieldsTransition}
               >
                 <PersonaAdvancedFields
-                  afterRespondTo={
-                    isCreateMode &&
-                    createRunSection?.(runtime, [
-                      model,
-                      inheritedModelDefault.value,
-                      agentDefaultModel,
-                    ])
-                  }
+                  afterRespondTo={createRunSectionNode}
                   behaviorDraft={behaviorDraft}
                   disabled={isPending}
                   envVars={envVars}

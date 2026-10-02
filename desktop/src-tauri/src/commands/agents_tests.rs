@@ -795,7 +795,7 @@ fn owner_only_access_deploy_payload_clamps_stale_access() {
 }
 
 #[test]
-fn apply_create_effort_pins_effort_and_drops_env_aliases() {
+fn push_created_record_pins_effort_and_drops_env_aliases() {
     let alias = crate::managed_agents::config_bridge::effort::effort_suppress_keys()[0];
     let request = |effort: Option<&str>| -> CreateManagedAgentRequest {
         serde_json::from_value(serde_json::json!({
@@ -809,15 +809,16 @@ fn apply_create_effort_pins_effort_and_drops_env_aliases() {
     };
     let mut record = bare_agent_record(None, None, None);
     record.env_vars.insert(alias.to_string(), "low".to_string());
+    let mut records = Vec::new();
 
-    apply_create_effort(&mut record, &request(None));
-    assert_eq!(record.effort_level, None);
+    push_created_record(&mut records, record.clone(), &request(None));
+    push_created_record(&mut records, record, &request(Some("high")));
+
+    assert_eq!(records[0].effort_level, None);
     assert!(
-        record.env_vars.contains_key(alias),
+        records[0].env_vars.contains_key(alias),
         "no pick leaves env alone"
     );
-
-    apply_create_effort(&mut record, &request(Some("high")));
-    assert_eq!(record.effort_level.as_deref(), Some("high"));
-    assert!(!record.env_vars.contains_key(alias));
+    assert_eq!(records[1].effort_level.as_deref(), Some("high"));
+    assert!(!records[1].env_vars.contains_key(alias));
 }

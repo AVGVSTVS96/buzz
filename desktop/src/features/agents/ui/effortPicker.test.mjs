@@ -136,20 +136,21 @@ test("effortChoices_explicitModel_beatsGlobalOverride", () => {
   assert.deepEqual(values(choices), ["low", "medium", "high", "xhigh", "max"]);
 });
 
-test("effortChoices_storedOpusSession_ignoredAfterSwitchToHaiku", () => {
+test("effortChoices_claudeStoredSession_neverTrusted", () => {
+  // The stored surface does not say which model the session ran.
   const choices = effortChoices({
     runtimeId: "claude",
     models: ["claude-haiku-4-5"],
-    sessionApplies: false,
+    sessionApplies: true,
     session: storedOpusSession,
   });
   assert.equal(choices, undefined);
 });
 
-test("effortChoices_storedSession_winsForUnchangedModel", () => {
+test("effortChoices_codexStoredSession_winsWhileRuntimeUnchanged", () => {
   const choices = effortChoices({
-    runtimeId: "claude",
-    models: ["claude-haiku-4-5"],
+    runtimeId: "codex",
+    models: ["gpt-5.5"],
     sessionApplies: true,
     session: storedOpusSession,
   });

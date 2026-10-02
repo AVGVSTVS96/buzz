@@ -80,6 +80,14 @@ function surface(effort?: { configId: string; options: string[] }) {
   };
 }
 
+const AGENT = {
+  pubkey: TEST_IDENTITIES.tyler.pubkey,
+  name: AGENT_NAME,
+  runtime: "claude",
+  status: "stopped" as const,
+  channelNames: ["agents"],
+};
+
 async function install(page: Page, mock: MockBridgeOptions = {}) {
   await installMockBridge(page, {
     acpRuntimesCatalog: RUNTIMES,
@@ -90,15 +98,7 @@ async function install(page: Page, mock: MockBridgeOptions = {}) {
       preferred_runtime: "claude",
     },
     discoverAgentModels: CLAUDE_MODELS,
-    managedAgents: [
-      {
-        pubkey: TEST_IDENTITIES.tyler.pubkey,
-        name: AGENT_NAME,
-        runtime: "claude",
-        status: "stopped",
-        channelNames: ["agents"],
-      },
-    ],
+    managedAgents: [AGENT],
     agentConfigSurface: surface(),
     ...mock,
   });
@@ -166,10 +166,13 @@ async function pickCreateModel(page: Page, dialog: Locator, name: string) {
 }
 
 test.describe("edit dialog", () => {
-  test("stored Opus levels hide after switching to Haiku, and the pick is not saved", async ({
+  test("an untouched form ignores stored session levels from another model", async ({
     page,
   }) => {
+    // The stored surface does not record which model the session ran; Opus
+    // levels come from the model data, not the session's low/max.
     await install(page, {
+      managedAgents: [{ ...AGENT, model: "opus[1m]" }],
       agentConfigSurface: surface({
         configId: "thought_level",
         options: ["low", "max"],
@@ -180,9 +183,10 @@ test.describe("edit dialog", () => {
     expect(await menuValues(page, effort)).toEqual([
       "Adapter default",
       "low",
-      "max",
+      "medium",
+      "high",
     ]);
-    await pick(page, effort, "max");
+    await pick(page, effort, "high");
 
     await pick(page, dialog.locator("#edit-agent-model"), "Haiku");
     await expect(effort).toHaveCount(0);
@@ -241,6 +245,23 @@ test.describe("create dialog", () => {
     await pick(page, dialog.locator("#edit-agent-effort"), "high");
     await pickCreateModel(page, dialog, "Haiku");
     await expect(dialog.locator("#edit-agent-effort")).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Add agent" }).click();
+    await expect(dialog).toHaveCount(0);
+    const creates = await payloadsFor(page, "create_managed_agent");
+    expect(creates).toHaveLength(1);
+    expect(creates[0].input).not.toHaveProperty("effortLevel");
+  });
+
+  test("switching to Haiku with Advanced collapsed sends no effort", async ({
+    page,
+  }) => {
+    await install(page);
+    const dialog = await openCreate(page);
+    await pickCreateModel(page, dialog, "Opus");
+    await pick(page, dialog.locator("#edit-agent-effort"), "high");
+    await dialog.getByRole("button", { name: "Advanced", exact: true }).click();
+    await expect(dialog.locator("#edit-agent-effort")).toHaveCount(0);
+    await pickCreateModel(page, dialog, "Haiku");
     await dialog.getByRole("button", { name: "Add agent" }).click();
     await expect(dialog).toHaveCount(0);
     const creates = await payloadsFor(page, "create_managed_agent");

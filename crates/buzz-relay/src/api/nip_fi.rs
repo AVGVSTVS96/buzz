@@ -42,15 +42,17 @@ use axum::{
     body::Body,
     extract::State,
     http::{HeaderMap, Response, StatusCode},
+    response::IntoResponse,
 };
 use serde::Deserialize;
 use tracing::{debug, warn};
 
 use buzz_auth::{
     CommandError, CommandIssuerPolicy, CommandVerifier, IssuerCapacity, JwksFetcher, NipFiDenyMap,
-    NipFiMode, ProductionJwksSource, CLIENT_ATTACHED_HEADER,
+    NipFiMode, ProductionJwksSource,
 };
 
+use crate::nip_fi_core::{extract_bearer_token, http_denial};
 use crate::state::AppState;
 
 /// Default per-issuer deny-set capacity when `deny_set_capacity` is absent.
@@ -89,28 +91,23 @@ pub async fn disconnect(
     body: axum::body::Bytes,
 ) -> Response<Body> {
     // ── Extract the command JWT from the header ────────────────────────────
-    let token = match extract_command_jwt(&headers) {
+    // Absent → 401 with `WWW-Authenticate: Nostr`; any other malformation
+    // → 403. [NIP-FI.md §Rejection table]
+    let token = match extract_bearer_token(&headers) {
         Ok(t) => t,
-        Err(status) => {
-            return if status == StatusCode::UNAUTHORIZED {
-                // [NIP-FI.md §Rejection table]: 401 MUST carry WWW-Authenticate: Nostr.
-                auth_required_response()
-            } else {
-                plain_response(status, "evidence rejected\n")
-            };
-        }
+        Err(class) => return http_denial(class),
     };
 
     // ── Parse the JSON body ───────────────────────────────────────────────
     let req: DisconnectRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(_) => return plain_response(StatusCode::BAD_REQUEST, "bad request\n"),
+        Err(_) => return command_denial(CommandError::MalformedRequest),
     };
 
     // body.pubkey must be lowercase hex of exactly 32 bytes.
     let body_pubkey = match parse_hex_pubkey(&req.pubkey) {
         Some(k) => k,
-        None => return plain_response(StatusCode::BAD_REQUEST, "bad request\n"),
+        None => return command_denial(CommandError::MalformedRequest),
     };
 
     // ── Command verifier ──────────────────────────────────────────────────
@@ -119,10 +116,7 @@ pub async fn disconnect(
         None => {
             // Mode is Off or not yet initialized.
             debug!("nip-fi disconnect: no command verifier configured");
-            return plain_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "authorization unavailable\n",
-            );
+            return command_denial(CommandError::AuthorizationUnavailable);
         }
     };
 
@@ -178,23 +172,12 @@ pub async fn disconnect(
 
             disconnected_response()
         }
-        Err(CommandError::DenySetFull) => {
-            warn!("nip-fi disconnect: deny set full — command rejected, no sessions closed");
-            metrics::counter!("buzz_nip_fi_disconnect_capacity_rejections_total").increment(1);
-            plain_response(StatusCode::SERVICE_UNAVAILABLE, "deny set full\n")
-        }
-        Err(CommandError::UntilExceedsCeiling) | Err(CommandError::MalformedRequest) => {
-            plain_response(StatusCode::BAD_REQUEST, "bad request\n")
-        }
-        Err(CommandError::AuthorizationUnavailable) => plain_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "authorization unavailable\n",
-        ),
-        Err(CommandError::EvidenceRejected) => {
-            plain_response(StatusCode::FORBIDDEN, "evidence rejected\n")
-        }
-        Err(CommandError::AuthorizationDenied) => {
-            plain_response(StatusCode::FORBIDDEN, "authorization denied\n")
+        Err(err) => {
+            if err == CommandError::DenySetFull {
+                warn!("nip-fi disconnect: deny set full — command rejected, no sessions closed");
+                metrics::counter!("buzz_nip_fi_disconnect_capacity_rejections_total").increment(1);
+            }
+            command_denial(err)
         }
     }
 }
@@ -544,29 +527,6 @@ pub fn validate_command_issuer_config(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Extract the command JWS token from the `Nostr-Federated-Identity: Bearer`
-/// header.  Returns `Err(401)` if the header is absent, `Err(403)` otherwise.
-///
-/// The same header is used for assertion tokens at upgrade and for command
-/// tokens at the admin API — distinct roles on distinct paths, never mixed.
-fn extract_command_jwt(headers: &HeaderMap) -> Result<&str, StatusCode> {
-    let mut values = headers.get_all(CLIENT_ATTACHED_HEADER).iter();
-    let first = values.next().ok_or(StatusCode::UNAUTHORIZED)?;
-    // Repeated header → reject.
-    if values.next().is_some() {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    let raw = first.to_str().map_err(|_| StatusCode::FORBIDDEN)?;
-    if raw.contains(',') {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    let token = raw.strip_prefix("Bearer ").ok_or(StatusCode::FORBIDDEN)?;
-    if token.is_empty() || token.contains(char::is_whitespace) {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    Ok(token)
-}
-
 fn parse_hex_pubkey(raw: &str) -> Option<nostr::PublicKey> {
     if raw.len() != 64
         || !raw
@@ -583,18 +543,14 @@ fn plain_response(status: StatusCode, body: &'static str) -> Response<Body> {
         .status(status)
         .header("Content-Type", "text/plain; charset=utf-8")
         .body(Body::from(body))
-        .unwrap_or_else(|_| Response::new(Body::empty()))
+        .unwrap_or_else(|_| status.into_response())
 }
 
-/// Build the `401 authentication required` response with the mandatory
-/// `WWW-Authenticate: Nostr` header. [NIP-FI.md §Rejection table]
-fn auth_required_response() -> Response<Body> {
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header("Content-Type", "text/plain; charset=utf-8")
-        .header("WWW-Authenticate", "Nostr")
-        .body(Body::from("authentication required\n"))
-        .unwrap_or_else(|_| Response::new(Body::empty()))
+/// Render a command rejection with its spec-exact status and body.
+fn command_denial(err: CommandError) -> Response<Body> {
+    let status =
+        StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    plain_response(status, err.response_body())
 }
 
 /// Spec-exact 200 success response.
@@ -615,50 +571,6 @@ fn disconnected_response() -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
-
-    fn headers_with(value: &str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(
-            CLIENT_ATTACHED_HEADER,
-            HeaderValue::from_str(value).unwrap(),
-        );
-        h
-    }
-
-    // ── JWT extraction contract ────────────────────────────────────────────
-
-    #[test]
-    fn absent_header_gives_401() {
-        let h = HeaderMap::new();
-        assert_eq!(extract_command_jwt(&h), Err(StatusCode::UNAUTHORIZED));
-    }
-
-    #[test]
-    fn repeated_header_gives_403() {
-        let mut h = HeaderMap::new();
-        h.append(
-            CLIENT_ATTACHED_HEADER,
-            HeaderValue::from_static("Bearer aaa.bbb.ccc"),
-        );
-        h.append(
-            CLIENT_ATTACHED_HEADER,
-            HeaderValue::from_static("Bearer ddd.eee.fff"),
-        );
-        assert_eq!(extract_command_jwt(&h), Err(StatusCode::FORBIDDEN));
-    }
-
-    #[test]
-    fn non_bearer_gives_403() {
-        let h = headers_with("Token aaa.bbb.ccc");
-        assert_eq!(extract_command_jwt(&h), Err(StatusCode::FORBIDDEN));
-    }
-
-    #[test]
-    fn valid_bearer_extracted() {
-        let h = headers_with("Bearer aaa.bbb.ccc");
-        assert_eq!(extract_command_jwt(&h), Ok("aaa.bbb.ccc"));
-    }
 
     // ── Hex pubkey parsing ────────────────────────────────────────────────
 
@@ -702,21 +614,6 @@ mod tests {
             b"{\"disconnected\": true}",
             "success body must be byte-exact per spec"
         );
-    }
-
-    /// `401` MUST carry `WWW-Authenticate: Nostr` and the spec body.
-    #[tokio::test]
-    async fn auth_required_response_has_www_authenticate() {
-        let resp = auth_required_response();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-        let www_auth = resp
-            .headers()
-            .get("WWW-Authenticate")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        assert_eq!(www_auth, "Nostr", "401 MUST carry WWW-Authenticate: Nostr");
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 64).await.unwrap();
-        assert_eq!(body_bytes.as_ref(), b"authentication required\n");
     }
 
     /// `403` error responses MUST NOT carry `WWW-Authenticate`.
@@ -763,7 +660,7 @@ mod route_integration_tests {
     };
     use buzz_auth::{
         CommandIssuerPolicy, CommandVerifier, IssuerCapacity, IssuerRegistry, NipFiDenyMap,
-        ProductionJwksSource,
+        ProductionJwksSource, CLIENT_ATTACHED_HEADER,
     };
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -1947,6 +1844,7 @@ mod route_integration_tests {
             jwks_configs: jwks_configs.clone(),
             command_configs: cmd_configs.clone(),
             max_connection_lifetime_secs: 3600,
+            communities: crate::nip_fi_core::test_support::any_host(TEST_AUD),
         };
 
         let pool = sqlx::PgPool::connect_lazy(&config.database_url).unwrap();
@@ -2010,7 +1908,8 @@ mod route_integration_tests {
         let key = nostr::Keys::generate();
         let token = mint_assertion_token(&key.public_key().to_hex());
         let verifier = state.nip_fi_verifier.as_deref().unwrap();
-        let result = verifier.verify_assertion(&token);
+        let result =
+            verifier.verify_assertion(&token, &crate::nip_fi_core::test_support::binding(TEST_AUD));
         assert!(
             result.is_ok(),
             "assertion verifier must read the warmed shared source; got: {result:?}"
@@ -2383,6 +2282,8 @@ mod route_integration_tests {
         let mut config = crate::config::Config::for_test();
         config.require_relay_membership = false;
         config.nip_fi.mode = buzz_auth::NipFiMode::Enforce;
+        config.nip_fi.communities =
+            crate::nip_fi_core::test_support::any_host("https://relay.test.example.com");
         config.nip_fi.registry.insert(issuer_policy(TEST_ISS));
         config.nip_fi.registry.insert(issuer_policy(OTHER_ISS));
         let mut state = build_test_app_state(1000, config).await;
@@ -2440,7 +2341,7 @@ mod route_integration_tests {
         iss: &str,
         key: &nostr::PublicKey,
     ) -> Result<(), axum::response::Response> {
-        let mut headers = HeaderMap::new();
+        let mut headers = crate::nip_fi_core::test_support::host_headers();
         headers.insert(
             CLIENT_ATTACHED_HEADER,
             format!("Bearer {}", mint_assertion_token_for(iss, &key.to_hex()))
@@ -2466,6 +2367,29 @@ mod route_integration_tests {
             .await
             .expect("body");
         assert_eq!(&body[..], b"authorization denied\n", "{why}");
+    }
+
+    // A valid community-A assertion presented on community B's Host is
+    // rejected on `aud`, even though B authorizes the same issuer.
+    #[tokio::test]
+    async fn http_admission_denies_community_a_assertion_on_community_b_host() {
+        let key = nostr::Keys::generate().public_key();
+        let mut state = (*http_enforce_state().await).clone();
+        assert!(
+            http_admit(&state, TEST_ISS, &key).is_ok(),
+            "control: the assertion is admitted on its own community"
+        );
+        Arc::make_mut(&mut state.config).nip_fi.communities =
+            crate::nip_fi_config::NipFiCommunities::for_test(
+                "https://relay.example",
+                &[TEST_ISS, OTHER_ISS],
+            );
+        let resp = http_admit(&state, TEST_ISS, &key).expect_err("A's aud on B's Host");
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(&body[..], b"evidence rejected\n");
     }
 
     #[tokio::test]
@@ -2585,6 +2509,382 @@ mod route_integration_tests {
             .await
             .expect("body");
         assert_eq!(got, want, "Off-mode legacy response must be byte-identical");
+    }
+
+    // ── Characterization: exact disconnect-route rejection contract ──────────
+    //
+    // Pin status, Content-Type, WWW-Authenticate and body bytes for every
+    // pre-success rejection, plus the observable check order
+    // (header → JSON body → pubkey → verifier present → verify).
+
+    const PLAIN: &str = "text/plain; charset=utf-8";
+
+    async fn send_raw(
+        state: Arc<crate::state::AppState>,
+        header_values: Vec<axum::http::HeaderValue>,
+        body: &[u8],
+    ) -> axum::response::Response {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(TEST_PATH)
+            .header("Content-Type", "application/json");
+        for v in header_values {
+            req = req.header(CLIENT_ATTACHED_HEADER, v);
+        }
+        crate::router::build_router(state)
+            .oneshot(req.body(Body::from(body.to_vec())).unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn assert_plain_denial(
+        resp: axum::response::Response,
+        status: StatusCode,
+        body: &str,
+        why: &str,
+    ) {
+        // Only the 401 carries a challenge. [NIP-FI.md §Rejection table]
+        let challenge = (status == StatusCode::UNAUTHORIZED).then_some("Nostr");
+        assert_eq!(resp.status(), status, "{why}");
+        let header = |name| {
+            resp.headers()
+                .get(name)
+                .map(|v: &axum::http::HeaderValue| v.to_str().unwrap().to_owned())
+        };
+        assert_eq!(header("Content-Type").as_deref(), Some(PLAIN), "{why}");
+        assert_eq!(header("WWW-Authenticate").as_deref(), challenge, "{why}");
+        let got = axum::body::to_bytes(resp.into_body(), 256).await.unwrap();
+        assert_eq!(got.as_ref(), body.as_bytes(), "{why}");
+    }
+
+    fn valid_body() -> &'static [u8] {
+        // A syntactically valid body: the pubkey is well-formed lowercase hex.
+        br#"{"pubkey":"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"}"#
+    }
+
+    #[tokio::test]
+    async fn characterize_route_header_transport_rejections() {
+        use axum::http::HeaderValue;
+        let state = build_test_state(1000).await;
+        let missing = send_raw(Arc::clone(&state), vec![], valid_body()).await;
+        assert_plain_denial(
+            missing,
+            StatusCode::UNAUTHORIZED,
+            "authentication required\n",
+            "missing header",
+        )
+        .await;
+
+        let rejected: Vec<(&str, Vec<HeaderValue>)> = vec![
+            (
+                "repeated header",
+                vec![
+                    HeaderValue::from_static("Bearer aaa.bbb.ccc"),
+                    HeaderValue::from_static("Bearer ddd.eee.fff"),
+                ],
+            ),
+            (
+                "comma-joined value",
+                vec![HeaderValue::from_static("Bearer aaa.bbb.ccc,ddd.eee.fff")],
+            ),
+            (
+                "non-Bearer scheme",
+                vec![HeaderValue::from_static("Token aaa.bbb.ccc")],
+            ),
+            ("empty token", vec![HeaderValue::from_static("Bearer ")]),
+            (
+                "space in token",
+                vec![HeaderValue::from_static("Bearer aaa bbb")],
+            ),
+            (
+                "tab in token",
+                vec![HeaderValue::from_static("Bearer aaa\tbbb")],
+            ),
+            // U+00A0 is `char::is_whitespace` but not ASCII whitespace; the
+            // obs-text bytes fail `HeaderValue::to_str`, so it rejects before
+            // any whitespace predicate runs.
+            (
+                "non-ASCII whitespace in token",
+                vec![HeaderValue::from_bytes(b"Bearer aaa\xc2\xa0bbb").unwrap()],
+            ),
+        ];
+        // A malformed body makes a dropped transport check observable: it
+        // would surface as 400 from body parsing, not the same 403 the
+        // verifier would give.
+        for (why, values) in rejected {
+            let resp = send_raw(Arc::clone(&state), values, b"not json").await;
+            assert_plain_denial(resp, StatusCode::FORBIDDEN, "evidence rejected\n", why).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn characterize_route_check_order_before_verify() {
+        use axum::http::HeaderValue;
+        let state = build_test_state(1000).await;
+        let bearer = || vec![HeaderValue::from_static("Bearer aaa.bbb.ccc")];
+
+        // Header is checked before the JSON body.
+        let resp = send_raw(Arc::clone(&state), vec![], b"not json").await;
+        assert_plain_denial(
+            resp,
+            StatusCode::UNAUTHORIZED,
+            "authentication required\n",
+            "missing header + malformed JSON",
+        )
+        .await;
+        let resp = send_raw(
+            Arc::clone(&state),
+            vec![HeaderValue::from_static("Token x")],
+            br#"{"pubkey":"NOT-HEX"}"#,
+        )
+        .await;
+        assert_plain_denial(
+            resp,
+            StatusCode::FORBIDDEN,
+            "evidence rejected\n",
+            "bad scheme + bad pubkey",
+        )
+        .await;
+
+        // Body shape is checked before the (garbage) token is verified.
+        for (why, body) in [
+            ("malformed JSON", b"not json".as_slice()),
+            ("missing pubkey field", br#"{}"#.as_slice()),
+            (
+                "uppercase pubkey",
+                br#"{"pubkey":"79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798"}"#
+                    .as_slice(),
+            ),
+            ("short pubkey", br#"{"pubkey":"abcd"}"#.as_slice()),
+        ] {
+            let resp = send_raw(Arc::clone(&state), bearer(), body).await;
+            assert_plain_denial(resp, StatusCode::BAD_REQUEST, "bad request\n", why).await;
+        }
+
+        // No verifier: body/pubkey still precede the verifier check, and the
+        // verifier check precedes verification (the token is garbage).
+        let mut no_verifier = build_test_app_state(1000, crate::config::Config::for_test()).await;
+        no_verifier.nip_fi_command_verifier = None;
+        let no_verifier = Arc::new(no_verifier);
+        let resp = send_raw(Arc::clone(&no_verifier), bearer(), br#"{"pubkey":"abcd"}"#).await;
+        assert_plain_denial(
+            resp,
+            StatusCode::BAD_REQUEST,
+            "bad request\n",
+            "bad pubkey precedes verifier presence",
+        )
+        .await;
+        let resp = send_raw(no_verifier, bearer(), valid_body()).await;
+        assert_plain_denial(
+            resp,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authorization unavailable\n",
+            "no command verifier configured",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn characterize_route_command_error_arms() {
+        let post = |state: Arc<crate::state::AppState>, token: String, target: String| async move {
+            do_request(
+                state,
+                "POST",
+                vec![
+                    ("Content-Type", "application/json".into()),
+                    (CLIENT_ATTACHED_HEADER, format!("Bearer {token}")),
+                ],
+                Some(serde_json::json!({ "pubkey": target })),
+            )
+            .await
+        };
+        let state = build_test_state(1).await;
+
+        let t = target_hex();
+        let tampered = format!("{}X", mint_token(&t, 300, serde_json::json!({})));
+        let resp = post(Arc::clone(&state), tampered, t).await;
+        assert_plain_denial(
+            resp,
+            StatusCode::FORBIDDEN,
+            "evidence rejected\n",
+            "EvidenceRejected",
+        )
+        .await;
+
+        let t = target_hex();
+        let token = mint_token(&t, 300, serde_json::json!({"sub": "intruder@example.com"}));
+        let resp = post(Arc::clone(&state), token, t).await;
+        assert_plain_denial(
+            resp,
+            StatusCode::FORBIDDEN,
+            "authorization denied\n",
+            "AuthorizationDenied",
+        )
+        .await;
+
+        let t = target_hex();
+        let token = mint_token(&t, 10 * 365 * 24 * 3600, serde_json::json!({}));
+        let resp = post(Arc::clone(&state), token, t).await;
+        assert_plain_denial(
+            resp,
+            StatusCode::BAD_REQUEST,
+            "bad request\n",
+            "UntilExceedsCeiling",
+        )
+        .await;
+
+        // Fill the capacity-1 deny set, then the next distinct target is full.
+        let t = target_hex();
+        let resp = post(
+            Arc::clone(&state),
+            mint_token(&t, 300, serde_json::json!({})),
+            t,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK, "control: slot filled");
+        let t = target_hex();
+        let resp = post(
+            Arc::clone(&state),
+            mint_token(&t, 300, serde_json::json!({})),
+            t,
+        )
+        .await;
+        assert_plain_denial(
+            resp,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "deny set full\n",
+            "DenySetFull",
+        )
+        .await;
+
+        // An unseeded key source has no key set for the issuer.
+        let mut unseeded = build_test_app_state(1000, crate::config::Config::for_test()).await;
+        let key_source = Arc::new(
+            ProductionJwksSource::new(vec![test_jwks_config()], buzz_auth::HttpJwksFetcher::new())
+                .expect("key source"),
+        );
+        let mut registry = IssuerRegistry::new();
+        registry.insert(test_issuer_policy());
+        let deny_map = NipFiDenyMap::new(
+            1000,
+            vec![IssuerCapacity {
+                issuer: TEST_ISS.to_owned(),
+                capacity: 1000,
+            }],
+        );
+        let policy =
+            CommandIssuerPolicy::new(TEST_ISS.to_owned(), 30, vec![TEST_SUB.to_owned()], 1000)
+                .expect("command policy");
+        unseeded.nip_fi_command_verifier = Some(Arc::new(CommandVerifier::new(
+            registry,
+            key_source,
+            vec![policy],
+            deny_map,
+        )));
+        let t = target_hex();
+        let token = mint_token(&t, 300, serde_json::json!({}));
+        let resp = post(Arc::new(unseeded), token, t).await;
+        assert_plain_denial(
+            resp,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authorization unavailable\n",
+            "AuthorizationUnavailable",
+        )
+        .await;
+    }
+
+    /// `buzz_nip_fi_disconnect_capacity_rejections_total` counts exactly the
+    /// `DenySetFull` rejections and no other command-error arm.
+    ///
+    /// `#[test]` with a current-thread runtime, not `#[tokio::test]`:
+    /// `metrics::with_local_recorder` is thread-local and takes a sync closure,
+    /// so each request runs to completion on this thread inside its own
+    /// recorder's scope.
+    #[test]
+    fn capacity_rejection_counter_counts_only_deny_set_full() {
+        use axum::body::Bytes;
+
+        fn capacity_rejections_during(
+            rt: &tokio::runtime::Runtime,
+            request: impl std::future::Future<Output = (StatusCode, Bytes)>,
+        ) -> ((StatusCode, Bytes), u64) {
+            let recorder = metrics_util::debugging::DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let response = metrics::with_local_recorder(&recorder, || rt.block_on(request));
+            let count = snapshotter
+                .snapshot()
+                .into_vec()
+                .into_iter()
+                .find(|(key, ..)| {
+                    key.key().name() == "buzz_nip_fi_disconnect_capacity_rejections_total"
+                })
+                .map_or(0, |(.., value)| match value {
+                    metrics_util::debugging::DebugValue::Counter(n) => n,
+                    other => panic!("capacity rejections must be a counter, got {other:?}"),
+                });
+            (response, count)
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current_thread runtime");
+        let state = rt.block_on(build_test_state(1));
+
+        let t = target_hex();
+        let tampered = format!("{}X", mint_token(&t, 300, serde_json::json!({})));
+        let intruder = mint_token(&t, 300, serde_json::json!({"sub": "intruder@example.com"}));
+        let far_until = mint_token(&t, 10 * 365 * 24 * 3600, serde_json::json!({}));
+        for (why, token, status, body) in [
+            (
+                "EvidenceRejected",
+                tampered,
+                StatusCode::FORBIDDEN,
+                "evidence rejected\n",
+            ),
+            (
+                "AuthorizationDenied",
+                intruder,
+                StatusCode::FORBIDDEN,
+                "authorization denied\n",
+            ),
+            (
+                "UntilExceedsCeiling",
+                far_until,
+                StatusCode::BAD_REQUEST,
+                "bad request\n",
+            ),
+        ] {
+            let (response, count) =
+                capacity_rejections_during(&rt, post_command(&state, &token, &t));
+            assert_eq!(
+                response,
+                (status, Bytes::from_static(body.as_bytes())),
+                "{why}"
+            );
+            assert_eq!(count, 0, "{why} must not count as a capacity rejection");
+        }
+
+        // Fill the capacity-1 deny set, then the next distinct target is full.
+        let t = target_hex();
+        let (filled, _) = rt.block_on(post_command(
+            &state,
+            &mint_token(&t, 300, serde_json::json!({})),
+            &t,
+        ));
+        assert_eq!(filled, StatusCode::OK, "control: slot filled");
+        let t = target_hex();
+        let token = mint_token(&t, 300, serde_json::json!({}));
+        let (response, count) = capacity_rejections_during(&rt, post_command(&state, &token, &t));
+        assert_eq!(
+            response,
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Bytes::from_static(b"deny set full\n")
+            ),
+            "DenySetFull"
+        );
+        assert_eq!(count, 1, "DenySetFull must count one capacity rejection");
     }
 
     // ── Cross-pod command replay fence ───────────────────────────────────────
@@ -2929,8 +3229,9 @@ mod route_integration_tests {
         let state = pod(1, replay).await;
         let filler = target_hex();
         let target = target_hex();
-        // The filler entry expires within two seconds and frees the only slot.
-        let filler_token = mint_token(&filler, 1, serde_json::json!({}));
+        // `until` is a whole second, so an offset of 2 keeps the filler alive
+        // for at least one second and frees the only slot before the retry.
+        let filler_token = mint_token(&filler, 2, serde_json::json!({}));
         assert_eq!(
             post_command(&state, &filler_token, &filler).await.0,
             StatusCode::OK

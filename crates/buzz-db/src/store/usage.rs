@@ -386,7 +386,12 @@ pub struct CommunityHost {
     pub host: String,
 }
 
-/// Fetch all community id → host mappings in one query.
+/// Fetch the id → host mapping for every active community in one query.
+///
+/// Archived communities and communities anywhere in the deletion lifecycle
+/// (`quiescing`, `fenced`, `tombstone`) are excluded. Their writes are fenced,
+/// so handing them to background maintenance only produces rejected writes.
+/// Tombstone rows themselves stay in place for the retention contract.
 pub async fn community_hosts(pool: &PgPool) -> Result<Vec<CommunityHost>> {
     community_hosts_with_operation(pool, observability::WriterOperation::Maintenance).await
 }
@@ -396,9 +401,14 @@ async fn community_hosts_with_operation(
     operation: observability::WriterOperation,
 ) -> Result<Vec<CommunityHost>> {
     let mut connection = observability::acquire_writer(pool, operation).await?;
-    let rows = sqlx::query_as::<_, (Uuid, String)>("SELECT id, host FROM communities")
-        .fetch_all(&mut *connection)
-        .await?;
+    let rows = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, host FROM communities \
+         WHERE archived_at IS NULL \
+           AND deleted_at IS NULL \
+           AND deletion_state = 'active'",
+    )
+    .fetch_all(&mut *connection)
+    .await?;
     Ok(rows
         .into_iter()
         .map(|(id, host)| CommunityHost { id, host })
@@ -803,6 +813,96 @@ mod postgres_tests {
         let found = hosts.iter().find(|h| h.id == id);
         assert!(found.is_some(), "inserted community not found");
         assert_eq!(found.unwrap().host, host);
+    }
+
+    /// Move a fixture into a deletion lifecycle state the way the executor
+    /// does: the tombstone trigger only accepts lifecycle changes from a
+    /// transaction carrying the executor GUCs for that community.
+    async fn set_deletion_state(pool: &PgPool, id: Uuid, state: &str) {
+        let mut tx = pool.begin().await.expect("begin lifecycle fixture");
+        sqlx::query(
+            "SELECT set_config('buzz.deletion_executor_community', $1, true), \
+                    set_config('buzz.deletion_fence_generation', '0', true)",
+        )
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("authorize lifecycle fixture");
+        sqlx::query(
+            "UPDATE communities SET deletion_state = $2, \
+                    deleted_at = CASE WHEN $2 = 'tombstone' THEN now() END \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(state)
+        .execute(&mut *tx)
+        .await
+        .expect("set lifecycle state");
+        tx.commit().await.expect("commit lifecycle fixture");
+    }
+
+    /// Regression for #7558: maintenance and bootstrap enumeration return only
+    /// active communities. Archived, logically deleted (quiescing/fenced), and
+    /// tombstoned rows are skipped on every sweep, and the tombstone row itself
+    /// is left intact for retention.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn test_community_hosts_excludes_archived_and_deleted_communities() {
+        let pool = get_pool().await;
+        let (active, _, active_host) = make_community(&pool).await;
+        let (archived, _, _) = make_community(&pool).await;
+        let (quiescing, _, _) = make_community(&pool).await;
+        let (fenced, _, _) = make_community(&pool).await;
+        let (tombstone, _, _) = make_community(&pool).await;
+
+        sqlx::query("UPDATE communities SET archived_at = now() WHERE id = $1")
+            .bind(archived)
+            .execute(&pool)
+            .await
+            .expect("archive fixture");
+        set_deletion_state(&pool, quiescing, "quiescing").await;
+        set_deletion_state(&pool, fenced, "fenced").await;
+        set_deletion_state(&pool, tombstone, "tombstone").await;
+
+        let db = Db::from_pool(pool.clone());
+        for sweep in 0..2 {
+            for (caller, hosts) in [
+                ("maintenance", db.usage_community_hosts().await),
+                ("bootstrap", db.bootstrap_community_hosts().await),
+            ] {
+                let hosts = hosts.unwrap_or_else(|e| panic!("{caller} sweep {sweep}: {e}"));
+                let ids: std::collections::HashSet<Uuid> = hosts.iter().map(|h| h.id).collect();
+                assert_eq!(
+                    hosts
+                        .iter()
+                        .find(|h| h.id == active)
+                        .map(|h| h.host.as_str()),
+                    Some(active_host.as_str()),
+                    "{caller} sweep {sweep}: active community must be returned"
+                );
+                for (label, id) in [
+                    ("archived", archived),
+                    ("quiescing", quiescing),
+                    ("fenced", fenced),
+                    ("tombstone", tombstone),
+                ] {
+                    assert!(
+                        !ids.contains(&id),
+                        "{caller} sweep {sweep}: {label} community must be excluded"
+                    );
+                }
+            }
+        }
+
+        let (state, deleted): (String, bool) = sqlx::query_as(
+            "SELECT deletion_state, deleted_at IS NOT NULL FROM communities WHERE id = $1",
+        )
+        .bind(tombstone)
+        .fetch_one(&pool)
+        .await
+        .expect("tombstone row is retained");
+        assert_eq!(state, "tombstone");
+        assert!(deleted, "tombstone keeps its deleted_at");
     }
 
     /// community_count reflects newly inserted communities.

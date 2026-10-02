@@ -821,7 +821,8 @@ fn create_managed_agent_persists_picked_effort_and_drops_env_aliases() {
 
 fn create_with_effort_in_confined_child(home: &std::path::Path) {
     use tauri::Manager;
-    keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+    crate::managed_agents::storage::NO_KEYCHAIN_FOR_TEST
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     crate::managed_agents::pin_nest_dir_for_test(home.join("nest"));
     // Windows known-folder APIs ignore HOME/APPDATA; an absolute mock
     // identifier replaces the app-data base on every platform.
@@ -867,4 +868,15 @@ fn create_with_effort_in_confined_child(home: &std::path::Path) {
         find(&unpicked).env_vars.contains_key(alias),
         "no pick leaves env alone"
     );
+    // The keychain step was skipped: both keys are still inline on disk.
+    let path = crate::managed_agents::storage::managed_agents_store_path(app.handle()).unwrap();
+    let raw: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    for pubkey in [&picked, &unpicked] {
+        let entry = raw.iter().find(|r| r["pubkey"] == pubkey.as_str()).unwrap();
+        assert!(entry["private_key_nsec"]
+            .as_str()
+            .unwrap()
+            .starts_with("nsec1"));
+    }
 }

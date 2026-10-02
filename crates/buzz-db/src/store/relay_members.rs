@@ -570,8 +570,11 @@ pub const MAX_COMMUNITIES_PER_OWNER: i64 = 5;
 ///
 /// Reads `BUZZ_MAX_COMMUNITIES_PER_OWNER` once (cached for the process
 /// lifetime); a missing, unparsable, or non-positive value falls back to
-/// [`MAX_COMMUNITIES_PER_OWNER`]. Lets multi-tenant operators raise the cap
-/// without a source change while keeping the stock default for everyone else.
+/// [`MAX_COMMUNITIES_PER_OWNER`]. Lets multi-tenant operators raise the active
+/// cap without a source change while keeping the stock default for everyone
+/// else. [`MAX_LIFETIME_COMMUNITIES_PER_OWNER`] still applies and counts live
+/// ownership, so values above it are unreachable: no owner can hold more live
+/// communities than the lifetime cap allows.
 pub fn max_communities_per_owner() -> i64 {
     static LIMIT: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
     *LIMIT.get_or_init(|| {
@@ -882,6 +885,18 @@ impl Db {
             }
             RouteDecision::Writer => is_relay_member(&self.pool, community, pubkey).await,
         }
+    }
+
+    /// Writer-authoritative [`Db::is_relay_member`]: never replica-routed.
+    /// For admission fences that run after a removal's disconnect may already
+    /// have passed, where a stale replica answer would grant lasting access.
+    #[datastore_span(name = "is_relay_member_writer", system = "postgresql")]
+    pub async fn is_relay_member_writer(
+        &self,
+        community: CommunityId,
+        pubkey: &str,
+    ) -> Result<bool> {
+        is_relay_member(&self.pool, community, pubkey).await
     }
 
     /// Returns the relay member record for `pubkey` in `community`, or `None` if not found.

@@ -990,9 +990,10 @@ impl EventQueue {
     /// The reply route of the turn in flight for `scope`, if any.
     ///
     /// A message whose route the running turn does not accept (see
-    /// [`ReplyRoute::accepts_steer`]; possible under the channel session
-    /// policy) must not be steered natively; the cancel+merge path
-    /// re-dispatches it with its own full `<context>`.
+    /// [`ReplyRoute::accepts_steer`]; possible whenever one session spans
+    /// several reply destinations: the channel session policy, or a DM) must
+    /// not be steered natively; the cancel+merge path re-dispatches it with
+    /// its own full `<context>`.
     pub fn in_flight_reply_route(&self, scope: &SessionScope) -> Option<&ReplyRoute> {
         self.in_flight_reply_routes.get(scope)
     }
@@ -2263,6 +2264,7 @@ pub fn format_prompt(batch: &FlushBatch, args: &FormatPromptArgs<'_>) -> Vec<Str
     //   - top-level     → anchor to the triggering event (it becomes the root)
     // Agent↔agent turns get no forced anchor — deep nesting is intentional
     // there. DMs are always 1:1 with a human, so they always anchor.
+    // `ReplyRoute::accepts_steer` mirrors this DM rule; keep them in sync.
     let sender_pubkey = last_event.event.pubkey.to_hex();
     let reply_anchor = if is_dm {
         thread_tags
@@ -2437,6 +2439,50 @@ impl MergeFraming {
 pub(crate) fn native_steer_framing() -> (&'static str, &'static str) {
     let framing = MergeFraming::for_reason(Some(CancelReason::Steer));
     (framing.new_tag, framing.closing_note)
+}
+
+#[cfg(test)]
+mod reply_route_tests {
+    use super::ReplyRoute;
+
+    fn route(root: Option<&str>, thread: &str) -> ReplyRoute {
+        ReplyRoute {
+            root_event_id: root.map(str::to_string),
+            thread: thread.to_string(),
+        }
+    }
+
+    /// A top-level message (no root) whose replies open thread `id`.
+    fn top_level(id: &str) -> ReplyRoute {
+        route(None, id)
+    }
+
+    /// A reply in the thread rooted at `root`.
+    fn in_thread(root: &str) -> ReplyRoute {
+        route(Some(root), root)
+    }
+
+    #[test]
+    fn channel_steers_only_within_one_reply_thread() {
+        assert!(in_thread("a").accepts_steer(&in_thread("a"), false));
+        assert!(!in_thread("a").accepts_steer(&in_thread("b"), false));
+        // Replies to a top-level message open a thread rooted at it.
+        assert!(top_level("a").accepts_steer(&in_thread("a"), false));
+        assert!(in_thread("a").accepts_steer(&top_level("a"), false));
+        assert!(!top_level("a").accepts_steer(&top_level("b"), false));
+        assert!(!top_level("a").accepts_steer(&in_thread("b"), false));
+    }
+
+    #[test]
+    fn dm_steers_within_one_thread_or_the_top_level() {
+        // Every top-level DM message replies at the top of the conversation.
+        assert!(top_level("a").accepts_steer(&top_level("b"), true));
+        assert!(in_thread("a").accepts_steer(&in_thread("a"), true));
+        assert!(!in_thread("a").accepts_steer(&in_thread("b"), true));
+        // A top-level DM turn has no `--reply-to`; a threaded one does.
+        assert!(!top_level("a").accepts_steer(&in_thread("a"), true));
+        assert!(!in_thread("a").accepts_steer(&top_level("b"), true));
+    }
 }
 
 #[cfg(test)]

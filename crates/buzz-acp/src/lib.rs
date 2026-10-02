@@ -649,9 +649,12 @@ impl QueuedNormalListenerEvent {
         });
     }
 
+    /// `prompt_is_dm` must match how the running turn's prompt classified the
+    /// channel (see [`resolved_dm_channel`]): the DM steer rule is only right
+    /// for a turn whose `<context>` was rendered as a DM.
     fn steer_or_interrupt(
         self,
-        is_dm: bool,
+        prompt_is_dm: bool,
         handling: MultipleEventHandling,
         owner: Option<&str>,
         pool: &mut AgentPool,
@@ -665,12 +668,15 @@ impl QueuedNormalListenerEvent {
             return;
         };
         // A native steer keeps the running turn's `<context>`, so it may only
-        // carry a message that replies in the same place. Under the channel
-        // policy one session spans threads; a message for another thread takes
-        // the cancel+merge path, whose re-prompt carries its own `<context>`.
+        // carry a message that replies in the same place. A channel-policy or
+        // DM session spans several destinations; a message for another one
+        // takes the cancel+merge path, whose re-prompt carries its own
+        // `<context>`.
         let same_reply_route = queue
             .in_flight_reply_route(&self.scope)
-            .is_some_and(|running| running.accepts_steer(&self.steer_event.reply_route(), is_dm));
+            .is_some_and(|running| {
+                running.accepts_steer(&self.steer_event.reply_route(), prompt_is_dm)
+            });
         let native_attempted = matches!(signal, ControlSignal::Steer)
             && same_reply_route
             && try_native_steer(
@@ -826,8 +832,33 @@ pub(crate) async fn is_dm_channel(
     channel_id: Uuid,
     channel_info: &pool::ChannelInfoResolver,
 ) -> bool {
-    match channel_info.resolve_channel_metadata(channel_id).await {
-        Some(info) => info.channel_type == "dm",
+    fail_closed_dm(
+        channel_id,
+        resolved_dm_channel(channel_id, channel_info).await,
+    )
+}
+
+/// Whether `channel_id` is a DM according to its metadata, or `None` when the
+/// metadata cannot be resolved.
+///
+/// Prompt formatting treats unresolved metadata as a non-DM channel, while
+/// the author gate fails closed as a DM ([`fail_closed_dm`]). Decisions that
+/// must agree with the rendered prompt, such as native steering, use this
+/// value with the prompt's fallback.
+pub(crate) async fn resolved_dm_channel(
+    channel_id: Uuid,
+    channel_info: &pool::ChannelInfoResolver,
+) -> Option<bool> {
+    channel_info
+        .resolve_channel_metadata(channel_id)
+        .await
+        .map(|info| info.channel_type == "dm")
+}
+
+/// The author gate's DM classification: unresolved metadata is a DM.
+fn fail_closed_dm(channel_id: Uuid, resolved: Option<bool>) -> bool {
+    match resolved {
+        Some(is_dm) => is_dm,
         None => {
             tracing::warn!(
                 channel_id = %channel_id,
@@ -3523,13 +3554,13 @@ async fn run_harness(
                             // channel-keyed routing. Telemetry only for now —
                             // queue/pool partitioning by scope lands in a
                             // follow-up (see ticket outline steps 2–4).
-                            let is_dm = is_dm_channel(
-                                ingress.buzz_event.channel_id,
-                                &ctx.channel_info,
-                            )
-                            .await;
-                            let session_scope =
-                                ingress.session_scope(config.session_policy, is_dm);
+                            let channel_id = ingress.buzz_event.channel_id;
+                            let resolved_dm =
+                                resolved_dm_channel(channel_id, &ctx.channel_info).await;
+                            let session_scope = ingress.session_scope(
+                                config.session_policy,
+                                fail_closed_dm(channel_id, resolved_dm),
+                            );
                             tracing::debug!(
                                 channel_id = %session_scope.channel_id(),
                                 scope = %session_scope.telemetry_label(),
@@ -3550,7 +3581,8 @@ async fn run_harness(
                             // event data through the optional steer/interrupt
                             // decision.
                             queued.steer_or_interrupt(
-                                is_dm,
+                                // The prompt's fallback: unresolved is not a DM.
+                                resolved_dm.unwrap_or(false),
                                 config.multiple_event_handling,
                                 owner_cache.get(),
                                 &mut pool,
@@ -4352,8 +4384,9 @@ fn try_native_steer(
     // channel context and the actor's profile in the original prompt,
     // duplicating it here would defeat the point of non-cancelling
     // steering (which is to inject only what's new).
-    // The caller steers natively only a message in the running turn's reply
-    // thread, so the turn's own `<context>` still routes the reply. An edit's
+    // The caller steers natively only a message that replies where the
+    // running turn replies (`ReplyRoute::accepts_steer`), so the turn's own
+    // `<context>` still routes the reply. An edit's
     // block names its original (`Edit of:`) and the original's thread root.
     let event_id_hex = be.event.id.to_hex();
     let body = native_steer_body(channel_id, &be);

@@ -795,30 +795,58 @@ fn owner_only_access_deploy_payload_clamps_stale_access() {
 }
 
 #[test]
-fn push_created_record_pins_effort_and_drops_env_aliases() {
+fn create_managed_agent_persists_picked_effort_and_drops_env_aliases() {
+    let _guard = crate::managed_agents::lock_path_mutex();
+    let temp = tempfile::tempdir().unwrap();
+    let old_home = std::env::var_os("HOME");
+    let old_xdg = std::env::var_os("XDG_DATA_HOME");
+    std::env::set_var("HOME", temp.path());
+    std::env::set_var("XDG_DATA_HOME", temp.path());
+
+    // Unroutable relay: profile publish fails fast and is reported, not fatal.
+    const RELAY: &str = "ws://127.0.0.1:9";
+    let state = crate::app_state::build_app_state();
+    *state.relay_url_override.lock().unwrap() = Some(RELAY.to_string());
+    let app = tauri::test::mock_builder()
+        .manage(state)
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("mock app builds headless");
     let alias = crate::managed_agents::config_bridge::effort::effort_suppress_keys()[0];
-    let request = |effort: Option<&str>| -> CreateManagedAgentRequest {
-        serde_json::from_value(serde_json::json!({
-            "name": "Effort", "relayUrl": null, "acpCommand": null,
+    let create = |name: &str, effort: Option<&str>| {
+        let input: CreateManagedAgentRequest = serde_json::from_value(serde_json::json!({
+            "name": name, "relayUrl": RELAY, "acpCommand": null,
             "agentCommand": null, "idleTimeoutSeconds": null,
             "maxTurnDurationSeconds": null, "parallelism": null,
             "systemPrompt": null, "avatarUrl": null, "model": null,
             "provider": null, "effortLevel": effort,
+            "envVars": { alias: "low" }, "spawnAfterCreate": false,
         }))
-        .unwrap()
+        .unwrap();
+        let state = tauri::Manager::state::<AppState>(app.handle());
+        tauri::async_runtime::block_on(create_managed_agent_in(input, app.handle().clone(), &state))
+            .expect("create succeeds")
+            .agent
+            .pubkey
     };
-    let mut record = bare_agent_record(None, None, None);
-    record.env_vars.insert(alias.to_string(), "low".to_string());
-    let mut records = Vec::new();
+    let picked = create("Picked", Some("high"));
+    let unpicked = create("Unpicked", None);
+    let records = load_managed_agents(app.handle()).unwrap();
 
-    push_created_record(&mut records, record.clone(), &request(None));
-    push_created_record(&mut records, record, &request(Some("high")));
+    std::env::remove_var("HOME");
+    std::env::remove_var("XDG_DATA_HOME");
+    if let Some(v) = old_home {
+        std::env::set_var("HOME", v);
+    }
+    if let Some(v) = old_xdg {
+        std::env::set_var("XDG_DATA_HOME", v);
+    }
 
-    assert_eq!(records[0].effort_level, None);
+    let find = |pubkey: &str| records.iter().find(|r| r.pubkey == pubkey).unwrap();
+    assert_eq!(find(&picked).effort_level.as_deref(), Some("high"));
+    assert!(!find(&picked).env_vars.contains_key(alias));
+    assert_eq!(find(&unpicked).effort_level, None);
     assert!(
-        records[0].env_vars.contains_key(alias),
+        find(&unpicked).env_vars.contains_key(alias),
         "no pick leaves env alone"
     );
-    assert_eq!(records[1].effort_level.as_deref(), Some("high"));
-    assert!(!records[1].env_vars.contains_key(alias));
 }

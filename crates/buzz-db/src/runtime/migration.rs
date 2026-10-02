@@ -969,6 +969,15 @@ mod postgres_tests {
             .find("CREATE FUNCTION profile_search_tsv")
             .expect("0056 creates profile_search_tsv");
         assert!(preflight < create_function);
+        // The lock wait is bounded before the emptiness check takes its table
+        // lock, so a busy relay fails and retries instead of queueing writers.
+        let lock_timeout = profile_search
+            .find("SET LOCAL lock_timeout = '5s'")
+            .expect("0056 bounds its lock wait");
+        let lock_table = profile_search
+            .find("LOCK TABLE events IN SHARE ROW EXCLUSIVE MODE")
+            .expect("0056 serializes the emptiness check with writers");
+        assert!(lock_timeout < lock_table);
         assert!(profile_search.contains("IF NOT EXISTS (SELECT 1 FROM events LIMIT 1)"));
         assert!(profile_search.contains("CASE WHEN kind = 0 THEN profile_search_tsv(content)"));
         assert!(!migrations[0].sql.as_str().contains("profile_search_tsv"));
@@ -2754,6 +2763,75 @@ mod postgres_tests {
                 .await
                 .contains("profile_search_tsv"),
             "0056 must not rewrite search_tsv on a populated database"
+        );
+    }
+
+    /// The relay's startup warning and `buzz-admin profile-search-policy` read
+    /// one probe. It owes nothing before the schema exists, reports the rewrite
+    /// pending on a populated database that upgraded through 0056, clears once
+    /// the maintenance script runs, and never flags a fresh install.
+    ///
+    /// Mutate-bite: make 0056 rewrite unconditionally and the pending assertion
+    /// fails; drop the `events_populated` term from `rewrite_pending` and the
+    /// fresh-install assertion fails.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn profile_search_policy_probe_tracks_the_maintenance_rewrite() {
+        let pool = connect_test_pool().await;
+        let db = crate::Db::from_pool(pool.clone());
+
+        reset_public_schema(&pool).await;
+        assert_eq!(
+            db.profile_search_policy()
+                .await
+                .expect("probe a schema without events"),
+            None
+        );
+
+        seed_pre_0008_brownfield_search_rows(&pool).await;
+        run_migrations(&pool)
+            .await
+            .expect("upgrade populated database through 0056");
+        let policy = db
+            .profile_search_policy()
+            .await
+            .expect("probe populated database")
+            .expect("events.search_tsv exists");
+        assert_eq!(policy.expression, search_tsv_expression(&pool).await);
+        assert!(policy.events_populated);
+        assert!(!policy.indexes_profile_text_fields());
+        assert!(
+            policy.rewrite_pending(),
+            "populated upgrade must report the rewrite pending: {policy:?}"
+        );
+
+        sqlx::raw_sql(include_str!(
+            "../../../../scripts/maintenance/profile_search_text_fields.sql"
+        ))
+        .execute(&pool)
+        .await
+        .expect("run maintenance rewrite");
+        let policy = db
+            .profile_search_policy()
+            .await
+            .expect("probe rewritten database")
+            .expect("events.search_tsv exists");
+        assert!(policy.events_populated);
+        assert!(policy.indexes_profile_text_fields());
+        assert!(!policy.rewrite_pending(), "rewrite must clear: {policy:?}");
+
+        reset_public_schema(&pool).await;
+        run_migrations(&pool).await.expect("fresh install");
+        let policy = db
+            .profile_search_policy()
+            .await
+            .expect("probe fresh install")
+            .expect("events.search_tsv exists");
+        assert!(!policy.events_populated);
+        assert!(policy.indexes_profile_text_fields());
+        assert!(
+            !policy.rewrite_pending(),
+            "fresh install owes nothing: {policy:?}"
         );
     }
 

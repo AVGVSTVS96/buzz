@@ -4,6 +4,11 @@
 -- make a hundred profiles match a name prefix that none of them carry and push
 -- the person actually named that off the first page.
 --
+-- Bound the lock wait like 0049 and 0053: a long-running writer makes this
+-- migration fail and the relay retry, instead of queueing every event insert
+-- behind the LOCK TABLE below.
+SET LOCAL lock_timeout = '5s';
+
 -- This is the first migration to require PostgreSQL 16. `check_function_bodies`
 -- validates the SQL body at CREATE FUNCTION, so on an older server the function
 -- below would fail with a bare "function pg_input_is_valid(text, unknown) does
@@ -26,7 +31,9 @@ END $$;
 -- no row becomes less discoverable than it is now. Name fields weigh A,
 -- contact fields B, `about` D; `picture`, `banner`, `image`, and unknown keys
 -- are not indexed. Never DROP this function: once `events.search_tsv` depends
--- on it, a CASCADE drops the column.
+-- on it, a CASCADE drops the column. Never fix it in place either: CREATE OR
+-- REPLACE recomputes nothing already stored, so a later change to this body
+-- ships with its own maintenance rewrite, the same way this one does.
 CREATE FUNCTION profile_search_tsv(content TEXT) RETURNS TSVECTOR
 LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE AS $$
     SELECT CASE
@@ -47,11 +54,13 @@ $$;
 -- Give new, empty installations the kind-0 arm without rewriting populated
 -- databases during relay startup (same shape as 0008). Replacing a generated
 -- column copies every partition of `events` and rebuilds the partitioned GIN
--- index under ACCESS EXCLUSIVE with no lock_timeout, which a Kubernetes
--- startup probe can kill and repeat. Populated databases keep their current
--- expression until an operator runs the sized out-of-band maintenance script
--- in scripts/maintenance/profile_search_text_fields.sql; until then the
--- query-side name-match ordering in buzz-search keeps profile lookups usable.
+-- index under ACCESS EXCLUSIVE for as long as the copy takes, which a
+-- Kubernetes startup probe can kill and repeat. Populated databases keep their
+-- current expression until an operator runs the sized out-of-band maintenance
+-- script in scripts/maintenance/profile_search_text_fields.sql (procedure in
+-- docs/profile-search-deployment.md). Until then the query-side name-match
+-- ordering in buzz-search keeps profile lookups usable, and the relay warns at
+-- every startup that the rewrite is pending.
 --
 -- Serialize the emptiness check with event writers. Reads remain available on
 -- populated databases; an actually empty table upgrades briefly to ACCESS

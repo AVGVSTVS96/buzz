@@ -212,7 +212,11 @@ CREATE UNIQUE INDEX idx_users_okta ON users (community_id, okta_user_id)
 -- `jsonb_in` is IMMUTABLE, and `CASE` guarantees `content::jsonb` is never
 -- evaluated for invalid input. Requires PostgreSQL 16 or later.
 -- Never DROP this function: `events.search_tsv` depends on it and a CASCADE
--- would drop the column. Keep in sync with migrations/0056.
+-- would drop the column. Never fix it in place either: CREATE OR REPLACE
+-- recomputes nothing already stored, so a change to this body ships with its
+-- own maintenance rewrite, the way 0056 ships
+-- scripts/maintenance/profile_search_text_fields.sql. Keep in sync with
+-- migrations/0056.
 CREATE FUNCTION profile_search_tsv(content TEXT) RETURNS TSVECTOR
 LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE AS $$
     SELECT CASE

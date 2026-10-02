@@ -9,6 +9,10 @@
 --
 --   psql -v ON_ERROR_STOP=1 -f scripts/maintenance/profile_search_text_fields.sql
 --
+-- docs/profile-search-deployment.md has the full procedure: who may run it,
+-- which timeouts to lift, how to verify, and how to tell whether a database
+-- still needs it (the relay also warns at startup until it has run).
+--
 -- It wraps whatever expression the database has today, so it is correct for
 -- both shapes in the field: the fresh-install allowlist from 0008 (kind 0 is
 -- one of ARRAY[0, 9, 40002, 45001, 45003]) and the brownfield blocklist from

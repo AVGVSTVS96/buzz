@@ -235,8 +235,9 @@ with a TypeScript lookup table or an id comparison in a component.
    only when `agent.backend.type === "local"` **AND** a `thought_level`
    `effortConfigId` has been discovered from the running session (absent
    pre-first-session and for runtimes/models without effort support). A saved
-   level the model doesn't list stays shown and clearable, and while Claude's
-   model is still unknown (`EFFORT_LEVELS_UNKNOWN`) a pending pick is kept. Local-only
+   level stays shown and clearable on the saved runtime even when the model
+   doesn't list it or isn't known yet, and while Claude's model is still
+   unknown (`EFFORT_LEVELS_UNKNOWN`) a pending pick is kept. Local-only
    is load-bearing, not cosmetic — the Rust command rejects non-local backends
    because remote effort is set at deploy time via `policy_env`. Because the
    control reads its inputs from the config surface the dialog already fetches

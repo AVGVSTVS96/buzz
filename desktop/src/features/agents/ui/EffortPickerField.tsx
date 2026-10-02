@@ -41,12 +41,13 @@ export function EffortPickerField({
   storedEffort?: string | null;
   onChange: (level: string | null) => void;
 }) {
-  const { visible, options, selectValue, unlisted } = effortPickerState({
-    backend,
-    effortOptions: choices,
-    currentEffort: value,
-    storedEffort,
-  });
+  const { visible, options, selectValue, unlisted, unknownModel } =
+    effortPickerState({
+      backend,
+      effortOptions: choices,
+      currentEffort: value,
+      storedEffort,
+    });
 
   if (!visible) {
     return null;
@@ -72,9 +73,11 @@ export function EffortPickerField({
         value={selectValue}
       />
       <p className="text-xs text-muted-foreground">
-        {unlisted
-          ? `This model may not support ${selectValue}. Applied at the next session start.`
-          : "Applied at the next session start."}
+        {unknownModel
+          ? `Support for ${selectValue} isn't known yet. Applied at the next session start.`
+          : unlisted
+            ? `This model may not support ${selectValue}. Applied at the next session start.`
+            : "Applied at the next session start."}
       </p>
     </div>
   );

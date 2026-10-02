@@ -39,7 +39,10 @@ export function effortPickerState({
   visible: boolean;
   options: PersonaDropdownOption[];
   selectValue: string;
+  /** The stored level is selected but the model doesn't list it. */
   unlisted: boolean;
+  /** The model isn't known yet, so support for `selectValue` isn't either. */
+  unknownModel: boolean;
 } {
   const listed = Array.isArray(effortOptions) ? effortOptions : [];
   const isListed = (value: string) =>
@@ -50,8 +53,7 @@ export function effortPickerState({
   const storedUnlisted = stored.length > 0 && !isListed(stored);
   const visible =
     backend.type === "local" &&
-    (Array.isArray(effortOptions) ||
-      (storedUnlisted && effortOptions !== EFFORT_LEVELS_UNKNOWN));
+    (Array.isArray(effortOptions) || storedUnlisted);
 
   const options: PersonaDropdownOption[] = [
     { label: "Adapter default", value: EFFORT_DEFAULT_DROPDOWN_VALUE },
@@ -69,7 +71,13 @@ export function effortPickerState({
       ? trimmed
       : EFFORT_DEFAULT_DROPDOWN_VALUE;
 
-  return { visible, options, selectValue, unlisted };
+  return {
+    visible,
+    options,
+    selectValue,
+    unlisted: unlisted && effortOptions !== EFFORT_LEVELS_UNKNOWN,
+    unknownModel: unlisted && effortOptions === EFFORT_LEVELS_UNKNOWN,
+  };
 }
 
 /**
@@ -89,7 +97,8 @@ export const EFFORT_LEVELS_UNKNOWN = "unknown";
 
 /**
  * Offered effort levels; `undefined` = the model offers none,
- * `EFFORT_LEVELS_UNKNOWN` = the model isn't known yet. Both hide the picker.
+ * `EFFORT_LEVELS_UNKNOWN` = the model isn't known yet. Both hide the picker
+ * unless a level is stored, which stays visible and clearable.
  */
 export type EffortOptions =
   | readonly AcpConfigOptionValue[]

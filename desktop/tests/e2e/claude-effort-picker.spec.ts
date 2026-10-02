@@ -142,6 +142,7 @@ async function pick(page: Page, trigger: Locator, name: string) {
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
 }
 
+const DISCOVERY_FAILED = "Could not load live models for this provider.";
 const ADAPTER_LEVELS = ["Adapter default", "low", "medium", "high"];
 
 /** A build-baked model, which never launches with Claude. */
@@ -266,6 +267,8 @@ test.describe("edit dialog", () => {
         .click();
       await dialog.getByTestId("env-vars-value").first().fill("two");
       await expect(effort).toHaveCount(0);
+      if (mode === "failed")
+        await expect(dialog).toContainText(DISCOVERY_FAILED);
 
       await dialog.getByRole("button", { name: "Save changes" }).click();
       await expect(dialog).toHaveCount(0);
@@ -320,7 +323,8 @@ test.describe("edit dialog", () => {
     const effort = dialog.locator("#edit-agent-effort");
     await expect(effort).toHaveText("max");
     await pick(page, effort, "Adapter default");
-    await expect(effort).toBeVisible();
+    await expect(effort).toHaveText("Adapter default");
+    await expect(dialog).not.toContainText("This model may not support max.");
 
     await dialog.getByRole("button", { name: "Save changes" }).click();
     await expect(dialog).toHaveCount(0);
@@ -328,6 +332,76 @@ test.describe("edit dialog", () => {
     expect(updates).toHaveLength(1);
     expect(updates[0].input).toHaveProperty("effortLevel", null);
   });
+
+  for (const clear of [false, true]) {
+    test(`failed discovery keeps a stored level visible (${clear ? "cleared" : "untouched"})`, async ({
+      page,
+    }) => {
+      await install(page, {
+        agentConfigSurface: surface(undefined, "max"),
+        discoverAgentModelsError: "discovery failed",
+      });
+      const dialog = await openEdit(page);
+      const effort = dialog.locator("#edit-agent-effort");
+      await expect(dialog).toContainText(DISCOVERY_FAILED);
+      await expect(effort).toHaveText("max");
+      await expect(dialog).toContainText("Support for max isn't known yet.");
+      expect(await menuValues(page, effort)).toEqual([
+        "Adapter default",
+        "max",
+      ]);
+      if (clear) {
+        await pick(page, effort, "Adapter default");
+        await expect(effort).toHaveText("Adapter default");
+      }
+
+      await dialog.getByRole("button", { name: "Save changes" }).click();
+      await expect(dialog).toHaveCount(0);
+      const updates = await payloadsFor(page, "update_managed_agent");
+      expect(updates).toHaveLength(1);
+      if (clear) expect(updates[0].input).toHaveProperty("effortLevel", null);
+      else expect(updates[0].input).not.toHaveProperty("effortLevel");
+    });
+
+    test(`a runtime round trip keeps a stored level visible (${clear ? "cleared" : "untouched"})`, async ({
+      page,
+    }) => {
+      await install(page, {
+        managedAgents: [{ ...AGENT, model: "claude-opus-4-8" }],
+        agentConfigSurface: surface(undefined, "max"),
+        discoverAgentModels: {
+          ...CLAUDE_MODELS,
+          models: [
+            ...CLAUDE_MODELS.models,
+            { id: "claude-opus-4-8", name: "Opus 4.8" },
+          ],
+        },
+      });
+      const dialog = await openEdit(page);
+      const effort = dialog.locator("#edit-agent-effort");
+      const runtime = dialog.locator("#edit-agent-runtime");
+      const model = dialog.locator("#edit-agent-model");
+      await expect(effort).toHaveText("max");
+      await pick(page, runtime, "Codex");
+      await pick(page, runtime, "Claude Code");
+      await pick(page, model, "Opus");
+      await expect(effort).toHaveText("max");
+      await pick(page, model, "Haiku");
+      await expect(effort).toHaveText("max");
+      await expect(dialog).toContainText("This model may not support max.");
+      if (clear) {
+        await pick(page, effort, "Adapter default");
+        await expect(effort).toHaveText("Adapter default");
+      }
+
+      await dialog.getByRole("button", { name: "Save changes" }).click();
+      await expect(dialog).toHaveCount(0);
+      const updates = await payloadsFor(page, "update_managed_agent");
+      expect(updates).toHaveLength(1);
+      if (clear) expect(updates[0].input).toHaveProperty("effortLevel", null);
+      else expect(updates[0].input).not.toHaveProperty("effortLevel");
+    });
+  }
 
   test("a runtime switch while discovery is pending leaks no Claude levels", async ({
     page,
@@ -383,6 +457,12 @@ test.describe("create dialog", () => {
       await dialog.getByTestId("env-vars-key").last().fill("EFFORT_TEST");
       await dialog.getByTestId("env-vars-value").last().fill("two");
       await expect(effort).toHaveCount(0);
+      // Create shows no discovery status; wait for the failing call instead.
+      await expect
+        .poll(async () =>
+          JSON.stringify(await payloadsFor(page, "discover_agent_models")),
+        )
+        .toContain("two");
 
       await dialog.getByRole("button", { name: "Add agent" }).click();
       await expect(dialog).toHaveCount(0);

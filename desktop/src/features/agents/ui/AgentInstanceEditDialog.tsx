@@ -155,8 +155,9 @@ export function AgentInstanceEditDialog({
   const [autoRestartOnConfigChange, setAutoRestartOnConfigChange] =
     React.useState(agent.autoRestartOnConfigChange);
   // Save-gated effort (PR #4625); untouched Saves write nothing.
-  const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
-  const effortTouched = React.useRef(false);
+  // `undefined` means untouched; `null` means cleared to the adapter default.
+  const [effortLevel, setEffortLevel] = React.useState<string | null>();
+  const effortTouched = effortLevel !== undefined;
   const personasQuery = usePersonasQuery();
   const linkedPersona = React.useMemo(
     () =>
@@ -186,6 +187,15 @@ export function AgentInstanceEditDialog({
   // Tracks whether the user has made an in-dialog runtime selection.
   const runtimeTouched = React.useRef(false);
 
+  const savedRuntimeId = React.useMemo(
+    () =>
+      (
+        runtimes.find((r) => r.command?.trim() === agent.agentCommand.trim()) ??
+        runtimes.find((r) => r.id === agent.agentCommand.trim())
+      )?.id ?? "custom",
+    [runtimes, agent.agentCommand],
+  );
+
   // Reset form state only when the dialog opens or when switching to a different agent.
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — including agent fields would re-fire on every 5s poll and wipe edits
   React.useEffect(() => {
@@ -206,8 +216,7 @@ export function AgentInstanceEditDialog({
       setIsCustomProviderEditing(false);
       setEnvVars(agent.envVars);
       setAutoRestartOnConfigChange(agent.autoRestartOnConfigChange);
-      setEffortLevel(null);
-      effortTouched.current = false;
+      setEffortLevel(undefined);
       setSetterError(null);
       setRespondTo(agent.respondTo);
       setRespondToAllowlist(agent.respondToAllowlist);
@@ -216,10 +225,7 @@ export function AgentInstanceEditDialog({
       setIsAvatarUploadPending(false);
       setIsAddHarnessOpen(false);
       runtimeTouched.current = false;
-      const matched =
-        runtimes.find((r) => r.command?.trim() === agent.agentCommand.trim()) ??
-        runtimes.find((r) => r.id === agent.agentCommand.trim());
-      setSelectedRuntimeId(matched ? matched.id : "custom");
+      setSelectedRuntimeId(savedRuntimeId);
       updateMutation.reset();
     }
   }, [open, agent.pubkey]);
@@ -229,13 +235,10 @@ export function AgentInstanceEditDialog({
     if (!open || runtimeTouched.current || runtimes.length === 0) {
       return;
     }
-    const matched =
-      runtimes.find((r) => r.command?.trim() === agent.agentCommand.trim()) ??
-      runtimes.find((r) => r.id === agent.agentCommand.trim());
-    if (matched) {
-      setSelectedRuntimeId(matched.id);
+    if (savedRuntimeId !== "custom") {
+      setSelectedRuntimeId(savedRuntimeId);
     }
-  }, [open, runtimes, agent.agentCommand]);
+  }, [open, runtimes, savedRuntimeId]);
 
   // Build the sorted runtime catalog for the dropdown.
   const sortedRuntimes = React.useMemo(
@@ -524,8 +527,7 @@ export function AgentInstanceEditDialog({
     runtimeTouched.current = true;
     const resolvedRuntimeId = nextRuntimeId || "custom";
     setSelectedRuntimeId(resolvedRuntimeId);
-    effortTouched.current = false;
-    setEffortLevel(null);
+    setEffortLevel(undefined);
     const isCustomCommand = resolvedRuntimeId === "custom";
 
     // Only pin the harness when the selection can actually supply a command:
@@ -748,12 +750,12 @@ export function AgentInstanceEditDialog({
 
       // Effort rides the locked update so restarts launch the new value.
       const effortSubmission = resolveEffortSubmission({
-        effortLevel,
+        effortLevel: effortLevel ?? null,
         originalEffortLevel: storedEffort,
         inheritTransition: agentCommandUpdate === "",
         choices: effortOptions,
       });
-      if (effortTouched.current && effortSubmission.persist) {
+      if (effortTouched && effortSubmission.persist) {
         input.effortLevel = effortSubmission.level;
       }
 
@@ -772,7 +774,7 @@ export function AgentInstanceEditDialog({
             autoRestartOnConfigChange,
           );
         }
-        if (effortTouched.current && effortSubmission.persist) {
+        if (effortTouched && effortSubmission.persist) {
           await queryClient.invalidateQueries({
             queryKey: agentConfigSurfaceQueryKey(agent.pubkey),
           });
@@ -1113,12 +1115,11 @@ export function AgentInstanceEditDialog({
               choices={effortOptions}
               disabled={isSaving}
               // A stored level belongs to the saved runtime.
-              storedEffort={runtimeTouched.current ? null : storedEffort}
-              value={effortTouched.current ? effortLevel : storedEffort}
-              onChange={(level) => {
-                effortTouched.current = true;
-                setEffortLevel(level);
-              }}
+              storedEffort={
+                selectedRuntimeId === savedRuntimeId ? storedEffort : null
+              }
+              value={effortTouched ? effortLevel : storedEffort}
+              onChange={setEffortLevel}
             />
 
             <AgentAiDefaultsNotice

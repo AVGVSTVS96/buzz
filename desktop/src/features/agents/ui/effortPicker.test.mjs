@@ -188,14 +188,29 @@ test("isSavableEffort_unknownModel_keepsThePick", () => {
   assert.equal(isSavableEffort("high", EFFORT_LEVELS_UNKNOWN), true);
 });
 
-test("effortPickerState_unknownModel_hidesThePicker", () => {
+test("effortPickerState_unknownModelNothingStored_hidesThePicker", () => {
   const state = effortPickerState({
     backend: localBackend,
     effortOptions: EFFORT_LEVELS_UNKNOWN,
     currentEffort: "high",
-    storedEffort: "high",
   });
   assert.equal(state.visible, false);
+});
+
+test("effortPickerState_unknownModelWithStoredLevel_showsItAsUnknown", () => {
+  const state = effortPickerState({
+    backend: localBackend,
+    effortOptions: EFFORT_LEVELS_UNKNOWN,
+    currentEffort: "max",
+    storedEffort: "max",
+  });
+  assert.equal(state.visible, true);
+  assert.equal(state.unknownModel, true);
+  assert.equal(state.unlisted, false);
+  assert.deepEqual(state.options, [
+    { label: "Adapter default", value: EFFORT_DEFAULT_DROPDOWN_VALUE },
+    { label: "max", value: "max" },
+  ]);
 });
 
 test("effortPickerState_storedLevelTheModelDoesNotList_staysSelectable", () => {

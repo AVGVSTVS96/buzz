@@ -173,7 +173,7 @@ assertions with `exp - iat <= 300` seconds and MUST NOT set `exp` later than the
 adapter session's expiry. Clients MAY refuse an assertion with more than 300
 seconds remaining when it arrives. The 5-minute cap is this contract's rule, not
 a relay constant: the relay enforces the token `exp` and its own
-`maximum_assertion_age`. The assertion itself follows
+deployment-configured `maximum_assertion_age`. The assertion itself follows
 [NIP-FI](nips/NIP-FI.md): a dedicated assertion's protected `typ` MUST be exactly
 `nip-fi+jwt`, and its `aud` MUST exactly match the canonical host URI of the
 community the relay resolves from the connection's `Host`. The assertion's

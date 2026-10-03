@@ -88,13 +88,9 @@ pub(super) async fn authorize(
     method: &'static str,
     body: Option<&[u8]>,
 ) -> Result<Principal, Error> {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let tenant = crate::tenant::bind_community(&state.db, host)
+    let tenant = crate::nip_fi_shadow::bind_tenant(state, headers)
         .await
-        .map_err(|_| Error::new(StatusCode::NOT_FOUND, "not_found"))?;
+        .ok_or_else(|| Error::new(StatusCode::NOT_FOUND, "not_found"))?;
     let path = uri
         .path_and_query()
         .map(|p| p.as_str())
@@ -115,11 +111,11 @@ pub(super) async fn authorize(
         ),
     )
     .map_err(|response| {
-        if state.config.nip_fi.mode == buzz_auth::NipFiMode::Off {
-            bridge_error((response.status(), Json(Value::Null)))
-        } else {
+        if state.config.nip_fi.mode.restricts() {
             // Preserve the shared NIP-FI wire contract, not just its status.
             Error::Admission(Box::new(response))
+        } else {
+            bridge_error((response.status(), Json(Value::Null)))
         }
     })?;
     let actor = *admission.proven_pubkey();

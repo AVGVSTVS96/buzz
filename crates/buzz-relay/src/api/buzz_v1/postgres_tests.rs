@@ -466,6 +466,77 @@ async fn accessory_discovery_is_host_bound_and_opt_in() {
     }
 }
 
+// Pins Off parity under NIP-FI Shadow. These error bodies carry a per-request
+// id, so they cannot ride the router's byte-for-byte Shadow rows: Shadow keeps
+// Off's status and code and leaves exactly one verdict.
+// Mutation: binding the tenant without `bind_tenant` leaves the unseeded row
+// with no record; answering a failed proof with the NIP-FI response whenever
+// the mode is not Off changes the seeded row's code.
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn accessory_shadow_matches_off() {
+    use crate::nip_fi_core::tests::ScriptedVerifier;
+    let fixture = crate::api::bridge::postgres_tests::bridge_handler_test_state()
+        .await
+        .unwrap();
+    for (seeded, status, code) in [
+        (false, StatusCode::NOT_FOUND, "not_found"),
+        (true, StatusCode::UNAUTHORIZED, "unauthorized"),
+    ] {
+        let host = format!("bff-shadow-{}.local", uuid::Uuid::new_v4());
+        if seeded {
+            fixture.db.ensure_configured_community(&host).await.unwrap();
+        }
+        for (mode, records) in [
+            (buzz_auth::NipFiMode::Off, 0),
+            (buzz_auth::NipFiMode::Shadow, 1),
+        ] {
+            let mut state = (*fixture).clone();
+            let config = Arc::make_mut(&mut state.config);
+            config.buzz_v1_enabled = true;
+            config.nip_fi.mode = mode;
+            config.nip_fi.communities = crate::nip_fi_config::NipFiCommunities::for_test(
+                &format!("https://{host}"),
+                &["https://issuer.test"],
+            );
+            state.nip_fi_verifier = Some(Arc::new(ScriptedVerifier::new(Ok(Some(
+                Keys::generate().public_key(),
+            )))));
+            let recorder = metrics_util::debugging::DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let _guard = metrics::set_default_local_recorder(&recorder);
+            // An assertion the guard accepts, and no NIP-98 proof.
+            let req = Request::get("/buzz/v1/me/sidebar")
+                .header("host", &host)
+                .header(buzz_auth::CLIENT_ATTACHED_HEADER, "Bearer a.b.c")
+                .body(Body::empty())
+                .unwrap();
+            let response = crate::router::build_router(Arc::new(state))
+                .oneshot(req)
+                .await
+                .unwrap();
+            let got = response.status();
+            let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+            let body: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+            let recorded: u64 = snapshotter
+                .snapshot()
+                .into_vec()
+                .iter()
+                .filter(|(key, ..)| key.key().name() == "buzz_nip_fi_shadow_total")
+                .map(|(.., value)| match value {
+                    metrics_util::debugging::DebugValue::Counter(n) => *n,
+                    _ => 0,
+                })
+                .sum();
+            assert_eq!(
+                (got, &body["error"]["code"], recorded),
+                (status, &json!(code), records),
+                "seeded={seeded} {mode:?}"
+            );
+        }
+    }
+}
+
 // Exercise the real signed HTTP ingest path, including deletion side effects,
 // rather than directly tombstoning an event in the database.
 async fn signed_sidebar_deletion(deletion_kind: u16) {

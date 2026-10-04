@@ -16,6 +16,7 @@ import '../../shared/community/community_icon_provider.dart';
 import '../../shared/community/community_avatar.dart';
 import '../../shared/community/paired_community_landing.dart';
 import '../../shared/community/community_membership_provider.dart';
+import '../../shared/widgets/app_list_card_item.dart';
 import '../../shared/widgets/app_list.dart';
 import '../../shared/widgets/app_list_card.dart';
 import '../../shared/relay/relay.dart';

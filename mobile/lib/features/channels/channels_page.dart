@@ -13,6 +13,8 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import '../../shared/auth/auth.dart';
 import '../../shared/community/community_icon_provider.dart';
+import '../../shared/community/community_avatar.dart';
+import '../../shared/community/paired_community_landing.dart';
 import '../../shared/community/community_membership_provider.dart';
 import '../../shared/widgets/app_list.dart';
 import '../../shared/widgets/app_list_card.dart';
@@ -95,7 +97,6 @@ const double _kChannelLabelInset =
 /// sections while the labels stay on [_kChannelLabelInset].
 const double _kDmAvatarSize = _kChannelIconSize;
 
-const double _kTopSectionCommunityAvatarSize = 40.0;
 const double _kTopSectionProfileAvatarSize = 36.0;
 const double _kTopSectionBottomPadding = Grid.xxs;
 
@@ -385,6 +386,47 @@ class ChannelsPage extends HookConsumerWidget {
       }
       return null;
     }
+
+    final arrivingCommunity = ref.watch(pairedCommunityLandingProvider);
+    useEffect(() {
+      if (arrivingCommunity == null) return null;
+      var cancelled = false;
+      Future<void> revealPairedCommunity() async {
+        // Add-community pairing is a pushed route. Let it finish dismissing
+        // before placing the loading surface above the destination Home page.
+        do {
+          await WidgetsBinding.instance.endOfFrame;
+          if (cancelled || !context.mounted) return;
+        } while (ModalRoute.of(context)?.isCurrent == false);
+        if (ref.read(pairedCommunityLandingProvider)?.id !=
+            arrivingCommunity.id) {
+          return;
+        }
+        ref.read(pairedCommunityLandingProvider.notifier).clear();
+        communityFlightActive.value = true;
+        final navigator = Navigator.of(context, rootNavigator: true);
+        await navigator.push<void>(
+          PageRouteBuilder<void>(
+            opaque: false,
+            transitionDuration: Duration.zero,
+            reverseTransitionDuration: Duration.zero,
+            pageBuilder: (_, _, _) => _CommunitySwitcherPage(
+              arrivingCommunity: arrivingCommunity,
+              destination: measureCommunityAvatar(),
+              prepareLanding: prepareCommunityLanding,
+              onFlightChanged: (flying) {
+                if (context.mounted) communityFlightActive.value = flying;
+              },
+              onTransitionProgress: onSettingsTransitionProgress,
+            ),
+          ),
+        );
+        if (context.mounted) communityFlightActive.value = false;
+      }
+
+      unawaited(revealPairedCommunity());
+      return () => cancelled = true;
+    }, [arrivingCommunity]);
 
     void openCommunityGrid() {
       if (!context.mounted) return;

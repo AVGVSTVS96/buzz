@@ -8,12 +8,15 @@ import 'package:http/http.dart' as http;
 import 'package:nostr/nostr.dart' as nostr;
 
 import '../../shared/auth/auth.dart';
+import '../../shared/community/paired_community_landing.dart';
 import '../../shared/crypto/ecdh.dart';
 import '../../shared/crypto/nip44.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/security/sensitive_action_authorizer.dart';
 import 'pairing_crypto.dart';
 import 'pairing_socket.dart';
+
+part 'pairing_provider_helpers.dart';
 
 /// HTTP client used by [PairingNotifier] for the validation request.
 final pairingHttpClientProvider = Provider<http.Client>((ref) {
@@ -40,6 +43,7 @@ class PairingState {
   final bool sendsIdentityToDesktop;
   final bool protectSensitiveActions;
   final bool authorizationInProgress;
+  final String? destinationRelayUrl;
 
   const PairingState({
     this.status = PairingStatus.idle,
@@ -49,6 +53,7 @@ class PairingState {
     this.sendsIdentityToDesktop = false,
     this.protectSensitiveActions = true,
     this.authorizationInProgress = false,
+    this.destinationRelayUrl,
   });
 
   PairingState copyWith({
@@ -59,9 +64,11 @@ class PairingState {
     bool? sendsIdentityToDesktop,
     bool? protectSensitiveActions,
     bool? authorizationInProgress,
+    String? destinationRelayUrl,
     bool clearErrorMessage = false,
   }) => PairingState(
     status: status ?? this.status,
+    destinationRelayUrl: destinationRelayUrl ?? this.destinationRelayUrl,
     errorMessage: clearErrorMessage ? null : errorMessage ?? this.errorMessage,
     sasCode: sasCode ?? this.sasCode,
     userConfirmedSas: userConfirmedSas ?? this.userConfirmedSas,
@@ -176,6 +183,27 @@ class PairingNotifier extends Notifier<PairingState> {
     if (state.status != PairingStatus.confirmingSas ||
         state.authorizationInProgress) {
       return;
+    }
+    if (!_sendIdentityToSource && !_userConfirmedSas) {
+      // Updated desktops wait for this signed, encrypted transcript proof
+      // instead of asking for a second confirmation on desktop.
+      final hash = deriveTranscriptHash(
+        _sessionId!,
+        hexToBytes(_sourcePubkey!),
+        hexToBytes(_ephemeralPubkey!),
+        _sasInput!,
+        _sessionSecret!,
+      );
+      _publishEvent(
+        kind: 24134,
+        content: _encryptMessage({
+          'type': 'sas-confirm',
+          'transcript_hash': bytesToHex(hash),
+        }),
+        tags: [
+          ['p', _sourcePubkey!],
+        ],
+      );
     }
     _userConfirmedSas = true;
     state = state.copyWith(userConfirmedSas: true);
@@ -331,6 +359,7 @@ class PairingNotifier extends Notifier<PairingState> {
     _socket?.dispose();
     _socket = null;
     _processedEventIds.clear();
+    _publishedEventIds.clear();
     _sasConfirmReceived = false;
     _userConfirmedSas = false;
     _pendingPayload = null;
@@ -356,6 +385,7 @@ class PairingNotifier extends Notifier<PairingState> {
   int _pairingGeneration = 0;
   DateTime? _identityExportAuthorizedAt;
   Map<String, dynamic>? _pendingPayload; // buffered until user confirms SAS
+  final Set<String> _publishedEventIds = {};
   final Set<String> _processedEventIds = {}; // NIP-AB §Duplicate Event Handling
 
   Future<void> _pairNipAb(String uri) async {
@@ -419,6 +449,7 @@ class PairingNotifier extends Notifier<PairingState> {
       // 7. Build and send the offer event.
       final offerContent = _encryptMessage({
         'type': 'offer',
+        if (!_sendIdentityToSource) 'confirmation': 'code-entry',
         'version': 1,
         'session_id': bytesToHex(_sessionId!),
       });
@@ -468,41 +499,27 @@ class PairingNotifier extends Notifier<PairingState> {
     }
   }
 
-  static String _friendlyErrorMessage(Object error) {
-    final message = error.toString();
-    if (message.contains('SocketException') ||
-        message.contains('Connection refused') ||
-        message.contains('Network is unreachable') ||
-        message.contains('No route to host') ||
-        message.contains('Failed to connect')) {
-      return 'Could not reach the pairing relay. Check your internet '
-          'connection and VPN, then try again.';
-    }
-    if (error is PairingAuthException) {
-      return 'The pairing relay rejected authentication. Try creating a new '
-          'pairing code.';
-    }
-    if (error is StateError ||
-        message.contains('Null check operator used on a null value')) {
-      return 'Pairing stopped because of an internal error. Please try again.';
-    }
-    if (message.contains('HandshakeException') ||
-        message.contains('CERTIFICATE_VERIFY_FAILED')) {
-      return 'Secure connection failed. Check your network settings '
-          'and try again.';
-    }
-    if (message.contains('TimeoutException') || message.contains('timed out')) {
-      return 'Connection timed out. Check your internet connection and '
-          'try again.';
-    }
-    return 'Connection failed. Please check your internet connection '
-        'and try again.';
-  }
-
   void _handleRelayMessage(List<dynamic> data) {
     if (data.isEmpty) return;
     final type = data[0] as String;
 
+    final rejected =
+        type == 'OK' &&
+        data.length >= 3 &&
+        _publishedEventIds.remove(data[1]) &&
+        data[2] == false;
+    final closed = type == 'CLOSED' && data.length >= 2 && data[1] == 'pair';
+    if ((rejected || closed) &&
+        state.status != PairingStatus.success &&
+        state.status != PairingStatus.error) {
+      _cleanup();
+      state = const PairingState(
+        status: PairingStatus.error,
+        errorMessage:
+            'Pairing couldn’t continue. Scan a new desktop QR code and try again.',
+      );
+      return;
+    }
     if (type == 'EVENT' && data.length >= 3) {
       final eventJson = data[2] as Map<String, dynamic>;
       _handlePairingEvent(eventJson);
@@ -728,6 +745,7 @@ class PairingNotifier extends Notifier<PairingState> {
 
       // Validate relay URL to prevent SSRF via private network addresses.
       _validateRelayUrl(relayUrl);
+      state = state.copyWith(destinationRelayUrl: relayUrl);
 
       // Validate credentials against the relay via NIP-42 WS handshake.
       final credentialValidator = _credentialValidator ?? _validateCredentials;
@@ -761,7 +779,8 @@ class PairingNotifier extends Notifier<PairingState> {
       }
 
       _cleanup();
-      state = const PairingState(status: PairingStatus.success);
+      state = state.copyWith(status: PairingStatus.success);
+      ref.read(pairedCommunityLandingProvider.notifier).request(community);
     } catch (e) {
       if (pairingGeneration != _pairingGeneration ||
           state.status != PairingStatus.storing ||
@@ -831,6 +850,7 @@ class PairingNotifier extends Notifier<PairingState> {
       createdAt: createdAt,
     );
 
+    _publishedEventIds.add(event.id);
     _socket?.publishEvent(event.toMap());
   }
 
@@ -943,48 +963,6 @@ class PairingNotifier extends Notifier<PairingState> {
       nsec: decoded['nsec'] as String?,
       sensitiveActionPolicy: SensitiveActionPolicy.disabledByUser,
     );
-  }
-
-  void _validateRelayUrl(String url) {
-    final uri = Uri.parse(url);
-
-    if (!kDebugMode && uri.scheme != 'https') {
-      throw const FormatException('Relay URL must use HTTPS');
-    }
-    if (uri.scheme != 'http' && uri.scheme != 'https') {
-      throw FormatException('Invalid URL scheme: ${uri.scheme}');
-    }
-
-    final host = uri.host.toLowerCase();
-    if (host == 'localhost' || host == '127.0.0.1' || host == '::1') {
-      if (!kDebugMode) {
-        throw const FormatException('Relay URL cannot target localhost');
-      }
-      return;
-    }
-
-    final ip = Uri.tryParse('http://$host')?.host ?? host;
-    if (_isPrivateHost(ip)) {
-      throw const FormatException(
-        'Relay URL cannot target private network addresses',
-      );
-    }
-  }
-
-  static bool _isPrivateHost(String host) {
-    final parts = host.split('.');
-    if (parts.length != 4) return false;
-    final octets = parts.map(int.tryParse).toList();
-    if (octets.any((o) => o == null)) return false;
-
-    final a = octets[0]!;
-    final b = octets[1]!;
-
-    if (a == 10) return true;
-    if (a == 172 && b >= 16 && b <= 31) return true;
-    if (a == 192 && b == 168) return true;
-    if (a == 169 && b == 254) return true;
-    return false;
   }
 }
 

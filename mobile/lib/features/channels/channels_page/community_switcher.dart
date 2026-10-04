@@ -65,12 +65,14 @@ class _CommunityFlight {
 class _CommunitySwitcherPage extends HookConsumerWidget {
   const _CommunitySwitcherPage({
     required this.destination,
+    this.arrivingCommunity,
     required this.prepareLanding,
     required this.onFlightChanged,
     required this.onTransitionProgress,
   });
 
   final Rect? destination;
+  final Community? arrivingCommunity;
   final Future<Rect?> Function() prepareLanding;
   final ValueChanged<bool> onFlightChanged;
   final ValueChanged<double> onTransitionProgress;
@@ -80,13 +82,26 @@ class _CommunitySwitcherPage extends HookConsumerWidget {
     final communitiesAsync = ref.watch(communityListProvider);
     final activeId = ref.watch(activeCommunityProvider).value?.id;
     final isEditing = useState(false);
-    final flight = useState<_CommunityFlight?>(null);
+    final flight = useState<_CommunityFlight?>(
+      arrivingCommunity == null
+          ? null
+          : _CommunityFlight(
+              arrivingCommunity!,
+              Rect.fromCenter(
+                center: MediaQuery.sizeOf(context).center(Offset.zero),
+                width: _communityCenteredAvatarSize,
+                height: _communityCenteredAvatarSize,
+              ),
+              null,
+            ),
+    );
     final landingBounds = useState(destination);
     if (flight.value != null) ref.watch(_communityContentReadyProvider);
     final error = useState<String?>(null);
     final failedCommunityId = useState<String?>(null);
     final centering = useAnimationController(
       duration: _communityCenterDuration,
+      initialValue: arrivingCommunity == null ? 0 : 1,
     );
     final controller = useAnimationController(
       duration: _communityDepartureDuration,
@@ -100,7 +115,7 @@ class _CommunitySwitcherPage extends HookConsumerWidget {
               // Keep avatar decoding/painting out of the per-frame motion build.
               child: Material(
                 type: MaterialType.transparency,
-                child: _CommunityAvatar(
+                child: CommunityAvatar(
                   name: selected.community.name,
                   relayUrl: selected.community.relayUrl,
                   size: _communityGridAvatarSize,
@@ -133,21 +148,27 @@ class _CommunitySwitcherPage extends HookConsumerWidget {
       }
     }
 
-    Future<void> selectCommunity(Community community, Rect origin) async {
-      if (flight.value != null) return;
-      if (community.id == activeId && community.id != failedCommunityId.value) {
+    Future<void> selectCommunity(
+      Community community,
+      Rect origin, {
+      bool arriving = false,
+    }) async {
+      if (flight.value != null && !arriving) return;
+      if (!arriving &&
+          community.id == activeId &&
+          community.id != failedCommunityId.value) {
         Navigator.of(context).pop();
         return;
       }
       error.value = null;
       flight.value = _CommunityFlight(community, origin, activeId);
       onFlightChanged(true);
-      unawaited(HapticFeedback.selectionClick());
-      final animate = !reducedMotion && destination != null;
+      if (!arriving) unawaited(HapticFeedback.selectionClick());
+      final animate = !reducedMotion && (arriving || destination != null);
       try {
         // Relay teardown, credential changes and provider hydration must not
         // compete with the grid-to-center motion on the UI isolate.
-        if (animate) {
+        if (animate && !arriving) {
           await centering.forward(from: 0).orCancel;
         } else {
           centering.value = 1;
@@ -155,15 +176,17 @@ class _CommunitySwitcherPage extends HookConsumerWidget {
         if (!context.mounted) return;
         await WidgetsBinding.instance.endOfFrame;
         if (!context.mounted) return;
-        await ref
-            .read(communityListProvider.notifier)
-            .switchCommunity(community.id);
+        if (!arriving) {
+          await ref
+              .read(communityListProvider.notifier)
+              .switchCommunity(community.id);
+        }
         if (!context.mounted) return;
         await ref.read(activeCommunityProvider.future);
         if (!context.mounted) return;
         // Refresh this scope before awaiting its content. ChannelsNotifier
         // fences cached snapshots to the destination relay and identity.
-        ref.invalidate(channelsProvider);
+        if (!arriving) ref.invalidate(channelsProvider);
         await (() async {
           await waitForContent();
           if (!context.mounted) return;
@@ -196,6 +219,21 @@ class _CommunitySwitcherPage extends HookConsumerWidget {
             : 'Could not switch communities. Please try again.';
       }
     }
+
+    useEffect(() {
+      if (arrivingCommunity == null) return null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!context.mounted) return;
+        unawaited(
+          selectCommunity(
+            arrivingCommunity!,
+            flight.value!.origin,
+            arriving: true,
+          ),
+        );
+      });
+      return null;
+    }, const []);
 
     Future<void> addCommunity() async {
       final navigator = Navigator.of(context, rootNavigator: true);
@@ -570,7 +608,7 @@ class _CommunityGridTile extends HookWidget {
                     opacity: hidden ? 0 : 1,
                     child: SizedBox(
                       key: avatarKey,
-                      child: _CommunityAvatar(
+                      child: CommunityAvatar(
                         key: Key('community-switcher-avatar-${community.id}'),
                         name: community.name,
                         relayUrl: community.relayUrl,

@@ -1,3 +1,4 @@
+import 'package:buzz/shared/community/paired_community_landing.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -293,6 +294,73 @@ void main() {
         expect(container.read(pairingProvider).status, PairingStatus.storing);
       }
 
+      test(
+        'code entry advertises capability and sends one bound proof after confirmation',
+        () async {
+          await notifier.pair(pairingCode);
+          expect(socket.published.single['tags'], hasLength(1));
+          expect(
+            socket
+                .decryptedPublishedMessages(sourceSecret)
+                .map((m) => m['type']),
+            ['offer'],
+          );
+          expect(
+            socket
+                .decryptedPublishedMessages(sourceSecret)
+                .single['confirmation'],
+            'code-entry',
+          );
+          notifier.setProtectSensitiveActions(false);
+          notifier.confirmSas();
+          notifier.confirmSas();
+          final messages = socket.decryptedPublishedMessages(sourceSecret);
+          expect(messages.map((m) => m['type']), ['offer', 'sas-confirm']);
+          final secret = hexToBytes(sessionSecretHex);
+          final target = nostr.Keys(socket.ephemeralPrivkey).public;
+          final (_, input) = deriveSas(
+            ecdhSharedSecret(sourceSecret, target),
+            secret,
+          );
+          expect(
+            messages.last['transcript_hash'],
+            bytesToHex(
+              deriveTranscriptHash(
+                deriveSessionId(secret),
+                hexToBytes(nostr.Keys(sourceSecret).public),
+                hexToBytes(target),
+                input,
+                secret,
+              ),
+            ),
+          );
+          expect(
+            container.read(pairingProvider).status,
+            PairingStatus.confirmingSas,
+          );
+          expect(importAuth.lastCommunity, isNull);
+        },
+      );
+
+      test(
+        'a rejected offer exits code entry instead of silently waiting',
+        () async {
+          await notifier.pair(pairingCode);
+          socket.relayMessageCallback([
+            'OK',
+            socket.published.single['id'],
+            false,
+            'event must have exactly one p tag',
+          ]);
+          expect(container.read(pairingProvider).status, PairingStatus.error);
+          expect(
+            container.read(pairingProvider).errorMessage,
+            contains('Scan a new desktop QR code'),
+          );
+          expect(socket.isConnected, isFalse);
+        },
+      );
+
       test('unchecked protection persists on a successful import', () async {
         await beginImport(protected: false);
 
@@ -304,6 +372,10 @@ void main() {
           SensitiveActionPolicy.disabledByUser,
         );
         expect(container.read(pairingProvider).status, PairingStatus.success);
+        expect(
+          container.read(pairedCommunityLandingProvider),
+          importAuth.lastCommunity,
+        );
       });
 
       test('checked protection persists on a successful import', () async {
@@ -482,6 +554,15 @@ void main() {
         final state = container.read(pairingProvider);
         expect(state.status, PairingStatus.confirmingSas);
         expect(state.sendsIdentityToDesktop, isTrue);
+        expect(
+          socket.published.first['tags'],
+          isNot(contains(equals(['confirmation', 'code-entry']))),
+        );
+        notifier.confirmSas();
+        expect(
+          socket.decryptedPublishedMessages(sourceSecret).map((m) => m['type']),
+          ['offer'],
+        );
         expect(state.sasCode, hasLength(6));
       });
 

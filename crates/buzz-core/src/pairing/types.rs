@@ -28,6 +28,9 @@ pub enum PairingMessage {
         /// Defaults to `1` when absent (backward compat with pre-versioned implementations).
         #[serde(default = "default_version")]
         version: u32,
+        /// Optional confirmation UX negotiated inside the encrypted offer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confirmation: Option<String>,
     },
 
     /// Either party → other. Confirms the Short Authentication String matches.
@@ -104,6 +107,7 @@ mod tests {
         let msg = PairingMessage::Offer {
             session_id: "deadbeef".repeat(8),
             version: 1,
+            confirmation: None,
         };
         let json = serde_json::to_string(&msg).expect("serialize");
         assert!(
@@ -129,6 +133,7 @@ mod tests {
                 session_id: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
                     .to_string(),
                 version: 1,
+                confirmation: None,
             }
         );
     }

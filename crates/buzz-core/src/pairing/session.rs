@@ -27,6 +27,15 @@
 //! handle_complete(&event)              → complete_event
 //! ```
 
+//! # Code-entry confirmation extension
+//!
+//! A target may advertise `"confirmation":"code-entry"` inside its encrypted offer.
+//! After the user enters the source's displayed code, the target sends an
+//! encrypted `sas-confirm` carrying the same role-ordered transcript hash.
+//! The source calls `handle_target_sas_confirm` to verify that proof before
+//! returning its own proof and releasing the payload. Without that capability,
+//! callers retain the explicit source-side confirmation shown above.
+
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -147,17 +156,33 @@ impl PairingSession {
     /// formatted SAS code to display. After this call the session is in
     /// [`SessionState::Confirming`].
     pub fn handle_offer(&mut self, event: &Event) -> Result<String, PairingError> {
+        self.handle_offer_with_confirmation(event)
+            .map(|(code, _)| code)
+    }
+
+    /// Validate an offer and return its SAS and whether the target requests
+    /// code-entry confirmation. The capability is encrypted so strict relays
+    /// still receive only the required recipient tag.
+    pub fn handle_offer_with_confirmation(
+        &mut self,
+        event: &Event,
+    ) -> Result<(String, bool), PairingError> {
         self.check_expired()?;
         self.expect_state(SessionState::Waiting)?;
         self.expect_role(Role::Source)?;
         self.validate_event_basics(event)?;
 
         let msg = self.decrypt_message(event)?;
-        let (session_id_hex, version) = match &msg {
+        let (session_id_hex, version, code_entry) = match &msg {
             PairingMessage::Offer {
                 session_id,
                 version,
-            } => (session_id.clone(), *version),
+                confirmation,
+            } => (
+                session_id.clone(),
+                *version,
+                confirmation.as_deref() == Some("code-entry"),
+            ),
             other => return Err(unexpected("offer", other)),
         };
 
@@ -192,7 +217,7 @@ impl PairingSession {
         self.state = SessionState::Confirming;
         self.record_event(event);
 
-        Ok(format_sas(code))
+        Ok((format_sas(code), code_entry))
     }
 
     /// (Source) User confirmed the SAS codes match. Build the `sas-confirm`
@@ -221,6 +246,42 @@ impl PairingSession {
         let event = self.build_event(&msg)?;
         self.state = SessionState::Transferring;
         Ok(event)
+    }
+
+    /// (Source) Accept the target's transcript proof after code entry and return
+    /// the source proof. Call only when code-entry confirmation was negotiated.
+    pub fn handle_target_sas_confirm(&mut self, event: &Event) -> Result<Event, PairingError> {
+        self.check_expired()?;
+        self.expect_state(SessionState::Confirming)?;
+        self.expect_role(Role::Source)?;
+        self.validate_event_from_peer(event)?;
+        let received_hash = match self.decrypt_message(event)? {
+            PairingMessage::SasConfirm { transcript_hash } => transcript_hash,
+            other => return Err(unexpected("sas-confirm", &other)),
+        };
+        let peer = self
+            .peer_pubkey
+            .ok_or(PairingError::InvalidPubkey("no peer".into()))?;
+        let expected = derive_transcript_hash(
+            &self.session_id,
+            &self.keys.public_key().to_bytes(),
+            &peer.to_bytes(),
+            &self.sas_input.ok_or(PairingError::SasMismatch)?,
+            &self.session_secret,
+        );
+        let received = hex::decode(received_hash)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+        if !received
+            .as_ref()
+            .is_some_and(|bytes| ct_eq(bytes, &expected))
+        {
+            self.state = SessionState::Aborted;
+            return Err(PairingError::TranscriptMismatch);
+        }
+        let proof = self.confirm_sas()?;
+        self.record_event(event);
+        Ok(proof)
     }
 
     /// (Source) Process a payload sent back by the target.
@@ -355,6 +416,7 @@ impl PairingSession {
         let msg = PairingMessage::Offer {
             session_id: hex::encode(session_id),
             version: 1,
+            confirmation: None,
         };
         let event = session.build_event(&msg)?;
         session.state = SessionState::Confirming;
@@ -1423,3 +1485,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "session_code_entry_tests.rs"]
+mod code_entry_tests;

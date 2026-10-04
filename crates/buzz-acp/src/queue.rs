@@ -15,6 +15,7 @@
 
 use nostr::{Event, ToBech32};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -200,6 +201,37 @@ impl ReplyRoute {
     }
 }
 
+/// Whether the running turn's prompt rendered its channel as a DM.
+///
+/// The prompt task records this when it formats the turn's `<context>`
+/// (`format_prompt`'s `is_dm`). The steer guard reads the recorded value
+/// instead of classifying the incoming event again: channel metadata can
+/// become resolvable after the turn starts, and the guard must apply the rule
+/// that matches the `<context>` the agent actually received.
+#[derive(Debug, Clone, Default)]
+pub struct PromptDmClassification(Arc<OnceLock<bool>>);
+
+impl PromptDmClassification {
+    /// Record the prompt's classification. Later calls are ignored: a turn has
+    /// one `<context>`.
+    pub fn record(&self, is_dm: bool) {
+        let _ = self.0.set(is_dm);
+    }
+
+    /// The recorded classification; `None` before the prompt is formatted.
+    pub fn get(&self) -> Option<bool> {
+        self.0.get().copied()
+    }
+}
+
+/// Reply destination of an in-flight turn, and how its prompt classified the
+/// channel.
+#[derive(Debug, Clone)]
+struct InFlightReplyRoute {
+    route: ReplyRoute,
+    prompt_is_dm: PromptDmClassification,
+}
+
 /// Why a batch's prior turn was cancelled — controls how `format_prompt`
 /// frames the merged re-prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,7 +319,7 @@ pub struct EventQueue {
     in_flight_batch_sizes: HashMap<SessionScope, usize>,
     /// Reply route of each in-flight turn: the [`ReplyRoute`] of the batch
     /// event whose `<context>` routes the turn's replies (its last event).
-    in_flight_reply_routes: HashMap<SessionScope, ReplyRoute>,
+    in_flight_reply_routes: HashMap<SessionScope, InFlightReplyRoute>,
     retry_after: HashMap<SessionScope, Instant>,
     /// Per-scope retry attempt counter for exponential backoff / dead-lettering.
     retry_counts: HashMap<SessionScope, u32>,
@@ -987,22 +1019,45 @@ impl EventQueue {
         self.in_flight_scopes.contains(&scope.into_scope())
     }
 
-    /// The reply route of the turn in flight for `scope`, if any.
+    /// Whether a message with reply route `incoming` may be steered natively
+    /// into the turn in flight for `scope`.
     ///
     /// A message whose route the running turn does not accept (see
     /// [`ReplyRoute::accepts_steer`]; possible whenever one session spans
     /// several reply destinations: the channel session policy, or a DM) must
     /// not be steered natively; the cancel+merge path re-dispatches it with
-    /// its own full `<context>`.
-    pub fn in_flight_reply_route(&self, scope: &SessionScope) -> Option<&ReplyRoute> {
-        self.in_flight_reply_routes.get(scope)
+    /// its own full `<context>`. Until the prompt task records how it
+    /// classified the channel, the answer is `false`.
+    pub fn in_flight_accepts_steer(&self, scope: &SessionScope, incoming: &ReplyRoute) -> bool {
+        self.in_flight_reply_routes
+            .get(scope)
+            .and_then(|running| {
+                running
+                    .prompt_is_dm
+                    .get()
+                    .map(|is_dm| running.route.accepts_steer(incoming, is_dm))
+            })
+            .unwrap_or(false)
+    }
+
+    /// The cell in which the prompt task for `scope`'s in-flight turn records
+    /// its DM classification (see [`PromptDmClassification`]).
+    pub fn in_flight_prompt_dm(&self, scope: &SessionScope) -> Option<PromptDmClassification> {
+        self.in_flight_reply_routes
+            .get(scope)
+            .map(|running| running.prompt_is_dm.clone())
     }
 
     fn record_in_flight_reply_route(&mut self, scope: &SessionScope, events: &[BatchEvent]) {
         match events.last() {
             Some(last) => {
-                self.in_flight_reply_routes
-                    .insert(scope.clone(), last.reply_route());
+                self.in_flight_reply_routes.insert(
+                    scope.clone(),
+                    InFlightReplyRoute {
+                        route: last.reply_route(),
+                        prompt_is_dm: PromptDmClassification::default(),
+                    },
+                );
             }
             None => {
                 self.in_flight_reply_routes.remove(scope);

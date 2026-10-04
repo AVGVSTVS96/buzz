@@ -649,12 +649,8 @@ impl QueuedNormalListenerEvent {
         });
     }
 
-    /// `prompt_is_dm` must match how the running turn's prompt classified the
-    /// channel (see [`resolved_dm_channel`]): the DM steer rule is only right
-    /// for a turn whose `<context>` was rendered as a DM.
     fn steer_or_interrupt(
         self,
-        prompt_is_dm: bool,
         handling: MultipleEventHandling,
         owner: Option<&str>,
         pool: &mut AgentPool,
@@ -671,12 +667,10 @@ impl QueuedNormalListenerEvent {
         // carry a message that replies in the same place. A channel-policy or
         // DM session spans several destinations; a message for another one
         // takes the cancel+merge path, whose re-prompt carries its own
-        // `<context>`.
-        let same_reply_route = queue
-            .in_flight_reply_route(&self.scope)
-            .is_some_and(|running| {
-                running.accepts_steer(&self.steer_event.reply_route(), prompt_is_dm)
-            });
+        // `<context>`. The DM rule applies only when the running turn's
+        // prompt itself was rendered as a DM.
+        let same_reply_route =
+            queue.in_flight_accepts_steer(&self.scope, &self.steer_event.reply_route());
         let native_attempted = matches!(signal, ControlSignal::Steer)
             && same_reply_route
             && try_native_steer(
@@ -832,33 +826,8 @@ pub(crate) async fn is_dm_channel(
     channel_id: Uuid,
     channel_info: &pool::ChannelInfoResolver,
 ) -> bool {
-    fail_closed_dm(
-        channel_id,
-        resolved_dm_channel(channel_id, channel_info).await,
-    )
-}
-
-/// Whether `channel_id` is a DM according to its metadata, or `None` when the
-/// metadata cannot be resolved.
-///
-/// Prompt formatting treats unresolved metadata as a non-DM channel, while
-/// the author gate fails closed as a DM ([`fail_closed_dm`]). Decisions that
-/// must agree with the rendered prompt, such as native steering, use this
-/// value with the prompt's fallback.
-pub(crate) async fn resolved_dm_channel(
-    channel_id: Uuid,
-    channel_info: &pool::ChannelInfoResolver,
-) -> Option<bool> {
-    channel_info
-        .resolve_channel_metadata(channel_id)
-        .await
-        .map(|info| info.channel_type == "dm")
-}
-
-/// The author gate's DM classification: unresolved metadata is a DM.
-fn fail_closed_dm(channel_id: Uuid, resolved: Option<bool>) -> bool {
-    match resolved {
-        Some(is_dm) => is_dm,
+    match channel_info.resolve_channel_metadata(channel_id).await {
+        Some(info) => info.channel_type == "dm",
         None => {
             tracing::warn!(
                 channel_id = %channel_id,
@@ -3554,12 +3523,13 @@ async fn run_harness(
                             // channel-keyed routing. Telemetry only for now —
                             // queue/pool partitioning by scope lands in a
                             // follow-up (see ticket outline steps 2–4).
-                            let channel_id = ingress.buzz_event.channel_id;
-                            let resolved_dm =
-                                resolved_dm_channel(channel_id, &ctx.channel_info).await;
                             let session_scope = ingress.session_scope(
                                 config.session_policy,
-                                fail_closed_dm(channel_id, resolved_dm),
+                                is_dm_channel(
+                                    ingress.buzz_event.channel_id,
+                                    &ctx.channel_info,
+                                )
+                                .await,
                             );
                             tracing::debug!(
                                 channel_id = %session_scope.channel_id(),
@@ -3581,8 +3551,6 @@ async fn run_harness(
                             // event data through the optional steer/interrupt
                             // decision.
                             queued.steer_or_interrupt(
-                                // The prompt's fallback: unresolved is not a DM.
-                                resolved_dm.unwrap_or(false),
                                 config.multiple_event_handling,
                                 owner_cache.get(),
                                 &mut pool,
@@ -4908,6 +4876,9 @@ fn dispatch_pending(
             .state
             .set_scope_owner_generation(scope.clone(), owner_generation);
 
+        // The prompt task records how it classified the channel, for the
+        // native-steer guard (`EventQueue::in_flight_accepts_steer`).
+        let prompt_dm = queue.in_flight_prompt_dm(&scope).unwrap_or_default();
         let abort_handle = pool.join_set.spawn(async move {
             pool::run_prompt_task(
                 agent,
@@ -4917,6 +4888,7 @@ fn dispatch_pending(
                 result_tx,
                 Some(control_rx),
                 task_turn_id,
+                prompt_dm,
             )
             .await;
         });
@@ -5638,6 +5610,7 @@ fn dispatch_heartbeat(
             result_tx,
             None,
             task_turn_id,
+            Default::default(),
         )
         .await;
     });
@@ -10069,14 +10042,17 @@ mod edit_native_steer_tests {
             target_event_id: original.id.to_hex(),
             target_thread_tags: queue::parse_thread_tags(original),
         };
-        steer_into_running_turn(false, running_event, edit, Some(resolved))
+        steer_into_running_turn(false, Some(false), running_event, edit, Some(resolved))
     }
 
     /// Drive `incoming` through the listener's steer decision while a turn
     /// for `running_event` is in flight in the same conversation session
-    /// (the channel policy, or any DM).
+    /// (the channel policy, or any DM). `prompt_is_dm` is how the running
+    /// turn's prompt classified the channel; `None` means the prompt has not
+    /// been formatted yet.
     fn steer_into_running_turn(
         is_dm: bool,
+        prompt_is_dm: Option<bool>,
         running_event: nostr::Event,
         incoming: nostr::Event,
         incoming_edit: Option<queue::ResolvedEdit>,
@@ -10100,6 +10076,12 @@ mod edit_native_steer_tests {
         running.push(&mut queue, scope.clone());
         queue.flush_next().expect("running turn");
         assert!(queue.is_scope_in_flight(&scope));
+        if let Some(prompt_is_dm) = prompt_is_dm {
+            queue
+                .in_flight_prompt_dm(&scope)
+                .expect("in-flight turn records its prompt classification")
+                .record(prompt_is_dm);
+        }
 
         let mut pool = AgentPool::from_slots(vec![]);
         let (control_tx, mut control_rx) = tokio::sync::oneshot::channel();
@@ -10129,7 +10111,6 @@ mod edit_native_steer_tests {
         incoming_ingress
             .push(&mut queue, scope.clone())
             .steer_or_interrupt(
-                is_dm,
                 MultipleEventHandling::Steer,
                 None,
                 &mut pool,
@@ -10205,7 +10186,8 @@ mod edit_native_steer_tests {
     /// natively into the running turn rather than cancelling it.
     #[tokio::test]
     async fn dm_top_level_follow_up_steers_natively() {
-        let (steer, control) = steer_into_running_turn(true, message(None), message(None), None);
+        let (steer, control) =
+            steer_into_running_turn(true, Some(true), message(None), message(None), None);
 
         assert!(steer.is_some(), "DM follow-up is sent as a native steer");
         assert_eq!(
@@ -10220,12 +10202,40 @@ mod edit_native_steer_tests {
     async fn dm_thread_reply_during_top_level_turn_cancels_and_merges() {
         let root = "ab".repeat(32);
         let (steer, control) =
-            steer_into_running_turn(true, message(None), message(Some(&root)), None);
+            steer_into_running_turn(true, Some(true), message(None), message(Some(&root)), None);
 
         assert!(
             steer.is_none(),
             "no native steer into a different DM thread"
         );
+        assert_eq!(control, Some(ControlSignal::Steer));
+    }
+
+    /// A DM turn whose prompt was rendered while channel metadata was
+    /// unavailable got channel-style `<context>`: its replies go to a thread
+    /// rooted at its trigger. The DM rule must not apply once metadata
+    /// resolves, so a top-level follow-up takes the cancel+merge path.
+    #[tokio::test]
+    async fn dm_follow_up_into_channel_formatted_turn_cancels_and_merges() {
+        let (steer, control) =
+            steer_into_running_turn(true, Some(false), message(None), message(None), None);
+
+        assert!(
+            steer.is_none(),
+            "steer guard follows the running prompt's classification"
+        );
+        assert_eq!(control, Some(ControlSignal::Steer));
+    }
+
+    /// Before the prompt task records its classification, nothing proves
+    /// which `<context>` the turn will carry, so the follow-up takes the
+    /// cancel+merge path.
+    #[tokio::test]
+    async fn follow_up_before_prompt_classification_cancels_and_merges() {
+        let (steer, control) =
+            steer_into_running_turn(true, None, message(None), message(None), None);
+
+        assert!(steer.is_none(), "no native steer without a recorded prompt");
         assert_eq!(control, Some(ControlSignal::Steer));
     }
 }

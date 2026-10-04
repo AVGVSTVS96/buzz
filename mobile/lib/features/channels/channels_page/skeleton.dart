@@ -36,12 +36,7 @@ class _ChannelsSkeleton extends StatelessWidget {
         )
         .toList();
     const fallbackWidths = <double>[136, 184, 112, 160, 208, 128];
-    while (widths.length < 6) {
-      widths.add(fallbackWidths[widths.length % fallbackWidths.length]);
-    }
-    final splitAt = min(4, widths.length);
-    final firstSection = widths.take(splitAt).toList();
-    final secondSection = widths.skip(splitAt).toList();
+    if (widths.isEmpty) widths.addAll(fallbackWidths);
 
     final semanticsLabel = switch (status) {
       SessionStatus.connecting => 'Connecting',
@@ -53,7 +48,8 @@ class _ChannelsSkeleton extends StatelessWidget {
       liveRegion: true,
       label: semanticsLabel,
       child: ExcludeSemantics(
-        child: ListView(
+        child: ListView.builder(
+          cacheExtent: 0,
           physics: const NeverScrollableScrollPhysics(),
           padding: EdgeInsets.fromLTRB(
             Grid.gutter,
@@ -61,11 +57,15 @@ class _ChannelsSkeleton extends StatelessWidget {
             Grid.gutter,
             80,
           ),
-          children: [
-            _ChannelSkeletonSection(widths: firstSection),
-            const SizedBox(height: Grid.xs),
-            _ChannelSkeletonSection(widths: secondSection),
-          ],
+          itemBuilder: (_, section) => Padding(
+            padding: const EdgeInsets.only(bottom: Grid.xs),
+            child: _ChannelSkeletonSection(
+              widths: List.generate(
+                4,
+                (row) => widths[(section * 4 + row) % widths.length],
+              ),
+            ),
+          ),
         ),
       ),
     );

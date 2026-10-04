@@ -34,7 +34,9 @@ class _ChannelsBody extends StatelessWidget {
     final barHeight = topSectionHeight;
     final loadedChannels = channels;
     final loading =
-        showConnectionSkeleton || (loadedChannels == null && !showError);
+        (loadedChannels == null ||
+            (showConnectionSkeleton && loadedChannels.isEmpty)) &&
+        !showError;
     final content = showError && channelsAsync.hasError
         ? Padding(
             padding: EdgeInsets.only(top: barHeight),

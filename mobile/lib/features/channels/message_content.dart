@@ -15,6 +15,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
 import '../../shared/clipboard_utils.dart';
+import '../../shared/widgets/media_loading_placeholder.dart';
 import '../../shared/mentions/mention_bindings.dart';
 import '../../shared/mentions/mention_tags.dart';
 import '../../shared/deeplink/deep_link.dart';
@@ -616,6 +617,10 @@ class _MessageImagePreview extends HookConsumerWidget {
                 decodeWidth: previewDecodeWidth,
                 fit: layout.fit,
                 semanticLabel: semanticLabel,
+                frameBuilder: (context, child, frame, synchronous) =>
+                    frame != null || synchronous
+                    ? child
+                    : const MediaLoadingPlaceholder(label: 'Loading image'),
                 errorBuilder: (_, _, _) => _MediaPreviewFallback(
                   icon: LucideIcons.imageOff,
                   label: 'Image unavailable',

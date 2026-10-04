@@ -248,6 +248,13 @@ class _MessageImageCarousel extends HookConsumerWidget {
                                   decodeWidth: previewDecodeWidths[index],
                                   fit: BoxFit.cover,
                                   semanticLabel: item.semanticLabel,
+                                  frameBuilder:
+                                      (context, child, frame, synchronous) =>
+                                          frame != null || synchronous
+                                          ? child
+                                          : const MediaLoadingPlaceholder(
+                                              label: 'Loading image',
+                                            ),
                                   errorBuilder: (_, _, _) =>
                                       const _MediaPreviewFallback(
                                         icon: LucideIcons.imageOff,

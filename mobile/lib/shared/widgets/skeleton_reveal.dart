@@ -31,6 +31,12 @@ class SkeletonReveal extends HookWidget {
       initialValue: loading ? 0 : 1,
     );
     final previousLoading = usePrevious(loading);
+    // Keep one placeholder layout for the entire loading cycle, including
+    // its outgoing fade. Newly arrived metadata belongs to the content layer.
+    final loadingSkeleton = useRef(skeleton);
+    if (loading && previousLoading != true) {
+      loadingSkeleton.value = skeleton;
+    }
 
     useEffect(() {
       if (reducedMotion || previousLoading == null) {
@@ -111,7 +117,7 @@ class SkeletonReveal extends HookWidget {
                     excluding: !loading,
                     child: SkeletonShimmer(
                       enabled: loading && shimmerEnabled,
-                      child: skeleton,
+                      child: loadingSkeleton.value,
                     ),
                   ),
                 ),

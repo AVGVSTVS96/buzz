@@ -97,6 +97,10 @@ class _MessageVideoPreview extends HookConsumerWidget {
                   MediaImage(
                     url: posterUrl,
                     fit: BoxFit.cover,
+                    frameBuilder: (context, child, frame, synchronous) =>
+                        frame != null || synchronous
+                        ? child
+                        : const MediaLoadingPlaceholder(label: 'Loading video'),
                     errorBuilder: (_, _, _) => const _MediaPreviewFallback(
                       icon: LucideIcons.video,
                       label: 'Video preview unavailable',
@@ -107,6 +111,11 @@ class _MessageVideoPreview extends HookConsumerWidget {
                     future: previewFrameFuture,
                     builder: (context, snapshot) {
                       final frame = snapshot.data;
+                      if (snapshot.connectionState != ConnectionState.done) {
+                        return const MediaLoadingPlaceholder(
+                          label: 'Loading video',
+                        );
+                      }
                       if (frame == null) {
                         return const _MediaPreviewFallback(
                           icon: LucideIcons.video,

@@ -32,15 +32,13 @@ import 'channels_provider.dart';
 import 'media_viewer_page.dart';
 import 'message_content/link_normalizer.dart';
 import 'message_media.dart';
+import 'message_media_geometry.dart';
 import 'voice_note_attachment.dart';
 
 part 'message_content/media_carousel.dart';
 part 'message_content/inline_components.dart';
 part 'message_content/token_pill.dart';
 part 'message_content/video_preview.dart';
-
-const _messageMediaMaxInlineWidth = 320.0;
-const _messageMediaMaxImageHeight = 240.0;
 
 typedef OpenDownloadedFile =
     Future<void> Function(
@@ -587,7 +585,7 @@ class _MessageImagePreview extends HookConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final heroTag = useMemoized(() => Object());
     final layout = _resolveImagePreviewLayout(context, imeta?.aspectRatio);
-    final previewDecodeWidth = layout.width ?? _messageMediaMaxWidth(context);
+    final previewDecodeWidth = layout.width ?? messageMediaMaxWidth(context);
 
     return Padding(
       padding: const EdgeInsets.only(top: Grid.half),
@@ -654,7 +652,7 @@ class _MessageMediaPreviewFrame extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final resolvedWidth = constraints == null
-        ? (width ?? _messageMediaMaxWidth(context))
+        ? (width ?? messageMediaMaxWidth(context))
         : width;
 
     return Container(
@@ -673,12 +671,6 @@ class _MessageMediaPreviewFrame extends StatelessWidget {
   }
 }
 
-double _messageMediaMaxWidth(BuildContext context) {
-  return math
-      .min(MediaQuery.sizeOf(context).width * 0.72, _messageMediaMaxInlineWidth)
-      .toDouble();
-}
-
 _ImagePreviewLayout _resolveImagePreviewLayout(
   BuildContext context,
   double? aspectRatio,
@@ -686,33 +678,19 @@ _ImagePreviewLayout _resolveImagePreviewLayout(
   if (aspectRatio == null) {
     return _ImagePreviewLayout(
       constraints: BoxConstraints(
-        maxWidth: _messageMediaMaxWidth(context),
-        maxHeight: _messageMediaMaxImageHeight,
+        maxWidth: messageMediaMaxWidth(context),
+        maxHeight: messageMediaMaxImageHeight,
       ),
       fit: BoxFit.contain,
     );
   }
 
-  final previewSize = _imagePreviewSize(context, aspectRatio);
+  final previewSize = messageImagePreviewSize(context, aspectRatio);
   return _ImagePreviewLayout(
     width: previewSize.width,
     height: previewSize.height,
     fit: BoxFit.cover,
   );
-}
-
-Size _imagePreviewSize(BuildContext context, double? aspectRatio) {
-  final maxWidth = _messageMediaMaxWidth(context);
-  final safeAspectRatio = (aspectRatio ?? 1.0).clamp(0.2, 4.0).toDouble();
-
-  var width = maxWidth;
-  var height = width / safeAspectRatio;
-  if (height > _messageMediaMaxImageHeight) {
-    height = _messageMediaMaxImageHeight;
-    width = height * safeAspectRatio;
-  }
-
-  return Size(width, height);
 }
 
 class _ImagePreviewLayout {

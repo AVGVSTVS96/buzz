@@ -46,8 +46,7 @@ class _MessageVideoPreview extends HookConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final rawAspectRatio = imeta?.aspectRatio ?? (16 / 9);
-    final aspectRatio = rawAspectRatio.clamp(0.75, 1.91);
+    final aspectRatio = messageVideoAspectRatio(imeta?.aspectRatio);
     final posterUrl = imeta?.posterUrl;
     final loadPreviewFrame = ref.watch(videoPreviewFrameLoaderProvider);
     final previewFrameFuture = useMemoized(

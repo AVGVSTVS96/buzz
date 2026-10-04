@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../shared/theme/theme.dart';
 import '../../shared/widgets/skeleton.dart';
 import 'message_media.dart';
+import 'message_media_geometry.dart';
 
 /// Loading shapes derived from a known message, without fetching its media.
 class MessageSkeletonBody extends StatelessWidget {
@@ -19,23 +20,56 @@ class MessageSkeletonBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final metadata = parseImetaTags(tags);
-    final urls = RegExp(
-      r'https?://[^\s)<>]+',
-    ).allMatches(content).map((match) => match.group(0)!).toSet();
-    final attachments = urls
-        .where(
-          (url) => metadata.containsKey(url) || classifyMediaUrl(url) != null,
-        )
-        .toList();
-    var text = content;
-    for (final url in attachments) {
-      text = text.replaceAll(
-        RegExp('!?\\[[^\\]]*\\]\\(${RegExp.escape(url)}\\)'),
-        '',
-      );
-      text = text.replaceAll(url, '');
+    // A skeleton is a bounded approximation, not a second full renderer.
+    // Limit both inspected input and emitted widgets, even for relay-sized posts.
+    const maxCharacters = 8192;
+    const maxAttachments = 4;
+    final source = content.substring(
+      0,
+      math.min(content.length, maxCharacters),
+    );
+    final metadata = parseImetaTags(
+      tags
+          .take(64)
+          .map(
+            (tag) => tag
+                .take(16)
+                .map((part) => part.substring(0, math.min(part.length, 2048)))
+                .toList(),
+          )
+          .toList(),
+    );
+    final attachments = <String>[];
+    final caption = StringBuffer();
+    var cursor = 0;
+    var overflow = content.length > source.length;
+    // Consume code before embeds so media-looking text in code stays text.
+    // Ordinary links remain inline, except metadata-backed audio links, as in
+    // MessageContent's linkBuilder. One traversal replaces per-URL rewrites.
+    final tokens = RegExp(
+      r'```[\s\S]*?(?:```|$)|`[^`\n]*`|(!?)\[([^\]\n]*)\]\((https?://[^\s)]+)\)|https?://[^\s)<>]+',
+    );
+    for (final match in tokens.allMatches(source)) {
+      final token = match.group(0)!;
+      if (token.startsWith('`')) continue;
+      final url = match.group(3) ?? token;
+      final meta = metadata[url];
+      final isEmbed = match.group(1) == '!';
+      final isAudioLink =
+          meta != null &&
+          classifyMediaUrl(url, imeta: meta) == MessageMediaKind.audio;
+      if (!isEmbed && !isAudioLink) continue;
+      if (attachments.length == maxAttachments) {
+        overflow = true;
+        break;
+      }
+      caption.write(source.substring(cursor, match.start));
+      cursor = match.end;
+      attachments.add(url);
     }
+    // No need to inspect or copy the unshown remainder after overflow.
+    if (!overflow) caption.write(source.substring(cursor));
+    final text = caption.toString();
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.hasBoundedWidth
@@ -63,6 +97,12 @@ class MessageSkeletonBody extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: Grid.xxs),
                 child: _attachment(context, url, metadata[url], width),
               ),
+            if (overflow)
+              const SkeletonBar(
+                key: ValueKey('message-skeleton-overflow'),
+                width: 72,
+                height: 16,
+              ),
           ],
         );
       },
@@ -77,15 +117,21 @@ class MessageSkeletonBody extends StatelessWidget {
   ) {
     final kind = classifyMediaUrl(url, imeta: meta);
     if (kind == MessageMediaKind.image || kind == MessageMediaKind.video) {
-      final rawRatio = meta?.aspectRatio;
-      final ratio = rawRatio != null && rawRatio.isFinite && rawRatio > 0
-          ? rawRatio.clamp(0.2, 4.0)
-          : (kind == MessageMediaKind.video ? 16 / 9 : 1.0);
-      final height = math.min(240.0, math.min(width, 320.0) / ratio);
+      final isVideo = kind == MessageMediaKind.video;
+      final imageSize = messageImagePreviewSize(context, meta?.aspectRatio);
+      final mediaWidth = math.min(
+        width,
+        isVideo ? messageMediaMaxWidth(context) : imageSize.width,
+      );
+      // Video's production frame includes a one-pixel border around the
+      // aspect-ratio child; reserve that same outer geometry here.
+      final mediaHeight = isVideo
+          ? (mediaWidth - 2) / messageVideoAspectRatio(meta?.aspectRatio) + 2
+          : imageSize.height;
       return SizedBox(
         key: ValueKey('message-skeleton-${kind!.name}:$url'),
-        width: height * ratio,
-        height: height,
+        width: mediaWidth,
+        height: mediaHeight,
         child: Stack(
           alignment: Alignment.center,
           children: [

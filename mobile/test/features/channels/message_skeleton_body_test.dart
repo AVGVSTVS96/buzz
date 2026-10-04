@@ -44,12 +44,98 @@ void main() {
       expect(shape, findsOneWidget);
       expect(find.byType(Image), findsNothing);
       expect(tester.getSize(shape).width, lessThanOrEqualTo(240));
-      if (kind == 'image' || kind == 'video') {
+      if (kind == 'image') {
         expect(tester.getSize(shape), const Size(120, 240));
-      } else {
+      } else if (kind == 'audio' || kind == 'file') {
         expect(tester.getSize(shape).height, 64);
       }
       expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final count in [10, 6000]) {
+    testWidgets('caps skeleton widgets for $count embeds', (tester) async {
+      final content = List.generate(
+        count,
+        (i) => '![photo](https://example.com/$i.jpg)',
+      ).join('\n');
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: MessageSkeletonBody(content: content, tags: const []),
+            ),
+          ),
+        ),
+      );
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget.key is ValueKey<String> &&
+              (widget.key! as ValueKey<String>).value.startsWith(
+                'message-skeleton-image:',
+              ),
+        ),
+        findsNWidgets(4),
+      );
+      expect(
+        find.byKey(const ValueKey('message-skeleton-overflow')),
+        findsOneWidget,
+      );
+      expect(find.byType(SkeletonBar), findsNWidgets(5));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('does not inspect attachments beyond its fixed input budget', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MessageSkeletonBody(
+            content: '${'a' * 8192}![photo](https://example.com/tail.jpg)',
+            tags: const [],
+          ),
+        ),
+      ),
+    );
+    expect(
+      find.byKey(
+        const ValueKey('message-skeleton-image:https://example.com/tail.jpg'),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('message-skeleton-overflow')),
+      findsOneWidget,
+    );
+    expect(find.byType(SkeletonBar).evaluate().length, lessThanOrEqualTo(5));
+  });
+
+  for (final content in [
+    '[photo](https://example.com/a.jpg)',
+    '`![photo](https://example.com/a.jpg)`',
+    '```\n![photo](https://example.com/a.jpg)\n```',
+    'https://example.com/a.jpg',
+  ]) {
+    testWidgets('keeps inline or code media text inline: $content', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MessageSkeletonBody(content: content, tags: const []),
+          ),
+        ),
+      );
+      expect(
+        find.byKey(
+          const ValueKey('message-skeleton-image:https://example.com/a.jpg'),
+        ),
+        findsNothing,
+      );
+      expect(find.byType(SkeletonBar), findsWidgets);
     });
   }
 

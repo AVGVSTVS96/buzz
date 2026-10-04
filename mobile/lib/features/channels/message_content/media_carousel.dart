@@ -147,7 +147,7 @@ class _MessageImageCarousel extends HookConsumerWidget {
             builder: (context, constraints) {
               final contentWidth = constraints.hasBoundedWidth
                   ? constraints.maxWidth
-                  : _messageMediaMaxWidth(context);
+                  : messageMediaMaxWidth(context);
               final carouselWidth =
                   contentWidth + leadingOverflow + trailingOverflow;
               final leadingExtent = leadingOverflow;

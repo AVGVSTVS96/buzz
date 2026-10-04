@@ -2194,7 +2194,7 @@ Photos
       });
 
       testWidgets(
-        'keeps no-dim image previews max-bounded without fixed crop',
+        'reserves no-dim image bounds without cropping decoded content',
         (tester) async {
           _setSurfaceSize(tester, const Size(400, 800));
           addTearDown(() {
@@ -2231,8 +2231,8 @@ Photos
           );
 
           expect(preview.constraints, isNotNull);
-          expect(preview.constraints!.minWidth, 0);
-          expect(preview.constraints!.minHeight, 0);
+          expect(preview.constraints!.minWidth, closeTo(288, 0.1));
+          expect(preview.constraints!.minHeight, closeTo(240, 0.1));
           expect(preview.constraints!.maxWidth, closeTo(288, 0.1));
           expect(preview.constraints!.maxHeight, closeTo(240, 0.1));
           expect(image.fit, BoxFit.contain);

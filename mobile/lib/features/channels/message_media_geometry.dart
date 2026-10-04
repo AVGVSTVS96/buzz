@@ -11,8 +11,11 @@ double messageMediaMaxWidth(BuildContext context) =>
 
 /// Metadata-based image bounds shared by decoded previews and skeletons.
 Size messageImagePreviewSize(BuildContext context, double? aspectRatio) {
-  final ratio = (aspectRatio ?? 1.0).clamp(0.2, 4.0).toDouble();
   final width = messageMediaMaxWidth(context);
+  if (aspectRatio == null || !aspectRatio.isFinite || aspectRatio <= 0) {
+    return Size(width, messageMediaMaxImageHeight);
+  }
+  final ratio = aspectRatio.clamp(0.2, 4.0).toDouble();
   final height = math.min(width / ratio, messageMediaMaxImageHeight);
   return Size(height * ratio, height);
 }

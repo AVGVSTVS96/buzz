@@ -32,6 +32,8 @@ import 'channels_provider.dart';
 import 'media_viewer_page.dart';
 import 'message_content/link_normalizer.dart';
 import 'message_media.dart';
+import 'message_gallery.dart';
+import 'message_gallery_frame.dart';
 import 'message_media_geometry.dart';
 import 'voice_note_attachment.dart';
 
@@ -219,7 +221,7 @@ class MessageContent extends HookConsumerWidget {
     ].join('\u0001');
     final imetaByUrl = parseImetaTags(tags);
     final trailingGallery = maxLines == null
-        ? _extractTrailingImageGallery(content, imetaByUrl)
+        ? extractTrailingImageGallery(content, imetaByUrl)
         : null;
     final markdownContent = trailingGallery?.content ?? content;
     final customEmoji = _mergeCustomEmoji(
@@ -605,7 +607,6 @@ class _MessageImagePreview extends HookConsumerWidget {
           backgroundColor: context.colors.surfaceContainerHighest,
           width: layout.width,
           height: layout.height,
-          constraints: layout.constraints,
           child: MediaViewerHero(
             tag: heroTag,
             child: ClipRRect(
@@ -637,7 +638,6 @@ class _MessageMediaPreviewFrame extends StatelessWidget {
   final Color backgroundColor;
   final double? width;
   final double? height;
-  final BoxConstraints? constraints;
   final Widget child;
 
   const _MessageMediaPreviewFrame({
@@ -645,21 +645,17 @@ class _MessageMediaPreviewFrame extends StatelessWidget {
     required this.backgroundColor,
     this.width,
     this.height,
-    this.constraints,
     required this.child,
   });
 
   @override
   Widget build(BuildContext context) {
-    final resolvedWidth = constraints == null
-        ? (width ?? messageMediaMaxWidth(context))
-        : width;
+    final resolvedWidth = width ?? messageMediaMaxWidth(context);
 
     return Container(
       key: previewKey,
       width: resolvedWidth,
       height: height,
-      constraints: constraints,
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: backgroundColor,
@@ -675,36 +671,20 @@ _ImagePreviewLayout _resolveImagePreviewLayout(
   BuildContext context,
   double? aspectRatio,
 ) {
-  if (aspectRatio == null) {
-    return _ImagePreviewLayout(
-      constraints: BoxConstraints(
-        maxWidth: messageMediaMaxWidth(context),
-        maxHeight: messageMediaMaxImageHeight,
-      ),
-      fit: BoxFit.contain,
-    );
-  }
-
   final previewSize = messageImagePreviewSize(context, aspectRatio);
   return _ImagePreviewLayout(
     width: previewSize.width,
     height: previewSize.height,
-    fit: BoxFit.cover,
+    fit: aspectRatio == null ? BoxFit.contain : BoxFit.cover,
   );
 }
 
 class _ImagePreviewLayout {
   final double? width;
   final double? height;
-  final BoxConstraints? constraints;
   final BoxFit fit;
 
-  const _ImagePreviewLayout({
-    this.width,
-    this.height,
-    this.constraints,
-    required this.fit,
-  });
+  const _ImagePreviewLayout({this.width, this.height, required this.fit});
 }
 
 class _MediaPreviewFallback extends StatelessWidget {

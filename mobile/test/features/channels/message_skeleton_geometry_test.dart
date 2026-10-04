@@ -14,8 +14,21 @@ import 'package:http/testing.dart';
 
 void main() {
   for (final viewport in [320.0, 430.0, 800.0]) {
-    for (final dimensions in ['1200x2400', '1920x1080', '8000x1000']) {
-      for (final kind in ['image', 'video']) {
+    for (final dimensions in [
+      null,
+      'malformed',
+      '0x2400',
+      '1200x2400',
+      '1920x1080',
+      '8000x1000',
+    ]) {
+      for (final kind in [
+        'image',
+        'video',
+        'pdf',
+        'extensionless',
+        'unknown',
+      ]) {
         testWidgets('$kind $dimensions matches preview at $viewport', (
           tester,
         ) async {
@@ -24,13 +37,25 @@ void main() {
           addTearDown(tester.view.resetPhysicalSize);
           addTearDown(tester.view.resetDevicePixelRatio);
           final url =
-              'https://example.com/a.${kind == 'image' ? 'png' : 'mp4'}';
+              'https://example.com/$viewport-$dimensions-$kind${kind == 'extensionless'
+                  ? ''
+                  : kind == 'video'
+                  ? '.mp4'
+                  : kind == 'image'
+                  ? '.png'
+                  : kind == 'pdf'
+                  ? '.pdf'
+                  : '.bin'}';
           final tags = [
             [
               'imeta',
               'url $url',
-              'm $kind/${kind == 'image' ? 'png' : 'mp4'}',
-              'dim $dimensions',
+              'm ${kind == 'video'
+                  ? 'video/mp4'
+                  : kind == 'image'
+                  ? 'image/png'
+                  : 'application/octet-stream'}',
+              if (dimensions != null) 'dim $dimensions',
             ],
           ];
           final response = Completer<http.Response>();
@@ -83,9 +108,15 @@ void main() {
               ),
             ),
           );
-          final skeleton = find.byKey(ValueKey('message-skeleton-$kind:$url'));
+          final skeleton = find.byKey(
+            ValueKey(
+              'message-skeleton-${kind == 'video' ? 'video' : 'image'}:$url',
+            ),
+          );
           final preview = find.byKey(
-            ValueKey('message-media-$kind-preview:$url'),
+            ValueKey(
+              'message-media-${kind == 'video' ? 'video' : 'image'}-preview:$url',
+            ),
           );
           final expected = tester.getSize(preview);
           expect(
@@ -107,9 +138,11 @@ void main() {
           } else {
             response.complete(
               http.Response.bytes(
-                base64Decode(
-                  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=',
-                ),
+                kind == 'unknown'
+                    ? utf8.encode('not an image')
+                    : base64Decode(
+                        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=',
+                      ),
                 200,
               ),
             );

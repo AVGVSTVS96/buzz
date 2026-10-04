@@ -275,90 +275,93 @@ void showImageActions({
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
+    title: 'Image',
     builder: (sheetContext) => SafeArea(
-      child: IconTheme.merge(
-        data: const IconThemeData(size: 22),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(
-            Grid.gutter,
-            0,
-            Grid.gutter,
-            Grid.xs,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SheetActionSection(
-                children: [
-                  ListTile(
-                    leading: const Icon(LucideIcons.download),
-                    title: const Text('Save image'),
-                    onTap: () {
-                      Navigator.of(sheetContext).pop();
-                      unawaited(_saveImage(context, ref, imageUrl));
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(LucideIcons.share2),
-                    title: const Text('Share image'),
-                    onTap: () {
-                      final renderBox =
-                          context.findRenderObject() as RenderBox?;
-                      final shareOrigin = renderBox == null
-                          ? null
-                          : renderBox.localToGlobal(Offset.zero) &
-                                renderBox.size;
-                      Navigator.of(sheetContext).pop();
-                      unawaited(
-                        _shareImage(
-                          context,
-                          ref,
-                          imageUrl,
-                          shareOrigin: shareOrigin,
-                        ),
-                      );
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(LucideIcons.link2),
-                    title: const Text('Copy image link'),
-                    onTap: () {
-                      Navigator.of(sheetContext).pop();
-                      copyToClipboard(
-                        context,
-                        imageUrl,
-                        message: 'Image link copied',
-                      );
-                    },
-                  ),
-                ],
-              ),
-              if (canManageMessage)
+      child: SingleChildScrollView(
+        child: IconTheme.merge(
+          data: const IconThemeData(size: 22),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              Grid.gutter,
+              0,
+              Grid.gutter,
+              Grid.xs,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
                 SheetActionSection(
                   children: [
                     ListTile(
-                      leading: Icon(
-                        LucideIcons.trash2,
-                        color: sheetContext.colors.error,
-                      ),
-                      title: Text(
-                        'Delete message',
-                        style: TextStyle(color: sheetContext.colors.error),
-                      ),
+                      leading: const Icon(LucideIcons.download),
+                      title: const Text('Save image'),
                       onTap: () {
                         Navigator.of(sheetContext).pop();
-                        _confirmDelete(
-                          context: context,
-                          ref: ref,
-                          channelId: channelId,
-                          messageId: message.id,
-                          onDeleted: onDeleted,
+                        unawaited(_saveImage(context, ref, imageUrl));
+                      },
+                    ),
+                    ListTile(
+                      leading: const Icon(LucideIcons.share2),
+                      title: const Text('Share image'),
+                      onTap: () {
+                        final renderBox =
+                            context.findRenderObject() as RenderBox?;
+                        final shareOrigin = renderBox == null
+                            ? null
+                            : renderBox.localToGlobal(Offset.zero) &
+                                  renderBox.size;
+                        Navigator.of(sheetContext).pop();
+                        unawaited(
+                          _shareImage(
+                            context,
+                            ref,
+                            imageUrl,
+                            shareOrigin: shareOrigin,
+                          ),
+                        );
+                      },
+                    ),
+                    ListTile(
+                      leading: const Icon(LucideIcons.link2),
+                      title: const Text('Copy image link'),
+                      onTap: () {
+                        Navigator.of(sheetContext).pop();
+                        copyToClipboard(
+                          context,
+                          imageUrl,
+                          message: 'Image link copied',
                         );
                       },
                     ),
                   ],
                 ),
-            ],
+                if (canManageMessage)
+                  SheetActionSection(
+                    children: [
+                      ListTile(
+                        leading: Icon(
+                          LucideIcons.trash2,
+                          color: sheetContext.colors.error,
+                        ),
+                        title: Text(
+                          'Delete message',
+                          style: TextStyle(color: sheetContext.colors.error),
+                        ),
+                        onTap: () {
+                          Navigator.of(sheetContext).pop();
+                          _confirmDelete(
+                            context: context,
+                            ref: ref,
+                            channelId: channelId,
+                            messageId: message.id,
+                            onDeleted: onDeleted,
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+              ],
+            ),
           ),
         ),
       ),

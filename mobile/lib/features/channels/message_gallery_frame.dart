@@ -23,7 +23,11 @@ class MessageGalleryFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     final label = Text(
       '$count images',
-      key: const ValueKey('message-media-carousel-count'),
+      key: ValueKey(
+        loading
+            ? 'message-skeleton-carousel-count'
+            : 'message-media-carousel-count',
+      ),
       style: context.textTheme.labelMedium?.copyWith(
         color: context.colors.onSurfaceVariant,
         fontWeight: FontWeight.w400,

@@ -3,6 +3,7 @@ part of '../pairing_page.dart';
 /// SAS verification screen shown during NIP-AB pairing.
 class _SasVerificationView extends HookConsumerWidget {
   final String sasCode;
+  final Future<bool> Function(String)? verifyDesktopCode;
   final bool confirmed;
   final bool sendsIdentityToDesktop;
   final String biometricLabel;
@@ -14,6 +15,7 @@ class _SasVerificationView extends HookConsumerWidget {
   const _SasVerificationView({
     super.key,
     required this.sasCode,
+    this.verifyDesktopCode,
     required this.confirmed,
     required this.sendsIdentityToDesktop,
     required this.biometricLabel,
@@ -28,6 +30,9 @@ class _SasVerificationView extends HookConsumerWidget {
     final controller = useTextEditingController();
     final enteredCode = useValueListenable(controller).text;
     final mismatch = useState(false);
+    final checkingCode = useState(false);
+    final rejectedCode = useRef<String?>(null);
+    final verificationError = useState<String?>(null);
     final shakeRevision = useState(0);
     final codeAccepted = useState(false);
     final confirmationSent = useRef(false);
@@ -44,7 +49,41 @@ class _SasVerificationView extends HookConsumerWidget {
     }
 
     void checkCode(String value) {
-      if (confirmed || codeAccepted.value) return;
+      if (confirmed || codeAccepted.value || checkingCode.value) return;
+      verificationError.value = null;
+      if (verifyDesktopCode != null) {
+        mismatch.value = false;
+        if (value.length != 6) return;
+        if (value == rejectedCode.value) {
+          mismatch.value = true;
+          shakeRevision.value++;
+          unawaited(errorHaptic());
+          return;
+        }
+        checkingCode.value = true;
+        unawaited(() async {
+          try {
+            final accepted = await verifyDesktopCode!(value);
+            if (!context.mounted) return;
+            if (accepted) {
+              codeAccepted.value = true;
+              FocusScope.of(context).unfocus();
+            } else {
+              rejectedCode.value = value;
+              mismatch.value = true;
+              shakeRevision.value++;
+              unawaited(errorHaptic());
+            }
+          } catch (_) {
+            if (context.mounted) {
+              verificationError.value = 'Couldn’t check the code. Try again.';
+            }
+          } finally {
+            if (context.mounted) checkingCode.value = false;
+          }
+        }());
+        return;
+      }
       mismatch.value = value.length == 6 && value != sasCode;
       if (mismatch.value) {
         shakeRevision.value++;
@@ -109,7 +148,7 @@ class _SasVerificationView extends HookConsumerWidget {
             revision: shakeRevision.value,
             child: _PairingCodeEntry(
               controller: controller,
-              enabled: !confirmed,
+              enabled: !confirmed && !checkingCode.value,
               invalid: mismatch.value,
               onChanged: checkCode,
               onSubmitted: () => checkCode(enteredCode),
@@ -137,10 +176,10 @@ class _SasVerificationView extends HookConsumerWidget {
             ),
           ),
         ],
-        if (errorMessage != null) ...[
+        if (errorMessage != null || verificationError.value != null) ...[
           const SizedBox(height: Grid.xs),
           Text(
-            errorMessage!,
+            errorMessage ?? verificationError.value!,
             textAlign: TextAlign.center,
             style: context.textTheme.bodySmall?.copyWith(
               color: context._onboardingInk,

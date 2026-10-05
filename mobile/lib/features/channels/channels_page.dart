@@ -405,6 +405,7 @@ class ChannelsPage extends HookConsumerWidget {
         }
         ref.read(pairedCommunityLandingProvider.notifier).clear();
         communityFlightActive.value = true;
+        final completedPairing = ref.read(pairingProvider);
         final navigator = Navigator.of(context, rootNavigator: true);
         await navigator.push<void>(
           PageRouteBuilder<void>(
@@ -422,7 +423,13 @@ class ChannelsPage extends HookConsumerWidget {
             ),
           ),
         );
-        if (context.mounted) communityFlightActive.value = false;
+        if (context.mounted) {
+          communityFlightActive.value = false;
+          if (completedPairing.status == PairingStatus.success &&
+              identical(ref.read(pairingProvider), completedPairing)) {
+            ref.read(pairingProvider.notifier).reset();
+          }
+        }
       }
 
       unawaited(revealPairedCommunity());

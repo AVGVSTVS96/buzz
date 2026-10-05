@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:buzz/features/pairing/pairing_page.dart';
 import 'package:buzz/features/pairing/pairing_provider.dart';
 import 'package:buzz/shared/theme/theme.dart';
@@ -7,7 +8,23 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 class _EntryNotifier extends PairingNotifier {
-  _EntryNotifier({this.code = '123456', this.recovery = false});
+  _EntryNotifier({
+    this.code = '123456',
+    this.recovery = false,
+    this.remote = false,
+  });
+  final bool remote;
+  final submissions = <String>[];
+  Completer<bool>? verification;
+  @override
+  Future<bool> verifyDesktopCode(String value) {
+    submissions.add(value);
+    verification = Completer<bool>();
+    return verification!.future;
+  }
+
+  void completePairing() =>
+      state = state.copyWith(status: PairingStatus.success);
   final String code;
   final bool recovery;
   int confirmations = 0;
@@ -18,6 +35,7 @@ class _EntryNotifier extends PairingNotifier {
     status: PairingStatus.confirmingSas,
     sasCode: code,
     sendsIdentityToDesktop: recovery,
+    requiresDesktopCode: remote,
   );
 
   @override
@@ -48,8 +66,13 @@ void main() {
     bool reducedMotion = false,
     String code = '123456',
     bool recovery = false,
+    bool remote = false,
   }) async {
-    final notifier = _EntryNotifier(code: code, recovery: recovery);
+    final notifier = _EntryNotifier(
+      code: code,
+      recovery: recovery,
+      remote: remote,
+    );
     await tester.pumpWidget(
       ProviderScope(
         overrides: [pairingProvider.overrideWith(() => notifier)],
@@ -67,6 +90,71 @@ void main() {
     );
     return notifier;
   }
+
+  testWidgets(
+    'remote verification waits for desktop and does not trust the derived SAS',
+    (tester) async {
+      final notifier = await showEntry(tester, remote: true);
+      await tester.enterText(field, '123456');
+      await tester.pump();
+      expect(find.text('Protect your identity'), findsNothing);
+      expect(notifier.submissions, ['123456']);
+      notifier.verification!.complete(false);
+      await tester.pumpAndSettle();
+      expect(find.text('Protect your identity'), findsNothing);
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(text: '1234567'),
+      );
+      await tester.pump();
+      expect(notifier.submissions, ['123456']);
+      await tester.enterText(field, '654321');
+      await tester.pump();
+      notifier.verification!.complete(true);
+      await tester.pumpAndSettle();
+      expect(find.text('Protect your identity'), findsOneWidget);
+      expect(notifier.confirmations, 0);
+      await tester.tap(find.text('Skip'));
+      await tester.pump();
+      expect(notifier.confirmations, 1);
+    },
+  );
+
+  testWidgets(
+    'successful pushed pairing resets after dismissal and can reopen',
+    (tester) async {
+      final notifier = _EntryNotifier();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [pairingProvider.overrideWith(() => notifier)],
+          child: MaterialApp(
+            theme: AppTheme.light(),
+            home: Builder(
+              builder: (context) => Scaffold(
+                body: TextButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const PairingPage(addingCommunity: true),
+                    ),
+                  ),
+                  child: const Text('Open pairing'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Open pairing'));
+      await tester.pumpAndSettle();
+      notifier.completePairing();
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(find.byType(PairingPage), findsNothing);
+      await tester.tap(find.text('Open pairing'));
+      await tester.pumpAndSettle();
+      expect(find.text('Scan a QR code'), findsOneWidget);
+      expect(find.byKey(const Key('pairing-community-loading')), findsNothing);
+    },
+  );
 
   testWidgets(
     'starts empty with no extra confirmation or biometrics controls',

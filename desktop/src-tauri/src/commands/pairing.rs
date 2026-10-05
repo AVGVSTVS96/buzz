@@ -413,8 +413,14 @@ async fn pairing_ws_task_inner(
                         break;
                     }
 
-                    if let Ok((sas, target_code_entry)) = s.handle_offer_with_confirmation(&event) {
+                    if let Ok((mut sas, target_code_entry)) = s.handle_offer_with_confirmation(&event) {
                         code_entry = context.mode == PairingMode::SendIdentity && target_code_entry;
+                        if code_entry {
+                            let (code, challenge) = s.start_desktop_code().map_err(|e| e.to_string())?;
+                            sas = code;
+                            write.send(Message::Text(event_to_relay_json(&challenge).into())).await
+                                .map_err(|e| format!("publish challenge failed: {e}"))?;
+                        }
                         if pairing_task_is_current(&context.generation, context.task_generation) {
                             let _ = app.emit("pairing-sas-received", PairingSasPayload { sas, code_entry });
                         }
@@ -422,8 +428,16 @@ async fn pairing_ws_task_inner(
                     }
 
                     if code_entry {
-                        match s.handle_target_sas_confirm(&event) {
-                            Ok(proof) => {
+                        match s.handle_target_code(&event) {
+                            Ok((response, false)) => {
+                                write.send(Message::Text(event_to_relay_json(&response).into())).await
+                                    .map_err(|e| format!("publish rejection failed: {e}"))?;
+                                if s.state() == buzz_core_pkg::pairing::SessionState::Aborted {
+                                    return Err("Too many incorrect codes. Create a new QR code.".into());
+                                }
+                                continue;
+                            }
+                            Ok((proof, true)) => {
                                 let identity = payload.take().ok_or("Pairing payload missing")?;
                                 let transfer = s.send_payload(PayloadType::Custom, identity)
                                     .map_err(|e| e.to_string())?;

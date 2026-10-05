@@ -59,7 +59,11 @@ class PairingPage extends HookConsumerWidget {
         if (context.mounted) {
           final route = ModalRoute.of(context);
           if (route != null && route.isActive) {
+            final notifier = ref.read(pairingProvider.notifier);
             Navigator.of(context).removeRoute(route);
+            // Reset only after removal so the dismissed page cannot flash its
+            // scanner, and subsequent recovery/onboarding starts fresh.
+            notifier.reset();
           }
         }
       });
@@ -185,6 +189,9 @@ class PairingPage extends HookConsumerWidget {
                     child: _SasVerificationView(
                       key: ValueKey(pairingState.sasCode),
                       sasCode: pairingState.sasCode ?? '------',
+                      verifyDesktopCode: pairingState.requiresDesktopCode
+                          ? ref.read(pairingProvider.notifier).verifyDesktopCode
+                          : null,
                       confirmed: pairingState.userConfirmedSas,
                       sendsIdentityToDesktop:
                           pairingState.sendsIdentityToDesktop,

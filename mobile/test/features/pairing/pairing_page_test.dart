@@ -875,6 +875,8 @@ Future<void> _expandPairingCode(WidgetTester tester) async {
 
 class _ErrorPairingNotifier extends Notifier<PairingState>
     implements PairingNotifier {
+  @override
+  Future<bool> verifyDesktopCode(String code) async => false;
   final String error;
   _ErrorPairingNotifier(this.error);
 
@@ -905,6 +907,8 @@ class _ErrorPairingNotifier extends Notifier<PairingState>
 class _ConnectingPairingNotifier extends Notifier<PairingState>
     implements PairingNotifier {
   @override
+  Future<bool> verifyDesktopCode(String code) async => false;
+  @override
   PairingState build() => const PairingState(status: PairingStatus.connecting);
 
   @override
@@ -929,6 +933,8 @@ class _ConnectingPairingNotifier extends Notifier<PairingState>
 
 class _RecordingPairingNotifier extends Notifier<PairingState>
     implements PairingNotifier {
+  @override
+  Future<bool> verifyDesktopCode(String code) async => false;
   final pairedCodes = <String>[];
 
   @override
@@ -956,6 +962,8 @@ class _RecordingPairingNotifier extends Notifier<PairingState>
 
 class _ConfirmingSasPairingNotifier extends Notifier<PairingState>
     implements PairingNotifier {
+  @override
+  Future<bool> verifyDesktopCode(String code) async => false;
   _ConfirmingSasPairingNotifier({
     this.sendsIdentityToDesktop = false,
     this.errorMessage,

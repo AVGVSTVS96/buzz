@@ -17,6 +17,7 @@ import 'pairing_crypto.dart';
 import 'pairing_socket.dart';
 
 part 'pairing_provider_helpers.dart';
+part 'pairing_state.dart';
 
 /// HTTP client used by [PairingNotifier] for the validation request.
 final pairingHttpClientProvider = Provider<http.Client>((ref) {
@@ -24,62 +25,6 @@ final pairingHttpClientProvider = Provider<http.Client>((ref) {
   ref.onDispose(client.close);
   return client;
 });
-
-enum PairingStatus {
-  idle,
-  connecting,
-  confirmingSas,
-  transferring,
-  storing,
-  success,
-  error,
-}
-
-class PairingState {
-  final PairingStatus status;
-  final String? errorMessage;
-  final String? sasCode;
-  final bool userConfirmedSas;
-  final bool sendsIdentityToDesktop;
-  final bool protectSensitiveActions;
-  final bool authorizationInProgress;
-  final String? destinationRelayUrl;
-
-  const PairingState({
-    this.status = PairingStatus.idle,
-    this.errorMessage,
-    this.sasCode,
-    this.userConfirmedSas = false,
-    this.sendsIdentityToDesktop = false,
-    this.protectSensitiveActions = true,
-    this.authorizationInProgress = false,
-    this.destinationRelayUrl,
-  });
-
-  PairingState copyWith({
-    PairingStatus? status,
-    String? errorMessage,
-    String? sasCode,
-    bool? userConfirmedSas,
-    bool? sendsIdentityToDesktop,
-    bool? protectSensitiveActions,
-    bool? authorizationInProgress,
-    String? destinationRelayUrl,
-    bool clearErrorMessage = false,
-  }) => PairingState(
-    status: status ?? this.status,
-    destinationRelayUrl: destinationRelayUrl ?? this.destinationRelayUrl,
-    errorMessage: clearErrorMessage ? null : errorMessage ?? this.errorMessage,
-    sasCode: sasCode ?? this.sasCode,
-    userConfirmedSas: userConfirmedSas ?? this.userConfirmedSas,
-    sendsIdentityToDesktop:
-        sendsIdentityToDesktop ?? this.sendsIdentityToDesktop,
-    protectSensitiveActions:
-        protectSensitiveActions ?? this.protectSensitiveActions,
-    authorizationInProgress:
-        authorizationInProgress ?? this.authorizationInProgress,
-  );
-}
 
 typedef PairingSocketFactory =
     PairingSocket Function({
@@ -105,6 +50,9 @@ class PairingNotifier extends Notifier<PairingState> {
   RelaySocket? _validationSocket;
   PairingSocket? _socket;
   Timer? _sessionTimeout;
+  Completer<bool>? _codeResult;
+  String? _codeRequestId;
+  int _codeRequestSequence = 0;
   Community? _identityExportCommunity;
   bool _identityExportBiometricOnly = false;
 
@@ -184,30 +132,42 @@ class PairingNotifier extends Notifier<PairingState> {
         state.authorizationInProgress) {
       return;
     }
-    if (!_sendIdentityToSource && !_userConfirmedSas) {
-      // Updated desktops wait for this signed, encrypted transcript proof
-      // instead of asking for a second confirmation on desktop.
-      final hash = deriveTranscriptHash(
-        _sessionId!,
-        hexToBytes(_sourcePubkey!),
-        hexToBytes(_ephemeralPubkey!),
-        _sasInput!,
-        _sessionSecret!,
-      );
-      _publishEvent(
-        kind: 24134,
-        content: _encryptMessage({
-          'type': 'sas-confirm',
-          'transcript_hash': bytesToHex(hash),
-        }),
-        tags: [
-          ['p', _sourcePubkey!],
-        ],
-      );
-    }
     _userConfirmedSas = true;
     state = state.copyWith(userConfirmedSas: true);
     if (_sasConfirmReceived) unawaited(_continueAfterSas());
+  }
+
+  /// Check user input with the source; never compare a QR-derived SAS when the
+  /// source has negotiated an independent desktop-only code.
+  Future<bool> verifyDesktopCode(String code) async {
+    if (!state.requiresDesktopCode ||
+        state.status != PairingStatus.confirmingSas ||
+        _codeResult != null ||
+        !RegExp(r'^\d{6}$').hasMatch(code)) {
+      return false;
+    }
+    final result = Completer<bool>();
+    _codeResult = result;
+    _codeRequestId = '${++_codeRequestSequence}';
+    _publishEvent(
+      kind: 24134,
+      content: _encryptMessage({
+        'type': 'code-submit',
+        'code': code,
+        'request_id': _codeRequestId,
+      }),
+      tags: [
+        ['p', _sourcePubkey!],
+      ],
+    );
+    try {
+      return await result.future.timeout(const Duration(seconds: 10));
+    } finally {
+      if (identical(_codeResult, result)) {
+        _codeResult = null;
+        _codeRequestId = null;
+      }
+    }
   }
 
   void setProtectSensitiveActions(bool value) {
@@ -351,6 +311,9 @@ class PairingNotifier extends Notifier<PairingState> {
   }
 
   void _cleanup() {
+    if (_codeResult?.isCompleted == false) _codeResult!.complete(false);
+    _codeResult = null;
+    _codeRequestId = null;
     _pairingGeneration++;
     _validationSocket?.dispose();
     _validationSocket = null;
@@ -449,7 +412,7 @@ class PairingNotifier extends Notifier<PairingState> {
       // 7. Build and send the offer event.
       final offerContent = _encryptMessage({
         'type': 'offer',
-        if (!_sendIdentityToSource) 'confirmation': 'code-entry',
+        if (!_sendIdentityToSource) 'confirmation': 'desktop-code-v1',
         'version': 1,
         'session_id': bytesToHex(_sessionId!),
       });
@@ -572,6 +535,28 @@ class PairingNotifier extends Notifier<PairingState> {
       final msgType = msg['type'] as String?;
 
       switch (msgType) {
+        case 'desktop-code':
+          if (!_sendIdentityToSource &&
+              state.status == PairingStatus.confirmingSas &&
+              !_sasConfirmReceived) {
+            state = state.copyWith(requiresDesktopCode: true);
+          }
+          _processedEventIds.add(eventId);
+        case 'code-rejected':
+          if (state.requiresDesktopCode &&
+              msg['request_id'] == _codeRequestId &&
+              _codeResult?.isCompleted == false) {
+            _codeResult!.complete(false);
+            if (msg['remaining_attempts'] == 0) {
+              _cleanup();
+              state = const PairingState(
+                status: PairingStatus.error,
+                errorMessage:
+                    'Too many incorrect codes. Scan a new desktop QR code and try again.',
+              );
+            }
+          }
+          _processedEventIds.add(eventId);
         case 'sas-confirm':
           _handleSasConfirm(msg);
           _processedEventIds.add(eventId); // record after successful processing
@@ -619,6 +604,9 @@ class PairingNotifier extends Notifier<PairingState> {
     }
 
     _sasConfirmReceived = true;
+    if (state.requiresDesktopCode && _codeResult?.isCompleted == false) {
+      _codeResult!.complete(true);
+    }
 
     // If the user already tapped "Codes Match", complete the transition now
     // that the transcript hash is verified.
@@ -882,7 +870,11 @@ class PairingNotifier extends Notifier<PairingState> {
           .read(authProvider.notifier)
           .authenticateWithCommunity(community);
       if (generation != _pairingGeneration) return;
-      state = const PairingState(status: PairingStatus.success);
+      state = PairingState(
+        status: PairingStatus.success,
+        destinationRelayUrl: community.relayUrl,
+      );
+      ref.read(pairedCommunityLandingProvider.notifier).request(community);
     } on FormatException catch (e) {
       if (generation != _pairingGeneration) return;
       state = PairingState(

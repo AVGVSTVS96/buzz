@@ -295,50 +295,100 @@ void main() {
       }
 
       test(
-        'code entry advertises capability and sends one bound proof after confirmation',
+        'desktop-only code is verified remotely before import approval',
         () async {
           await notifier.pair(pairingCode);
           expect(socket.published.single['tags'], hasLength(1));
           expect(
             socket
                 .decryptedPublishedMessages(sourceSecret)
-                .map((m) => m['type']),
-            ['offer'],
-          );
-          expect(
-            socket
-                .decryptedPublishedMessages(sourceSecret)
                 .single['confirmation'],
-            'code-entry',
+            'desktop-code-v1',
           );
-          notifier.setProtectSensitiveActions(false);
-          notifier.confirmSas();
-          notifier.confirmSas();
-          final messages = socket.decryptedPublishedMessages(sourceSecret);
-          expect(messages.map((m) => m['type']), ['offer', 'sas-confirm']);
-          final secret = hexToBytes(sessionSecretHex);
-          final target = nostr.Keys(socket.ephemeralPrivkey).public;
-          final (_, input) = deriveSas(
-            ecdhSharedSecret(sourceSecret, target),
-            secret,
+          socket.sendSourceMessage(
+            sourceSecret: sourceSecret,
+            sessionSecretHex: sessionSecretHex,
+            message: {'type': 'desktop-code'},
           );
-          expect(
-            messages.last['transcript_hash'],
-            bytesToHex(
-              deriveTranscriptHash(
-                deriveSessionId(secret),
-                hexToBytes(nostr.Keys(sourceSecret).public),
-                hexToBytes(target),
-                input,
-                secret,
-              ),
-            ),
+          expect(container.read(pairingProvider).requiresDesktopCode, isTrue);
+          final wrong = notifier.verifyDesktopCode('111111');
+          final first = socket.decryptedPublishedMessages(sourceSecret).last;
+          expect(first['type'], 'code-submit');
+          expect(first['code'], '111111');
+          socket.sendSourceMessage(
+            sourceSecret: sourceSecret,
+            sessionSecretHex: sessionSecretHex,
+            message: {
+              'type': 'code-rejected',
+              'request_id': first['request_id'],
+              'remaining_attempts': 4,
+            },
           );
+          expect(await wrong, isFalse);
+          expect(importAuth.lastCommunity, isNull);
+          final correct = notifier.verifyDesktopCode('222222');
+          socket.sendSourceMessage(
+            sourceSecret: sourceSecret,
+            sessionSecretHex: sessionSecretHex,
+            message: {'type': 'sas-confirm'},
+            includeTranscriptHash: true,
+          );
+          expect(await correct, isTrue);
           expect(
             container.read(pairingProvider).status,
             PairingStatus.confirmingSas,
           );
           expect(importAuth.lastCommunity, isNull);
+          notifier.setProtectSensitiveActions(false);
+          notifier.confirmSas();
+          await Future<void>.delayed(Duration.zero);
+          expect(
+            container.read(pairingProvider).status,
+            PairingStatus.transferring,
+          );
+          expect(
+            socket
+                .decryptedPublishedMessages(sourceSecret)
+                .where((m) => m['type'] == 'sas-confirm'),
+            isEmpty,
+          );
+        },
+      );
+
+      test(
+        'final rejected guess exits the session and reset cancels pending verification',
+        () async {
+          await notifier.pair(pairingCode);
+          socket.sendSourceMessage(
+            sourceSecret: sourceSecret,
+            sessionSecretHex: sessionSecretHex,
+            message: {'type': 'desktop-code'},
+          );
+          final result = notifier.verifyDesktopCode('111111');
+          final request = socket.decryptedPublishedMessages(sourceSecret).last;
+          socket.sendSourceMessage(
+            sourceSecret: sourceSecret,
+            sessionSecretHex: sessionSecretHex,
+            message: {
+              'type': 'code-rejected',
+              'request_id': request['request_id'],
+              'remaining_attempts': 0,
+            },
+          );
+          expect(await result, isFalse);
+          expect(container.read(pairingProvider).status, PairingStatus.error);
+          expect(importAuth.lastCommunity, isNull);
+          notifier.reset();
+          await notifier.pair(pairingCode);
+          socket.sendSourceMessage(
+            sourceSecret: sourceSecret,
+            sessionSecretHex: sessionSecretHex,
+            message: {'type': 'desktop-code'},
+          );
+          final pending = notifier.verifyDesktopCode('222222');
+          notifier.reset();
+          expect(await pending, isFalse);
+          expect(container.read(pairingProvider).status, PairingStatus.idle);
         },
       );
 

@@ -1,3 +1,4 @@
+import 'package:buzz/features/pairing/pairing_provider.dart';
 import 'package:buzz/shared/community/paired_community_landing.dart';
 import 'dart:async';
 
@@ -1803,6 +1804,7 @@ void main() {
           buildTestable(
             disableAnimations: reduceMotion,
             overrides: [
+              pairingProvider.overrideWith(_CompletedPairingNotifier.new),
               channelsProvider.overrideWith(
                 () => _FakeNotifier(testChannels, load: () => loaded.future),
               ),
@@ -1862,6 +1864,7 @@ void main() {
         expect(avatar, findsNothing);
         expect(find.byKey(const Key('community-switch-loading')), findsNothing);
         expect(notifier.switchedIds, isEmpty);
+        expect(container.read(pairingProvider).status, PairingStatus.idle);
         expect(tester.takeException(), isNull);
         debugDefaultTargetPlatformOverride = null;
       },
@@ -3920,4 +3923,9 @@ class _SwitchingUserCache extends UserCacheNotifier {
     };
     loaded.complete(true);
   }
+}
+
+class _CompletedPairingNotifier extends PairingNotifier {
+  @override
+  PairingState build() => const PairingState(status: PairingStatus.success);
 }

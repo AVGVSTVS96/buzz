@@ -1,35 +1,51 @@
 use super::*;
 
-fn target_proof(source: &PairingSession, target: &PairingSession) -> Event {
-    let hash = derive_transcript_hash(
-        &target.session_id,
-        &source.pubkey().to_bytes(),
-        &target.pubkey().to_bytes(),
-        &target.sas_input.expect("SAS input"),
-        &target.session_secret,
-    );
-    target
-        .build_event(&PairingMessage::SasConfirm {
-            transcript_hash: hex::encode(hash),
+fn setup() -> (PairingSession, PairingSession, String) {
+    let (mut source, qr) = PairingSession::new_source("wss://relay.test".into());
+    let (target, _) = PairingSession::new_target(&qr).expect("target");
+    let offer = target
+        .build_event(&PairingMessage::Offer {
+            session_id: hex::encode(target.session_id),
+            version: 1,
+            confirmation: Some("desktop-code-v1".into()),
         })
-        .expect("proof")
+        .expect("offer");
+    assert!(
+        source
+            .handle_offer_with_confirmation(&offer)
+            .expect("offer")
+            .1
+    );
+    let (code, challenge) = source.start_desktop_code().expect("challenge");
+    assert_eq!(
+        target.decrypt_message(&challenge).expect("decrypt"),
+        PairingMessage::DesktopCode {}
+    );
+    assert_eq!(code.len(), 6);
+    (source, target, code)
+}
+
+fn submission(target: &PairingSession, code: &str, attempt: u8) -> Event {
+    target
+        .build_event(&PairingMessage::CodeSubmit {
+            code: code.into(),
+            request_id: attempt.to_string(),
+        })
+        .expect("submission")
 }
 
 #[test]
-fn code_entry_releases_payload_only_after_peer_proof() {
-    let (mut source, qr) = PairingSession::new_source("wss://relay.test".into());
-    let (mut target, offer) = PairingSession::new_target(&qr).expect("target");
-    source.handle_offer(&offer).expect("offer");
+fn only_source_only_code_releases_identity() {
+    let (mut source, mut target, code) = setup();
     assert!(source
         .send_payload(PayloadType::Custom, Zeroizing::new("secret".into()))
         .is_err());
-    let proof = target_proof(&source, &target);
-    let response = source
-        .handle_target_sas_confirm(&proof)
-        .expect("peer proof");
-    assert!(source.handle_target_sas_confirm(&proof).is_err(), "replay");
-    target.handle_sas_confirm(&response).expect("source proof");
-    target.confirm_target_sas().expect("user confirmed");
+    let event = submission(&target, &code, 1);
+    let (proof, accepted) = source.handle_target_code(&event).expect("verify");
+    assert!(accepted);
+    assert!(source.handle_target_code(&event).is_err());
+    target.handle_sas_confirm(&proof).expect("source proof");
+    target.confirm_target_sas().expect("user approves import");
     let payload = source
         .send_payload(PayloadType::Custom, Zeroizing::new("secret".into()))
         .expect("payload");
@@ -37,114 +53,120 @@ fn code_entry_releases_payload_only_after_peer_proof() {
         &*target.handle_payload(&payload).expect("import").1,
         "secret"
     );
-    source
-        .handle_complete(&target.send_complete().expect("complete"))
-        .expect("completion");
-    assert_eq!(source.state(), SessionState::Completed);
 }
 
 #[test]
-fn wrong_peer_cannot_confirm_code_entry() {
-    let (mut source, qr) = PairingSession::new_source("wss://relay.test".into());
-    let (target, offer) = PairingSession::new_target(&qr).expect("target");
-    let (other, _) = PairingSession::new_target(&qr).expect("other target");
-    source.handle_offer(&offer).expect("offer");
-    assert!(source
-        .handle_target_sas_confirm(&target_proof(&source, &other))
-        .is_err());
+fn qr_derived_transcript_cannot_authorize_release() {
+    let (mut source, target, _) = setup();
+    let hash = derive_transcript_hash(
+        &target.session_id,
+        &source.pubkey().to_bytes(),
+        &target.pubkey().to_bytes(),
+        &target.sas_input.expect("sas"),
+        &target.session_secret,
+    );
+    let event = target
+        .build_event(&PairingMessage::SasConfirm {
+            transcript_hash: hex::encode(hash),
+        })
+        .expect("proof");
+    assert!(source.handle_target_code(&event).is_err());
     assert_eq!(source.state(), SessionState::Confirming);
-    source
-        .handle_target_sas_confirm(&target_proof(&source, &target))
-        .expect("real peer");
+    assert!(source
+        .send_payload(PayloadType::Custom, Zeroizing::new("secret".into()))
+        .is_err());
 }
 
 #[test]
-fn invalid_transcript_aborts_without_releasing_payload() {
-    for hash in ["00".repeat(32), "bad".into()] {
-        let (mut source, qr) = PairingSession::new_source("wss://relay.test".into());
-        let (target, offer) = PairingSession::new_target(&qr).expect("target");
-        source.handle_offer(&offer).expect("offer");
-        let bad = target
-            .build_event(&PairingMessage::SasConfirm {
-                transcript_hash: hash,
-            })
-            .expect("proof");
-        assert!(matches!(
-            source.handle_target_sas_confirm(&bad),
-            Err(PairingError::TranscriptMismatch)
-        ));
-        assert_eq!(source.state(), SessionState::Aborted);
+fn five_wrong_guesses_abort_without_reset_or_replay_bypass() {
+    let (mut source, target, code) = setup();
+    let wrong = if code == "000000" { "000001" } else { "000000" };
+    for attempt in 1..=5 {
+        let event = submission(&target, wrong, attempt);
+        let (reply, accepted) = source.handle_target_code(&event).expect("reject");
+        assert!(!accepted);
+        assert_eq!(
+            target.decrypt_message(&reply).expect("reply"),
+            PairingMessage::CodeRejected {
+                request_id: attempt.to_string(),
+                remaining_attempts: 5 - attempt
+            }
+        );
+        assert!(
+            source.handle_target_code(&event).is_err(),
+            "duplicate submission"
+        );
+        assert!(
+            source.start_desktop_code().is_err(),
+            "cannot regenerate code/budget"
+        );
         assert!(source
             .send_payload(PayloadType::Custom, Zeroizing::new("secret".into()))
             .is_err());
     }
+    assert_eq!(source.state(), SessionState::Aborted);
+    assert!(source
+        .handle_target_code(&submission(&target, &code, 6))
+        .is_err());
 }
 
 #[test]
-fn unrelated_messages_do_not_consume_confirmation() {
-    let (mut source, qr) = PairingSession::new_source("wss://relay.test".into());
-    let (target, offer) = PairingSession::new_target(&qr).expect("target");
-    source.handle_offer(&offer).expect("offer");
-    let unexpected = target
-        .build_event(&PairingMessage::Complete { success: true })
-        .expect("message");
-    assert!(source.handle_target_sas_confirm(&unexpected).is_err());
-    assert_eq!(source.state(), SessionState::Confirming);
-    source
-        .handle_target_sas_confirm(&target_proof(&source, &target))
-        .expect("proof");
+fn wrong_then_correct_code_succeeds() {
+    let (mut source, target, code) = setup();
+    let wrong = if code == "000000" { "000001" } else { "000000" };
+    assert!(
+        !source
+            .handle_target_code(&submission(&target, wrong, 1))
+            .expect("reject")
+            .1
+    );
+    assert!(
+        source
+            .handle_target_code(&submission(&target, &code, 2))
+            .expect("accept")
+            .1
+    );
 }
 
 #[test]
-fn expired_session_rejects_code_entry() {
-    let (mut source, qr) = PairingSession::new_source("wss://relay.test".into());
-    let (target, offer) = PairingSession::new_target(&qr).expect("target");
-    source.handle_offer(&offer).expect("offer");
-    let proof = target_proof(&source, &target);
-    source.created_at = Instant::now() - source.timeout - std::time::Duration::from_secs(1);
-    assert!(source.handle_target_sas_confirm(&proof).is_err());
-}
-
-#[test]
-fn tampered_confirmation_does_not_advance_session() {
-    let (mut source, qr) = PairingSession::new_source("wss://relay.test".into());
-    let (target, offer) = PairingSession::new_target(&qr).expect("target");
-    source.handle_offer(&offer).expect("offer");
-    let valid = target_proof(&source, &target);
-    let mut tampered = valid.clone();
+fn wrong_peer_tampering_and_expiry_cannot_authorize() {
+    let (mut source, target, code) = setup();
+    let (other, _) = PairingSession::new_source("wss://relay.test".into());
+    let mut bad = submission(&target, &code, 1);
+    bad.pubkey = other.pubkey();
+    assert!(source.handle_target_code(&bad).is_err());
+    let mut tampered = submission(&target, &code, 2);
     tampered.content.push('x');
-    assert!(source.handle_target_sas_confirm(&tampered).is_err());
-    assert_eq!(source.state(), SessionState::Confirming);
-    source
-        .handle_target_sas_confirm(&valid)
-        .expect("valid original proof");
+    assert!(source.handle_target_code(&tampered).is_err());
+    assert_eq!(source.code_attempts, 0);
+    source.created_at = Instant::now() - source.timeout - Duration::from_secs(1);
+    assert!(source
+        .handle_target_code(&submission(&target, &code, 3))
+        .is_err());
 }
 
 #[test]
-fn code_entry_capability_is_encrypted_and_uses_one_recipient_tag() {
-    for confirmation in [
+fn legacy_capabilities_never_enable_automatic_release() {
+    for capability in [
         None,
-        Some("code-entry".to_string()),
-        Some("unknown".to_string()),
+        Some("code-entry"),
+        Some("unknown"),
+        Some("desktop-code-v1"),
     ] {
         let (mut source, qr) = PairingSession::new_source("wss://relay.test".into());
         let (target, _) = PairingSession::new_target(&qr).expect("target");
-        let offer = target
+        let event = target
             .build_event(&PairingMessage::Offer {
                 session_id: hex::encode(target.session_id),
                 version: 1,
-                confirmation: confirmation.clone(),
+                confirmation: capability.map(str::to_string),
             })
             .expect("offer");
-        assert_eq!(
-            offer.tags.len(),
-            1,
-            "strict pairing relays allow only the recipient tag"
-        );
-        let (code, entry) = source
-            .handle_offer_with_confirmation(&offer)
-            .expect("valid offer");
-        assert_eq!(entry, confirmation.as_deref() == Some("code-entry"));
-        assert_eq!(code, target.sas_code().expect("matching code"));
+        assert_eq!(event.tags.len(), 1);
+        let (_, enabled) = source
+            .handle_offer_with_confirmation(&event)
+            .expect("offer");
+        assert_eq!(enabled, capability == Some("desktop-code-v1"));
+        assert_eq!(source.start_desktop_code().is_ok(), enabled);
     }
 }

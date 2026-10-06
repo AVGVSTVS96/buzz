@@ -924,7 +924,7 @@ index 0000000000000000000000000000000000000000..9f5588917cf5359f5d9f66e7b7f8f2c9
 +    }
 +}
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index 23a39393cedd55d351afe9b49349e1ced467f37d..08f1fcfd2754c7d529996ff6f96a96153f961c53 100644
+index fc6401836b802486ba97c6840084d7873769def6..72a9294b94b214b50d1834ea69ba33f875873233 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -8,6 +8,7 @@ mod acp;
@@ -989,7 +989,7 @@ index 23a39393cedd55d351afe9b49349e1ced467f37d..08f1fcfd2754c7d529996ff6f96a9615
          }
      }
  
-@@ -10586,6 +10620,7 @@ mod error_outcome_emission_tests {
+@@ -10667,6 +10701,7 @@ mod error_outcome_emission_tests {
              agent_owner: None,
              no_base_prompt: false,
              base_prompt_content: None,
@@ -2994,7 +2994,7 @@ index bb26f558802d94be66d56ca06180d2f89c1075e1..a23717abfee23cfaf53b9a63f828f117
          "**/activity-scope-label-screenshots.spec.ts",
          "**/welcome-agent-modal-screenshots.spec.ts",
 diff --git a/desktop/src-tauri/src/commands/agent_config_tests.rs b/desktop/src-tauri/src/commands/agent_config_tests.rs
-index 14e7da098d08ed6a897e7a56c25fe00e3e83d153..31797aa3dfd9880d2d63826c4c13fa393f3a6c7a 100644
+index 3ff6824c37f84995c9407193aac519af4e62475e..8e4a17e0f6c530c91f48320958c98806366a9dbc 100644
 --- a/desktop/src-tauri/src/commands/agent_config_tests.rs
 +++ b/desktop/src-tauri/src/commands/agent_config_tests.rs
 @@ -124,6 +124,7 @@ fn agent_record() -> ManagedAgentRecord {

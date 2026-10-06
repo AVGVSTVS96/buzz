@@ -2,7 +2,7 @@
 format: patch-md/v0.1
 id: pulse-agent-presence
 summary: Pulse agent cards show the agent's real relay presence instead of offline for every relay agent and online forever for any deployed one.
-baseline: af5bb0af488784c3707e99c87e0675a729711a6e
+baseline: 46dcc01873aae7ef926c2c9be7c5d360f296ac94
 patch_file: pulse-agent-presence.patch
 patch_sha256: 90ba3047bfd50dbb54b529d79cbb5843e793012f3d7bce35146e8bf1f18b2e48
 ---

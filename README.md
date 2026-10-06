@@ -1,3 +1,14 @@
+> [!NOTE]
+> **This is an auto-patched fork of [Buzz](https://github.com/block/buzz).**
+> It carries a few small changes, each written as a future upstream PR, as
+> [PATCH.md packages](fork/patches/). A daily pipeline re-applies them onto the latest
+> upstream, heals conflicts with Claude, runs `fork/verify`, commits the result
+> to `main`, and builds the macOS app into the
+> [`buzz-desktop-fork-latest`](https://github.com/AVGVSTVS96/buzz/releases/tag/buzz-desktop-fork-latest)
+> release. [`fork/README.md`](fork/README.md) explains how it works.
+>
+> Everything below is the upstream README, unchanged.
+
 <h1 align="center">Buzz 🐝</h1>
 
 <p align="center">

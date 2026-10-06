@@ -46,6 +46,7 @@ import type { HarnessDefinitionInput } from "@/shared/api/tauri";
 import { discoverAcpRuntimes } from "@/shared/api/tauriAcpDiscovery";
 import {
   connectManagedAgent,
+  disconnectManagedAgent,
   setManagedAgentAutoRestart,
   setManagedAgentStartOnAppLaunch,
   startManagedAgent,
@@ -425,6 +426,17 @@ export function useConnectManagedAgentMutation() {
 
   return useMutation({
     mutationFn: connectManagedAgent,
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: relayAgentsQueryKey });
+    },
+  });
+}
+
+export function useDisconnectManagedAgentMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: disconnectManagedAgent,
     onSettled: async () => {
       await queryClient.invalidateQueries({ queryKey: relayAgentsQueryKey });
     },

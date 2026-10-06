@@ -10,6 +10,7 @@ import { AgentDefaultsDialog } from "./AgentDefaultsDialog";
 import { AgentDialog } from "./AgentDialog";
 import { CommunityCatalogDialog } from "./CommunityCatalogDialog";
 import { ConnectAgentDialog } from "./ConnectAgentDialog";
+import { ConnectedAgentsSection } from "./ConnectedAgentsSection";
 import { PersonaDeleteDialog } from "./PersonaDeleteDialog";
 import { PersonaShareDialog } from "./PersonaShareDialog";
 import { AgentSnapshotExportDialog } from "./AgentSnapshotExportDialog";
@@ -293,6 +294,12 @@ export function AgentsView() {
                 void personas.handleSetActive(persona, false, "library");
               }}
               onDeletePersona={personas.openDelete}
+            />
+
+            <ConnectedAgentsSection
+              onOpenAgentProfile={(pubkey) => {
+                openProfilePanel?.(pubkey);
+              }}
             />
 
             <TeamsSection

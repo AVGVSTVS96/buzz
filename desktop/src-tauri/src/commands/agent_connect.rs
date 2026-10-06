@@ -10,6 +10,7 @@ use nostr::{Event, PublicKey};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
+use super::agents::tombstone_managed_agent_at;
 use crate::{
     app_state::AppState,
     managed_agents::{
@@ -208,6 +209,29 @@ async fn connect_agent_at(
         policy_kept,
         policy_sync_error,
     })
+}
+
+/// Withdraw the owner policy of an agent this device does not manage and
+/// archive its identity.
+///
+/// The agent's NIP-OA tag stays valid: an owner cannot revoke a signature it
+/// already handed out. Returns the relay sync error, if any; the tombstone is
+/// retained and retried by the flush loop.
+#[tauri::command]
+pub async fn disconnect_managed_agent(
+    agent_pubkey: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let agent_pubkey = parse_agent_pubkey(&agent_pubkey)?.to_hex();
+    let scope = active_retention_scope(&app, &state)?;
+    ensure_not_managed_here(&app, &state, &agent_pubkey)?;
+    tombstone_managed_agent_at(&scope.db_path, &scope.owner_keys, &agent_pubkey)?;
+    Ok(
+        flush_pending_events_at(&scope.db_path, &state, &scope.relay_url, &scope.owner_keys)
+            .await
+            .err(),
+    )
 }
 
 #[cfg(test)]

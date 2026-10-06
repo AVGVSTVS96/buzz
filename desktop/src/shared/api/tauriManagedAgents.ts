@@ -167,3 +167,11 @@ export async function connectManagedAgent(input: {
     policySyncError: response.policy_sync_error,
   };
 }
+
+export async function disconnectManagedAgent(
+  agentPubkey: string,
+): Promise<string | null> {
+  return invokeTauri<string | null>("disconnect_managed_agent", {
+    agentPubkey,
+  });
+}

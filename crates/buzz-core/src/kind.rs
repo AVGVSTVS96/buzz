@@ -93,6 +93,40 @@ pub const KIND_AGENT_PROFILE: u32 = 10100;
 /// `docs/nips/NIP-AE.md` and [`crate::engram`].
 pub const KIND_AGENT_ENGRAM: u32 = 30174;
 
+/// NIP-AF: Agent File (parameterized replaceable, agent-authored).
+///
+/// Encrypted record of one file an agent shares with its owner. Addressed by
+/// `(pubkey_a, kind, d_tag)`, where `d_tag` is an HMAC over the agent↔owner
+/// conversation key and the file's path. See `docs/nips/NIP-AF.md` and
+/// [`crate::agent_files`].
+pub const KIND_AGENT_FILE: u32 = 30180;
+
+/// NIP-AF: Agent File edit request (regular, owner-authored).
+///
+/// The owner's proposed replacement for one shared file, NIP-44 encrypted to
+/// the agent and `p`-tagged with it. Stored, so an offline agent answers it
+/// when it comes back. See `docs/nips/NIP-AF.md`.
+pub const KIND_AGENT_FILE_EDIT_REQUEST: u32 = 4180;
+
+/// NIP-AF: Agent File edit result (regular, agent-authored).
+///
+/// The agent's answer to an edit request — applied, conflict, or declined —
+/// NIP-44 encrypted to the owner, `p`-tagged with it and `e`-tagged with the
+/// request. See `docs/nips/NIP-AF.md`.
+pub const KIND_AGENT_FILE_EDIT_RESULT: u32 = 4181;
+
+/// Kinds private to an agent ↔ owner pair: readable only by their author or
+/// the pubkey in their `#p` tag.
+///
+/// The relay closes any filter that can match one of these unless it pins
+/// `authors` or `#p` to the reader (see `agent_pair_filters_authorized`).
+pub const AGENT_PAIR_KINDS: &[u32] = &[
+    KIND_AGENT_ENGRAM,
+    KIND_AGENT_FILE,
+    KIND_AGENT_FILE_EDIT_REQUEST,
+    KIND_AGENT_FILE_EDIT_RESULT,
+];
+
 /// NIP-ER: Event Reminder (parameterized replaceable, author-only).
 ///
 /// Encrypted, author-only reminder addressed by `(pubkey, kind, d_tag)`. The
@@ -659,6 +693,9 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_FILE_METADATA,
     KIND_AGENT_PROFILE,
     KIND_AGENT_ENGRAM,
+    KIND_AGENT_FILE,
+    KIND_AGENT_FILE_EDIT_REQUEST,
+    KIND_AGENT_FILE_EDIT_RESULT,
     KIND_EVENT_REMINDER,
     KIND_PERSONA,
     KIND_TEAM,
@@ -872,6 +909,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 300
 const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 30177 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_TEAM_CATALOG)); // 30178 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_PRIVATE_MANAGED_AGENT)); // 30179 ∈ 30000–39999
+const _: () = assert!(is_parameterized_replaceable(KIND_AGENT_FILE)); // 30180 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999
@@ -899,6 +937,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
 const _: () = assert!(!is_replaceable(KIND_AGENT_TURN_METRIC));
 const _: () = assert!(!is_parameterized_replaceable(KIND_AGENT_TURN_METRIC));
 const _: () = assert!(KIND_AGENT_TURN_METRIC <= u16::MAX as u32);
+// Compile-time: NIP-AF edit requests and results are regular stored kinds.
+const _: () = assert!(!is_ephemeral(KIND_AGENT_FILE_EDIT_REQUEST));
+const _: () = assert!(!is_replaceable(KIND_AGENT_FILE_EDIT_REQUEST));
+const _: () = assert!(!is_ephemeral(KIND_AGENT_FILE_EDIT_RESULT));
+const _: () = assert!(!is_replaceable(KIND_AGENT_FILE_EDIT_RESULT));
 // Moderation kinds fit u16 and are neither replaceable nor ephemeral:
 // 1984 is a regular event (persisted to the queue, never fanned out);
 // 9040–9044 are direct commands (executed, never stored).

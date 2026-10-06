@@ -142,14 +142,20 @@ pub fn conversation_key(my_seckey: &SecretKey, their_pubkey: &PublicKey) -> Conv
 /// `d = lower_hex(HMAC-SHA256(K_c, "agent-memory/v1/d-tag" || 0x00 || slug))`,
 /// 64 hex characters.
 pub fn d_tag(k_c: &ConversationKey, slug: &str) -> String {
+    domain_d_tag(k_c, D_TAG_DOMAIN, slug)
+}
+
+/// `lower_hex(HMAC-SHA256(K_c, domain || 0x00 || name))` — the addressing
+/// construction shared by NIP-AE slugs and NIP-AF paths.
+pub(crate) fn domain_d_tag(k_c: &ConversationKey, domain: &[u8], name: &str) -> String {
     // HMAC-SHA256 accepts a key of any byte length; `new_from_slice` only
     // returns `Err` for fixed-length MAC variants. This is infallible for
     // SHA-256 and propagating it would just add noise at every call site.
     let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(k_c.as_bytes())
         .expect("HMAC-SHA256 is keyed-prefix MAC; new_from_slice cannot fail");
-    mac.update(D_TAG_DOMAIN);
+    mac.update(domain);
     mac.update(&[0u8]);
-    mac.update(slug.as_bytes());
+    mac.update(name.as_bytes());
     hex::encode(mac.finalize().into_bytes())
 }
 
@@ -218,7 +224,7 @@ impl Body {
         // requires rejection, so we deserialize through a wrapper that walks
         // the tree once and fails on the first repeated member name at any
         // nesting depth.
-        let raw = parse_strict_json(bytes)?;
+        let raw = parse_strict_json(bytes).map_err(EngramError::InvalidBody)?;
 
         let obj = match raw {
             serde_json::Value::Object(m) => m,
@@ -253,7 +259,7 @@ impl Body {
 
 /// Minimal JSON-string encoder per RFC 8259 §7. Escapes `"` `\` and the
 /// required control chars (`\b \f \n \r \t` + `\u00XX` for the rest).
-fn write_json_string(out: &mut String, s: &str) {
+pub(crate) fn write_json_string(out: &mut String, s: &str) {
     out.push('"');
     for ch in s.chars() {
         match ch {
@@ -280,7 +286,7 @@ fn write_json_string(out: &mut String, s: &str) {
 /// selection* rule (3) requires strict rejection. We get correct behaviour
 /// by feeding the deserializer a custom visitor for maps that tracks seen
 /// keys; arrays / scalars fall through to the default `Value` visitor.
-fn parse_strict_json(bytes: &[u8]) -> Result<serde_json::Value, EngramError> {
+pub(crate) fn parse_strict_json(bytes: &[u8]) -> Result<serde_json::Value, String> {
     use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
     use serde_json::Value;
     use std::collections::HashSet;
@@ -360,9 +366,9 @@ fn parse_strict_json(bytes: &[u8]) -> Result<serde_json::Value, EngramError> {
     let mut de = serde_json::Deserializer::from_slice(bytes);
     let v = StrictValue
         .deserialize(&mut de)
-        .map_err(|e| EngramError::InvalidBody(format!("invalid JSON body: {e}")))?;
+        .map_err(|e| format!("invalid JSON body: {e}"))?;
     de.end()
-        .map_err(|e| EngramError::InvalidBody(format!("trailing data after JSON body: {e}")))?;
+        .map_err(|e| format!("trailing data after JSON body: {e}"))?;
     Ok(v)
 }
 

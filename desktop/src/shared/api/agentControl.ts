@@ -36,3 +36,19 @@ export async function switchManagedAgentModel(
     requestId,
   });
 }
+
+/**
+ * Ask a running agent for its recent log lines and to stream new ones for the
+ * next minute. The lines arrive as `log` observer frames; renew with `tail: 0`
+ * to keep the stream open without resending the tail.
+ */
+export async function followManagedAgentLog(
+  pubkey: string,
+  tail: number,
+): Promise<void> {
+  await sendAgentObserverControl(pubkey, {
+    type: "log_follow",
+    requestId: crypto.randomUUID(),
+    tail,
+  });
+}

@@ -107,6 +107,7 @@ fn policy_for(path: &str) -> MaskPolicy {
         //   respond_to / respond_to_allowlist   — gate mode + pubkeys
         //   idle_timeout_seconds / max_turn_duration_seconds / parallelism
         //                                       — numeric limits
+        //   shared_paths                        — relative file paths
         //   adapter_availability                — an enum variant name
         _ => MaskPolicy::Plain,
     }

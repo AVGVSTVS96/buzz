@@ -1,3 +1,5 @@
+import type { ManagedAgent } from "@/shared/api/types";
+
 function commandLooksLikePath(command: string) {
   const trimmed = command.trim();
   return (
@@ -25,9 +27,14 @@ export function describeResolvedCommand(command: string, resolvedPath: string) {
   return "installed on PATH";
 }
 
-export function describeLogFile(path: string) {
-  const normalized = path.replace(/\\/g, "/");
-  const basename = normalized.split("/").pop() ?? path;
+export function describeAgentLog(
+  agent: Pick<ManagedAgent, "backend" | "logPath">,
+) {
+  if (agent.backend.type !== "local") {
+    return "streamed from the agent";
+  }
+  const normalized = agent.logPath.replace(/\\/g, "/");
+  const basename = normalized.split("/").pop() ?? agent.logPath;
 
   if (!basename.endsWith(".log")) {
     return "local harness log";

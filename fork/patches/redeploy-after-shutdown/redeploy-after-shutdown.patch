@@ -1,0 +1,176 @@
+diff --git a/desktop/src/features/profile/ui/UserProfilePanelSections.tsx b/desktop/src/features/profile/ui/UserProfilePanelSections.tsx
+index 1ba07f24b7912c65a196d90cd296801c53d91fdb..fa1fa5941a2226187bcdfce6bae05eb1a4a35aec 100644
+--- a/desktop/src/features/profile/ui/UserProfilePanelSections.tsx
++++ b/desktop/src/features/profile/ui/UserProfilePanelSections.tsx
+@@ -447,9 +447,14 @@ export function ProfileSummaryView({
+               ? handleAgentPrimaryAction
+               : undefined
+           }
++          agentRestartLabel={
++            managedAgent?.backend.type === "provider"
++              ? "Deploy again"
++              : "Restart agent"
++          }
+           onAgentRestart={
+             isOwner === true &&
+-            managedAgent?.backend.type === "local" &&
++            managedAgent &&
+             (managedAgent.status === "running" ||
+               managedAgent.status === "deployed")
+               ? handleAgentRestart
+diff --git a/desktop/src/features/profile/ui/UserProfilePrimaryActions.tsx b/desktop/src/features/profile/ui/UserProfilePrimaryActions.tsx
+index a649b843ab4e8dcb538bbcf3fd48dc7600b41596..8168d5479a86b71897decc81d3c42f6389de28f7 100644
+--- a/desktop/src/features/profile/ui/UserProfilePrimaryActions.tsx
++++ b/desktop/src/features/profile/ui/UserProfilePrimaryActions.tsx
+@@ -28,6 +28,7 @@ export function ProfilePrimaryActions({
+   agentStartBlockReason,
+   agentActionLabel,
+   agentActionLive,
++  agentRestartLabel = "Restart agent",
+   className,
+   concealed = false,
+   followMutation,
+@@ -48,6 +49,7 @@ export function ProfilePrimaryActions({
+   agentStartBlockReason?: string;
+   agentActionLabel?: string;
+   agentActionLive?: boolean;
++  agentRestartLabel?: string;
+   className?: string;
+   concealed?: boolean;
+   followMutation: ReturnType<typeof useFollowMutation>;
+@@ -108,7 +110,7 @@ export function ProfilePrimaryActions({
+         <ProfileActionTile
+           disabled={agentActionDisabled}
+           icon={RefreshCw}
+-          label="Restart agent"
++          label={agentRestartLabel}
+           onClick={onAgentRestart}
+           testId="user-profile-agent-restart"
+         />
+diff --git a/desktop/src/features/profile/ui/useAgentLifecycleActions.ts b/desktop/src/features/profile/ui/useAgentLifecycleActions.ts
+index 41d4cc420f122fd841d40cd97c970a3841318b0c..d6cd0d4338e83dc42a60cbba66d8166a49c1c572 100644
+--- a/desktop/src/features/profile/ui/useAgentLifecycleActions.ts
++++ b/desktop/src/features/profile/ui/useAgentLifecycleActions.ts
+@@ -93,7 +93,11 @@ export function useAgentLifecycleActions({
+         stopManagedAgent,
+         onStopped: () => clearActiveTurnsForAgentOnStop(managedAgent.pubkey),
+       });
+-      toast.success(`Restarted ${managedAgent.name}.`);
++      toast.success(
++        managedAgent.backend.type === "provider"
++          ? `Deployment requested for ${managedAgent.name}.`
++          : `Restarted ${managedAgent.name}.`,
++      );
+     } catch (error) {
+       if (isRelayRemovedError(error)) return;
+       toast.error(
+diff --git a/desktop/tests/e2e/agent-availability.spec.ts b/desktop/tests/e2e/agent-availability.spec.ts
+index ad59e96e2a01a4ef118cadc359d4e3d13d198827..3a1658d312d6f375ebded533c053c84c0db346a0 100644
+--- a/desktop/tests/e2e/agent-availability.spec.ts
++++ b/desktop/tests/e2e/agent-availability.spec.ts
+@@ -742,3 +742,87 @@ for (const scenario of [
+     }
+   });
+ }
++
++test("owned remote deployment can be deployed again under the same identity", async ({
++  page,
++}) => {
++  await installMockBridge(page, {
++    managedAgents: [
++      {
++        pubkey: LOCAL,
++        name: "Remote recovery",
++        status: "deployed",
++        backend: { type: "provider", id: "fixture", config: {} },
++        channelNames: ["agents"],
++      },
++    ],
++  });
++  await page.goto("/#/agents");
++  await page
++    .getByRole("button", { name: "Remote recovery agent profile" })
++    .click();
++  const deploy = page.getByTestId("user-profile-agent-restart");
++  await expect(deploy).toHaveAttribute("aria-label", "Deploy again");
++  await expect(
++    page.getByTestId("user-profile-agent-primary-action"),
++  ).toHaveAttribute("aria-label", "Shutdown");
++
++  // Exercise the rendered profile callback, including failed deploy and retry.
++  // Do not model presence as proof that another body is safe to start.
++  await page.evaluate(() => {
++    const w = window as typeof window & {
++      __TAURI_INTERNALS__: {
++        invoke: (
++          command: string,
++          payload: unknown,
++          options: unknown,
++        ) => Promise<unknown>;
++      };
++      __REDEPLOY_KEYS__?: string[];
++    };
++    const original = w.__TAURI_INTERNALS__.invoke.bind(w.__TAURI_INTERNALS__);
++    w.__REDEPLOY_KEYS__ = [];
++    w.__TAURI_INTERNALS__.invoke = async (command, payload, options) => {
++      if (command === "start_managed_agent") {
++        w.__REDEPLOY_KEYS__?.push((payload as { pubkey: string }).pubkey);
++        if (w.__REDEPLOY_KEYS__?.length === 1) throw "provider unavailable";
++      }
++      return original(command, payload, options);
++    };
++  });
++  await deploy.click();
++  await expect(
++    page
++      .locator("[data-sonner-toast]")
++      .filter({ hasText: "provider unavailable" }),
++  ).toBeVisible();
++  await expect(deploy).toBeEnabled();
++  await deploy.click();
++  await expect(
++    page
++      .locator("[data-sonner-toast]")
++      .filter({ hasText: "Deployment requested for Remote recovery." }),
++  ).toBeVisible();
++  expect(
++    await page.evaluate(
++      () =>
++        (
++          window as typeof window & {
++            __REDEPLOY_KEYS__?: string[];
++          }
++        ).__REDEPLOY_KEYS__,
++    ),
++  ).toEqual([LOCAL, LOCAL]);
++  expect(
++    await page.evaluate(() =>
++      (window.__BUZZ_E2E_COMMANDS__ ?? []).filter((command) =>
++        [
++          "stop_managed_agent",
++          "delete_managed_agent",
++          "create_managed_agent",
++          "send_channel_message",
++        ].includes(command),
++      ),
++    ),
++  ).toEqual([]);
++});
+diff --git a/docs/agent-availability.md b/docs/agent-availability.md
+index 826bc66746244c55f82226bbdcb0325c03b040b2..62fffd0353954df8071ff81c29f6d9ee8e1a1b9a 100644
+--- a/docs/agent-availability.md
++++ b/docs/agent-availability.md
+@@ -20,7 +20,12 @@ successful snapshot retry. No per-row polling is needed, and
+ there is no second availability cache or substrate poller. Lifecycle controls
+ remain separate: a deployed provider agent still offers Shutdown while offline.
+ Shutdown sends a request, not a confirmed termination, and absence of presence
+-is not permission to deploy a duplicate body. Local Stop/Start routing is unchanged.
++is not permission to deploy a duplicate body. An owned deployed provider record
++also offers an explicit **Deploy again** action,
++independent of presence. It repeats the existing one-shot provider handoff for
++the same identity; the provider must converge to one live instance or fail
++closed. It neither sends Shutdown nor confirms a new body was created.
++Local Stop/Start routing is unchanged.
+ 
+ A locally stopped record with current exact-key Online or Away presence does
+ not establish local process ownership. Its card replaces Start (including a

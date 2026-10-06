@@ -1550,11 +1550,11 @@ mod tests {
             definition_parallelism: None,
             relay_mesh: None,
             effort_level: None,
+            shared_paths: Vec::new(),
         };
 
         let runtime = known_acp_runtime_exact("buzz-agent");
         let effective = resolve_effective_agent_env(&record, &[], runtime, &Default::default());
-
         // User env_vars must be present in the output (last-write-wins).
         assert_eq!(
             effective.env.get("BUZZ_AGENT_PROVIDER").map(String::as_str),

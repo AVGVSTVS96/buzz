@@ -94,7 +94,9 @@ The defining constraint, stated as a design axiom:
   protocol contains **no substrate API**: no status query, no exec, no log
   fetch, no kill. All post-deploy observation and control flows through `R`:
   status is relay presence (kind:20001), stop is a relay message
-  (`!shutdown`), and reconfiguration is a future re-deploy. The reduction M1
+  (`!shutdown`), the harness log is streamed by the agent on the owner's
+  request (NIP-AO `log_follow` / `log`), and reconfiguration is a future
+  re-deploy. The reduction M1
   buys is **protocol surface, not credential absence**: ambient substrate
   credentials may well exist on `D`'s machine (the Kubernetes binding uses
   the user's kubeconfig by design), and `D` can always re-invoke `P`. What
@@ -1375,7 +1377,8 @@ gives concurrency and Secret ownership one unambiguous order: reconcile
 always observes a world with at most one candidate generation *older than
 the gate*. Completed
 pods from the *current* generation are left in place — their logs are the
-only forensics M1 permits. That forensic window is deliberately fragile:
+only forensics M1 permits once the harness is gone (the NIP-AO log stream
+covers a *running* agent only). That forensic window is deliberately fragile:
 next-deploy GC, node loss, or namespace deletion erases it, and M1 means
 there is no log operation to reach for. **Cluster-native log shipping is
 therefore a production prerequisite, not an optional nicety** — the

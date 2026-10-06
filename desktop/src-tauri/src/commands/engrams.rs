@@ -91,28 +91,19 @@ fn kind0_declares_viewer_owner(kind0: Option<&nostr::Event>, viewer_pubkey: &str
     }
 }
 
-/// `get_agent_memory` — owner-gated single-payload engram listing.
-///
-/// Returns the full decrypted set for the (agent, owner) pair where
-/// `owner = current viewer`. Refuses if the agent isn't in this desktop's
-/// `managed_agents` store (i.e. the viewer is not its owner). This mirrors
-/// the relay's hard refusal of cross-owner reads.
-///
-/// Errors are stringified for the Tauri bridge. The UI distinguishes
-/// fetch error vs empty success vs success-with-data; an `Err(_)` return
-/// is the "couldn't load" path. An empty `memories` Vec with `core: None`
-/// is the legitimate "no memories" empty state.
-#[tauri::command]
-pub async fn get_agent_memory(
-    agent_pubkey: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<AgentMemoryListing, String> {
+/// Accept a request about `agent_pubkey` only if the viewer owns it, and
+/// return the agent's parsed pubkey. Shared by the NIP-AE memory and NIP-AF
+/// file readers.
+pub(crate) async fn authorize_agent_owner(
+    agent_pubkey: &str,
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<PublicKey, String> {
     // ── Owner gating ────────────────────────────────────────────────────
     // The viewer (this desktop's identity) is the prospective owner. The
-    // relay query below is `#p`-tagged for the viewer's OWN pubkey and every
-    // engram is NIP-44 encrypted to that pubkey, so the viewer decrypts with
-    // their own key — the agent's seckey is never needed. Encryption + the
+    // callers' relay queries are `#p`-tagged for the viewer's OWN pubkey and
+    // every record is NIP-44 encrypted to that pubkey, so the viewer decrypts
+    // with their own key — the agent's seckey is never needed. Encryption + the
     // relay's server-side `#p` scoping are the real boundary; this gate only
     // decides whether we bother attempting (and avoids a needless roundtrip
     // for agents the viewer plainly doesn't own).
@@ -134,7 +125,7 @@ pub async fn get_agent_memory(
     // wrongly locked legitimate owners out of their own memory. The declared-
     // owner path is cleared (PR #917 author signed off); decryption still
     // does the real guarding.)
-    let agent = PublicKey::from_hex(&agent_pubkey)
+    let agent = PublicKey::from_hex(agent_pubkey)
         .map_err(|e| format!("agent pubkey must be 64-hex: {e}"))?;
 
     let viewer_pubkey = {
@@ -142,13 +133,13 @@ pub async fn get_agent_memory(
         keys.public_key().to_hex()
     };
 
-    let managed = load_managed_agents(&app)?;
+    let managed = load_managed_agents(app)?;
     let is_managed = managed.iter().any(|m| m.pubkey == agent_pubkey);
     let is_declared_owner = if is_managed {
         false // already authorized; skip the relay roundtrip
     } else {
         // Verify the agent's live `kind:0` declares the viewer as owner.
-        let kind0 = fetch_kind0(&state, &agent_pubkey).await?;
+        let kind0 = fetch_kind0(state, agent_pubkey).await?;
         kind0_declares_viewer_owner(kind0.as_ref(), &viewer_pubkey)
     };
 
@@ -158,6 +149,28 @@ pub async fn get_agent_memory(
              and no verified NIP-OA owner declaration)"
         ));
     }
+
+    Ok(agent)
+}
+
+/// `get_agent_memory` — owner-gated single-payload engram listing.
+///
+/// Returns the full decrypted set for the (agent, owner) pair where
+/// `owner = current viewer`. Refuses if the agent isn't in this desktop's
+/// `managed_agents` store (i.e. the viewer is not its owner). This mirrors
+/// the relay's hard refusal of cross-owner reads.
+///
+/// Errors are stringified for the Tauri bridge. The UI distinguishes
+/// fetch error vs empty success vs success-with-data; an `Err(_)` return
+/// is the "couldn't load" path. An empty `memories` Vec with `core: None`
+/// is the legitimate "no memories" empty state.
+#[tauri::command]
+pub async fn get_agent_memory(
+    agent_pubkey: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<AgentMemoryListing, String> {
+    let agent = authorize_agent_owner(&agent_pubkey, &app, &state).await?;
 
     // ── Resolve owner key material ──────────────────────────────────────
     // Owner = viewer. Clone the secret key out of the lock immediately so

@@ -42,6 +42,7 @@ mod runtime;
 mod runtime_commands;
 mod runtime_types;
 mod session_policy;
+mod shared_paths;
 pub(crate) mod snapshot_avatar;
 pub(crate) mod spawn_snapshot;
 pub(crate) mod storage;
@@ -112,6 +113,9 @@ pub use runtime_types::*;
 pub(crate) use session_policy::{
     apply_acp_session_policy_env, effective_acp_session_policy, insert_acp_session_policy_env,
     AcpSessionPolicy, ManagedAgentExperimentState, ACP_SESSION_POLICY_ENV_VAR,
+};
+pub(crate) use shared_paths::{
+    apply_shared_paths_env, insert_shared_paths_env, validate_shared_paths,
 };
 pub use storage::*;
 pub use teams::*;

@@ -21,8 +21,8 @@ pub const OBSERVER_FRAME_CONTROL: &str = "control";
 pub const NIP44_MIN_CONTENT_LEN: usize = 132;
 /// Maximum NIP-44 v2 ciphertext length.
 pub const NIP44_MAX_CONTENT_LEN: usize = 87_472;
-/// Maximum observer plaintext JSON size accepted by helpers.
-pub const OBSERVER_MAX_PLAINTEXT_LEN: usize = 65_535;
+/// Maximum observer plaintext JSON size accepted by the NIP-44 v2 codec.
+pub const OBSERVER_MAX_PLAINTEXT_LEN: usize = 65_536 - 128;
 
 /// Errors returned by observer payload encryption/decryption helpers.
 #[derive(Debug, Error)]
@@ -36,7 +36,7 @@ pub enum ObserverPayloadError {
     /// Ciphertext did not fit the expected NIP-44 v2 length envelope.
     #[error("invalid NIP-44 ciphertext length: {0}")]
     InvalidCiphertextLength(usize),
-    /// Decrypted JSON exceeded the observer plaintext size limit.
+    /// Serialized JSON exceeded the observer plaintext size limit.
     #[error("observer plaintext exceeds {max} bytes (got {got})")]
     PlaintextTooLarge {
         /// Maximum accepted plaintext bytes.
@@ -96,15 +96,6 @@ pub fn decrypt_observer_payload<T: DeserializeOwned>(
         &event.pubkey,
         event.content.as_str(),
     )?;
-    if plaintext.len() > OBSERVER_MAX_PLAINTEXT_LEN {
-        let got = plaintext.len();
-        plaintext.zeroize();
-        return Err(ObserverPayloadError::PlaintextTooLarge {
-            max: OBSERVER_MAX_PLAINTEXT_LEN,
-            got,
-        });
-    }
-
     let result = serde_json::from_str(&plaintext);
     plaintext.zeroize();
     Ok(result?)
@@ -114,6 +105,12 @@ pub fn decrypt_observer_payload<T: DeserializeOwned>(
 mod tests {
     use super::*;
     use nostr::{EventBuilder, Kind, Tag};
+
+    const NIP44_V2_MAX_PLAINTEXT_LEN: usize = 65_536 - 128;
+
+    fn json_string_with_serialized_len(len: usize) -> String {
+        "x".repeat(len - 2)
+    }
 
     #[test]
     fn observer_payload_round_trips_with_nip44() {
@@ -155,5 +152,33 @@ mod tests {
             decrypt_observer_payload::<serde_json::Value>(&recipient, &event),
             Err(ObserverPayloadError::InvalidCiphertextLength(_))
         ));
+    }
+
+    #[test]
+    fn observer_payload_accepts_largest_nip44_plaintext() {
+        let sender = Keys::generate();
+        let recipient = Keys::generate();
+        let payload = json_string_with_serialized_len(NIP44_V2_MAX_PLAINTEXT_LEN);
+
+        encrypt_observer_payload(&sender, &recipient.public_key(), &payload)
+            .expect("encrypt maximum-size NIP-44 plaintext");
+    }
+
+    #[test]
+    fn observer_payload_rejects_plaintext_above_nip44_limit_before_encrypting() {
+        let sender = Keys::generate();
+        let recipient = Keys::generate();
+        let payload = json_string_with_serialized_len(NIP44_V2_MAX_PLAINTEXT_LEN + 1);
+
+        let error = encrypt_observer_payload(&sender, &recipient.public_key(), &payload)
+            .expect_err("reject plaintext above the NIP-44 limit");
+
+        match error {
+            ObserverPayloadError::PlaintextTooLarge { max, got } => {
+                assert_eq!(max, NIP44_V2_MAX_PLAINTEXT_LEN);
+                assert_eq!(got, NIP44_V2_MAX_PLAINTEXT_LEN + 1);
+            }
+            other => panic!("expected PlaintextTooLarge, got {other:?}"),
+        }
     }
 }

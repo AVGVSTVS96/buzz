@@ -742,3 +742,156 @@ for (const scenario of [
     }
   });
 }
+
+test("owned remote deployment can be deployed again under the same identity", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    managedAgents: [
+      {
+        pubkey: LOCAL,
+        name: "Remote recovery",
+        status: "deployed",
+        backend: { type: "provider", id: "fixture", config: {} },
+        channelNames: ["agents"],
+      },
+    ],
+  });
+  await page.goto("/#/agents");
+  await page
+    .getByRole("button", { name: "Remote recovery agent profile" })
+    .click();
+  const deploy = page.getByTestId("user-profile-agent-restart");
+  await expect(deploy).toHaveAttribute("aria-label", "Deploy again");
+  await expect(
+    page.getByTestId("user-profile-agent-primary-action"),
+  ).toHaveAttribute("aria-label", "Shutdown");
+
+  // Exercise the rendered profile callback, including failed deploy and retry.
+  // Do not model presence as proof that another body is safe to start.
+  await page.evaluate(() => {
+    const w = window as typeof window & {
+      __TAURI_INTERNALS__: {
+        invoke: (
+          command: string,
+          payload: unknown,
+          options: unknown,
+        ) => Promise<unknown>;
+      };
+      __REDEPLOY_KEYS__?: string[];
+    };
+    const original = w.__TAURI_INTERNALS__.invoke.bind(w.__TAURI_INTERNALS__);
+    w.__REDEPLOY_KEYS__ = [];
+    w.__TAURI_INTERNALS__.invoke = async (command, payload, options) => {
+      if (command === "start_managed_agent") {
+        w.__REDEPLOY_KEYS__?.push((payload as { pubkey: string }).pubkey);
+        if (w.__REDEPLOY_KEYS__?.length === 1) throw "provider unavailable";
+      }
+      return original(command, payload, options);
+    };
+  });
+  await deploy.click();
+  await expect(
+    page
+      .locator("[data-sonner-toast]")
+      .filter({ hasText: "provider unavailable" }),
+  ).toBeVisible();
+  await expect(deploy).toBeEnabled();
+  await deploy.click();
+  await expect(
+    page
+      .locator("[data-sonner-toast]")
+      .filter({ hasText: "Deployment requested for Remote recovery." }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __REDEPLOY_KEYS__?: string[];
+          }
+        ).__REDEPLOY_KEYS__,
+    ),
+  ).toEqual([LOCAL, LOCAL]);
+  expect(
+    await page.evaluate(() =>
+      (window.__BUZZ_E2E_COMMANDS__ ?? []).filter((command) =>
+        [
+          "stop_managed_agent",
+          "delete_managed_agent",
+          "create_managed_agent",
+          "send_channel_message",
+        ].includes(command),
+      ),
+    ),
+  ).toEqual([]);
+});
+
+test("Pulse shows relay presence for an agent, not its saved deployment", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    managedAgents: [
+      {
+        pubkey: LOCAL,
+        name: "Pulse deployment",
+        status: "deployed",
+        backend: { type: "provider", id: "fixture", config: {} },
+        channelNames: ["agents"],
+      },
+    ],
+  });
+  await page.goto("/");
+  await page.getByTestId("open-pulse-view").click();
+  await page.evaluate((pubkey) => {
+    const w = window as typeof window & {
+      __TAURI_INTERNALS__: {
+        invoke: (
+          command: string,
+          payload: unknown,
+          options: unknown,
+        ) => Promise<unknown>;
+      };
+    };
+    const original = w.__TAURI_INTERNALS__.invoke.bind(w.__TAURI_INTERNALS__);
+    w.__TAURI_INTERNALS__.invoke = async (command, payload, options) => {
+      if (
+        command === "get_notes_timeline" &&
+        (payload as { pubkeys?: string[] }).pubkeys?.includes(pubkey)
+      ) {
+        return {
+          notes: [
+            {
+              id: "pulse-deployment-note",
+              pubkey,
+              created_at: Math.floor(Date.now() / 1000) - 60,
+              content: "Nightly sync finished.",
+              tags: [],
+            },
+          ],
+          next_cursor: null,
+        };
+      }
+      return original(command, payload, options);
+    };
+  }, LOCAL);
+  await page.getByRole("tab", { name: "Agents" }).click();
+  await expect(page.getByText("Nightly sync finished.")).toBeVisible();
+  await expect(page.getByRole("img", { name: "Agent offline" })).toBeVisible();
+
+  await page.evaluate(async (pubkey) => {
+    const w = window as typeof window & {
+      __BUZZ_E2E_QUERY_CLIENT__?: {
+        invalidateQueries: (filter: { queryKey: string[] }) => Promise<void>;
+      };
+    };
+    const emit = window.__BUZZ_E2E_EMIT_MOCK_PRESENCE__;
+    if (!emit || !w.__BUZZ_E2E_QUERY_CLIENT__)
+      throw new Error("Mock presence is unavailable.");
+    emit({ pubkey, status: "online" });
+    await w.__BUZZ_E2E_QUERY_CLIENT__.invalidateQueries({
+      queryKey: ["presence"],
+    });
+  }, LOCAL);
+  await expect(page.getByRole("img", { name: "Agent online" })).toBeVisible();
+});

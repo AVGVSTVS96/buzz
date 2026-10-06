@@ -4,7 +4,7 @@ import type { ManagedAgent } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { Skeleton } from "@/shared/ui/skeleton";
 import { CopyButton } from "./CopyButton";
-import { describeLogFile } from "./agentUi";
+import { describeAgentLog } from "./agentUi";
 
 export function ManagedAgentLogPanel({
   chrome = "framed",
@@ -23,9 +23,7 @@ export function ManagedAgentLogPanel({
 }) {
   const isInline = variant === "inline";
   const isBare = chrome === "bare";
-  const logFileLabel = selectedAgent
-    ? describeLogFile(selectedAgent.logPath)
-    : null;
+  const logFileLabel = selectedAgent ? describeAgentLog(selectedAgent) : null;
 
   if (!selectedAgent && isInline) {
     return null;

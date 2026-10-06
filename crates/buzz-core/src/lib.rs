@@ -5,6 +5,9 @@
 //! Provides [`StoredEvent`], filter matching, kind constants, and event
 //! verification. All other Buzz crates depend on this one.
 
+/// NIP-AF Agent Files — path grammar, d-tag derivation, record and edit
+/// request/result bodies, envelope build/validate.
+pub mod agent_files;
 /// NIP-AM: Agent Turn Metric — payload type and encrypt/decrypt helpers.
 pub mod agent_turn_metric;
 /// Channel and membership enums shared across crates.

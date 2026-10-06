@@ -1,0 +1,1201 @@
+diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
+index 02bef64e0b3f69593c3ccf82fc741d823ff71439..23a39393cedd55d351afe9b49349e1ced467f37d 100644
+--- a/crates/buzz-acp/src/lib.rs
++++ b/crates/buzz-acp/src/lib.rs
+@@ -10,6 +10,7 @@ mod edit_routing;
+ mod engram_fetch;
+ mod filter;
+ mod isolated_execution;
++mod log_tail;
+ mod observer;
+ mod pool;
+ mod pool_lifecycle;
+@@ -56,7 +57,7 @@ use pool_lifecycle::PoolLifecycle;
+ use queue::{CancelReason, EventQueue, FlushBatch, QueuedEvent, ThreadTags};
+ use relay::{HarnessRelay, RelayEventPublisher};
+ use tokio::sync::{mpsc, watch};
+-use tracing_subscriber::EnvFilter;
++use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+ use uuid::Uuid;
+ 
+ /// Check if argv[1] matches a subcommand name, before any clap parsing.
+@@ -1632,6 +1633,7 @@ fn handle_relay_observer_control_event(
+     observer: Option<&observer::ObserverHandle>,
+     owner_pubkey_hex: &str,
+     event_publisher: RelayEventPublisher,
++    log_follows: Option<&log_tail::LogFollows>,
+ ) {
+     // Defense-in-depth: verify signature even though the relay already checked.
+     if let Err(e) = buzz_core::verify_event(&event) {
+@@ -1685,6 +1687,16 @@ fn handle_relay_observer_control_event(
+                 event_publisher,
+             );
+         }
++        Some("log_follow") => {
++            if let Some(log_follows) = log_follows {
++                log_follows.request(
++                    payload
++                        .get("tail")
++                        .and_then(|tail| tail.as_u64())
++                        .unwrap_or(0),
++                );
++            }
++        }
+         _ => {
+             tracing::debug!(payload = %payload, "ignoring unknown observer control frame");
+         }
+@@ -2569,12 +2581,15 @@ async fn tokio_main() -> Result<()> {
+ 
+     // Stdout is the ACP transport when buzz-acp is launched as an agent command.
+     // Keep every harness diagnostic on stderr so logging can never corrupt NDJSON.
+-    tracing_subscriber::fmt()
+-        .with_writer(std::io::stderr)
+-        .with_env_filter(
+-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("buzz_acp=info")),
++    let log_tail = log_tail::LogTail::default();
++    tracing_subscriber::registry()
++        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("buzz_acp=info")))
++        .with(
++            tracing_subscriber::fmt::layer()
++                .with_writer(std::io::stderr)
++                .compact(),
+         )
+-        .compact()
++        .with(log_tail.layer())
+         .init();
+ 
+     let config = Config::from_cli().map_err(|e| anyhow::anyhow!("configuration error: {e}"))?;
+@@ -2615,7 +2630,7 @@ async fn tokio_main() -> Result<()> {
+         let _ = tx.send(());
+     });
+     let (ready_tx, mut ready_rx) = tokio::sync::oneshot::channel();
+-    let harness = run_harness(config, shutdown_tx, shutdown_rx.clone(), ready_tx);
++    let harness = run_harness(config, log_tail, shutdown_tx, shutdown_rx.clone(), ready_tx);
+     tokio::pin!(harness);
+     let result = tokio::select! {
+         biased;
+@@ -2629,6 +2644,7 @@ async fn tokio_main() -> Result<()> {
+ 
+ async fn run_harness(
+     config: Config,
++    log_tail: log_tail::LogTail,
+     shutdown_tx: watch::Sender<()>,
+     mut shutdown_rx: watch::Receiver<()>,
+     startup_ready: tokio::sync::oneshot::Sender<()>,
+@@ -2755,6 +2771,7 @@ async fn run_harness(
+     let mut relay_observer_control_rx = None;
+     let mut relay_observer_publisher_task = None;
+     let mut relay_observer_publisher = None;
++    let mut log_follows = None;
+     if config.relay_observer {
+         if let (Some(observer), Some(owner_pubkey_hex)) =
+             (observer.clone(), owner_cache.pubkey.clone())
+@@ -2815,6 +2832,7 @@ async fn run_harness(
+     if let Some((observer, publisher, keys, agent_pubkey, owner_pubkey, owner)) =
+         relay_observer_publisher.take()
+     {
++        log_follows = Some(log_tail.follow(observer.clone()));
+         relay_observer_publisher_task = Some(spawn_relay_observer_publisher(
+             observer,
+             publisher,
+@@ -3215,6 +3233,7 @@ async fn run_harness(
+                                     observer.as_ref(),
+                                     owner_hex,
+                                     relay.event_publisher(),
++                                    log_follows.as_ref(),
+                                 );
+                             } else {
+                                 tracing::warn!("observer control frame received but no owner resolved — dropping");
+diff --git a/crates/buzz-acp/src/log_tail.rs b/crates/buzz-acp/src/log_tail.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..8fb840214a42830fe4b76b58bd179cdf160a2e6c
+--- /dev/null
++++ b/crates/buzz-acp/src/log_tail.rs
+@@ -0,0 +1,411 @@
++//! Recent harness log lines, kept in memory so the owner can read a remote
++//! agent's log over the relay observer: a `log_follow` control frame asks for
++//! a tail, and `log` telemetry events stream new lines while the request's
++//! lease lasts. Nothing is published unless the owner asks.
++
++use std::{
++    collections::VecDeque,
++    io,
++    sync::{Arc, Mutex, MutexGuard, PoisonError},
++    time::Duration,
++};
++
++use tokio::{sync::mpsc, time::Instant};
++use tracing_subscriber::{filter::LevelFilter, fmt::MakeWriter, registry::LookupSpan, Layer};
++
++use crate::observer::{ObserverContext, ObserverHandle};
++
++/// Lines kept for tails, which is also the largest tail an owner can request.
++const LOG_TAIL_CAPACITY: usize = 1_000;
++const LOG_LINE_MAX_BYTES: usize = 4_096;
++/// Serialized bytes of lines per `log` event. The headroom covers the observer
++/// envelope under the NIP-44 plaintext cap, which nostr enforces at 65,408
++/// bytes, below `OBSERVER_MAX_PLAINTEXT_LEN`.
++const LOG_FRAME_MAX_BYTES: usize = 60_000;
++const LOG_FOLLOW_LEASE: Duration = Duration::from_secs(60);
++const LOG_STREAM_TICK: Duration = Duration::from_secs(1);
++
++/// Bounded ring of formatted log lines, filled by [`LogTail::layer`].
++#[derive(Clone, Default)]
++pub(crate) struct LogTail(Arc<Mutex<LogRing>>);
++
++#[derive(Default)]
++struct LogRing {
++    lines: VecDeque<String>,
++    /// Position the next pushed line takes; the oldest retained line sits at
++    /// `next - lines.len()`.
++    next: u64,
++}
++
++/// Lines read from the ring for one `log` event.
++struct LogBatch {
++    lines: Vec<String>,
++    dropped: u64,
++    next: u64,
++}
++
++impl LogTail {
++    /// Formats events like the stderr log, without ANSI colors, into the ring.
++    pub(crate) fn layer<S>(&self) -> impl Layer<S>
++    where
++        S: tracing::Subscriber + for<'a> LookupSpan<'a>,
++    {
++        tracing_subscriber::fmt::layer()
++            .with_writer(self.clone())
++            .with_ansi(false)
++            .compact()
++            // DEBUG includes the relay's per-event OK lines, so streaming it
++            // would make every published log frame produce the next one.
++            .with_filter(LevelFilter::INFO)
++    }
++
++    /// Start answering `log_follow` requests by emitting `log` events into
++    /// `observer`. The streaming task ends when every [`LogFollows`] is dropped.
++    pub(crate) fn follow(&self, observer: ObserverHandle) -> LogFollows {
++        let (tx, rx) = mpsc::channel(4);
++        tokio::spawn(stream_follows(self.clone(), observer, rx));
++        LogFollows(tx)
++    }
++
++    fn ring(&self) -> MutexGuard<'_, LogRing> {
++        self.0.lock().unwrap_or_else(PoisonError::into_inner)
++    }
++
++    fn push(&self, record: &str) {
++        let record = record.trim_end_matches('\n');
++        let line = &record[..crate::floor_char_boundary(record, LOG_LINE_MAX_BYTES)];
++        let mut ring = self.ring();
++        if ring.lines.len() == LOG_TAIL_CAPACITY {
++            ring.lines.pop_front();
++        }
++        ring.lines.push_back(line.to_string());
++        ring.next += 1;
++    }
++
++    /// The newest `count` lines that fit one event.
++    fn newest(&self, count: usize) -> LogBatch {
++        let (mut lines, next) = {
++            let ring = self.ring();
++            let skip = ring.lines.len().saturating_sub(count);
++            (ring.lines.iter().skip(skip).cloned().collect(), ring.next)
++        };
++        keep_newest_fitting(&mut lines);
++        LogBatch {
++            lines,
++            dropped: 0,
++            next,
++        }
++    }
++
++    /// Lines pushed since `cursor`, counting those evicted before they were
++    /// read or cut to fit one event as dropped.
++    fn since(&self, cursor: u64) -> LogBatch {
++        let (mut lines, evicted, next) = {
++            let ring = self.ring();
++            let oldest = ring.next - ring.lines.len() as u64;
++            let skip = cursor.saturating_sub(oldest) as usize;
++            (
++                ring.lines.iter().skip(skip).cloned().collect(),
++                oldest.saturating_sub(cursor),
++                ring.next,
++            )
++        };
++        let cut = keep_newest_fitting(&mut lines);
++        LogBatch {
++            lines,
++            dropped: evicted + cut,
++            next,
++        }
++    }
++}
++
++impl<'a> MakeWriter<'a> for LogTail {
++    type Writer = &'a LogTail;
++
++    fn make_writer(&'a self) -> Self::Writer {
++        self
++    }
++}
++
++impl io::Write for &LogTail {
++    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
++        self.push(&String::from_utf8_lossy(buf));
++        Ok(buf.len())
++    }
++
++    fn flush(&mut self) -> io::Result<()> {
++        Ok(())
++    }
++}
++
++/// Hands owner `log_follow` requests to the streaming task.
++#[derive(Clone)]
++pub(crate) struct LogFollows(mpsc::Sender<usize>);
++
++impl LogFollows {
++    pub(crate) fn request(&self, tail: u64) {
++        let tail = tail.min(LOG_TAIL_CAPACITY as u64) as usize;
++        if self.0.try_send(tail).is_err() {
++            tracing::warn!("dropping log_follow request: log streaming is busy or stopped");
++        }
++    }
++}
++
++async fn stream_follows(
++    tail: LogTail,
++    observer: ObserverHandle,
++    mut follows: mpsc::Receiver<usize>,
++) {
++    let mut cursor = None;
++    let mut lease_end = Instant::now();
++    let mut tick = tokio::time::interval(LOG_STREAM_TICK);
++    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
++    loop {
++        tokio::select! {
++            follow = follows.recv() => {
++                let Some(count) = follow else {
++                    return;
++                };
++                lease_end = Instant::now() + LOG_FOLLOW_LEASE;
++                let batch = match cursor {
++                    Some(from) if count == 0 => tail.since(from),
++                    _ => tail.newest(count),
++                };
++                cursor = Some(batch.next);
++                emit_log(&observer, batch);
++            }
++            _ = tick.tick(), if cursor.is_some() => {
++                let Some(from) = cursor else {
++                    continue;
++                };
++                if Instant::now() >= lease_end {
++                    cursor = None;
++                    continue;
++                }
++                let batch = tail.since(from);
++                cursor = Some(batch.next);
++                if !batch.lines.is_empty() || batch.dropped > 0 {
++                    emit_log(&observer, batch);
++                }
++            }
++        }
++    }
++}
++
++fn emit_log(observer: &ObserverHandle, batch: LogBatch) {
++    observer.emit(
++        "log",
++        None,
++        &ObserverContext::default(),
++        serde_json::json!({ "lines": batch.lines, "dropped": batch.dropped }),
++    );
++}
++
++/// Drop the oldest lines until the rest fit one event; returns how many went.
++fn keep_newest_fitting(lines: &mut Vec<String>) -> u64 {
++    let mut bytes = 0;
++    let fitting = lines
++        .iter()
++        .rev()
++        .take_while(|line| {
++            bytes += serde_json::to_string(line).map_or(line.len(), |json| json.len()) + 1;
++            bytes <= LOG_FRAME_MAX_BYTES
++        })
++        .count();
++    let cut = lines.len() - fitting;
++    lines.drain(..cut);
++    cut as u64
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use buzz_core::observer::{
++        decrypt_observer_payload, encrypt_observer_payload, OBSERVER_FRAME_CONTROL,
++    };
++    use nostr::Keys;
++    use serde_json::{json, Value};
++    use tokio::{sync::broadcast, time::timeout};
++    use tracing_subscriber::layer::SubscriberExt;
++
++    use crate::observer::ObserverEvent;
++
++    async fn next_log(rx: &mut broadcast::Receiver<ObserverEvent>) -> Value {
++        let event = timeout(Duration::from_secs(5), rx.recv())
++            .await
++            .expect("a log event")
++            .expect("observer open");
++        assert_eq!(event.kind, "log");
++        assert_eq!(event.agent_index, None);
++        assert_eq!(event.channel_id, None);
++        event.payload
++    }
++
++    async fn assert_no_event(rx: &mut broadcast::Receiver<ObserverEvent>) {
++        assert!(timeout(Duration::from_secs(5), rx.recv()).await.is_err());
++    }
++
++    #[test]
++    fn layer_keeps_info_lines_as_plain_text_and_skips_debug() {
++        let tail = LogTail::default();
++        let subscriber = tracing_subscriber::registry().with(tail.layer());
++        tracing::subscriber::with_default(subscriber, || {
++            tracing::info!(channel = 7, "subscribed to channel");
++            tracing::debug!("OK for event abc: accepted=true message=");
++            tracing::warn!("{}", "é".repeat(3_000));
++        });
++
++        let lines = tail.newest(LOG_TAIL_CAPACITY).lines;
++        assert_eq!(lines.len(), 2, "{lines:?}");
++        assert!(lines[0].contains(" INFO "), "{}", lines[0]);
++        assert!(
++            lines[0].ends_with("subscribed to channel channel=7"),
++            "{}",
++            lines[0]
++        );
++        assert!(lines.iter().all(|line| !line.contains('\u{1b}')));
++        assert!(lines.iter().all(|line| !line.ends_with('\n')));
++        assert!((LOG_LINE_MAX_BYTES - 1..=LOG_LINE_MAX_BYTES).contains(&lines[1].len()));
++        assert!(lines[1].ends_with('é'));
++    }
++
++    #[test]
++    fn ring_keeps_the_newest_lines_and_counts_evicted_ones() {
++        let tail = LogTail::default();
++        for index in 0..LOG_TAIL_CAPACITY + 5 {
++            tail.push(&format!("line {index}\n"));
++        }
++
++        let newest = tail.newest(2 * LOG_TAIL_CAPACITY);
++        assert_eq!(newest.lines.len(), LOG_TAIL_CAPACITY);
++        assert_eq!(newest.lines[0], "line 5");
++        assert_eq!(newest.dropped, 0);
++
++        let behind = tail.since(0);
++        assert_eq!(behind.dropped, 5);
++        assert_eq!(behind.lines.first().map(String::as_str), Some("line 5"));
++
++        let caught_up = tail.since(behind.next);
++        assert!(caught_up.lines.is_empty());
++        assert_eq!(caught_up.dropped, 0);
++    }
++
++    #[tokio::test(start_paused = true)]
++    async fn follow_answers_streams_new_lines_and_lapses_without_renewal() {
++        let tail = LogTail::default();
++        let observer = ObserverHandle::in_process();
++        let mut rx = observer.subscribe();
++        let follows = tail.follow(observer.clone());
++
++        follows.request(5);
++        assert_eq!(next_log(&mut rx).await, json!({"lines": [], "dropped": 0}));
++
++        tail.push("first\n");
++        tail.push("second\n");
++        assert_eq!(next_log(&mut rx).await["lines"], json!(["first", "second"]));
++        assert_no_event(&mut rx).await;
++
++        tokio::time::sleep(Duration::from_secs(45)).await;
++        follows.request(0);
++        assert_eq!(next_log(&mut rx).await["lines"], json!([]));
++        tokio::time::sleep(Duration::from_secs(30)).await;
++        tail.push("after renewal");
++        assert_eq!(next_log(&mut rx).await["lines"], json!(["after renewal"]));
++
++        tokio::time::sleep(LOG_FOLLOW_LEASE).await;
++        tail.push("nobody is watching");
++        assert_no_event(&mut rx).await;
++
++        follows.request(0);
++        assert_eq!(next_log(&mut rx).await["lines"], json!([]));
++    }
++
++    #[tokio::test(start_paused = true)]
++    async fn only_the_owner_can_start_a_follow() {
++        let agent = Keys::generate();
++        let owner = Keys::generate();
++        let stranger = Keys::generate();
++        let tail = LogTail::default();
++        tail.push("connected to relay");
++        let observer = ObserverHandle::in_process();
++        let mut rx = observer.subscribe();
++        let follows = tail.follow(observer.clone());
++        let (publisher, _published) = crate::RelayEventPublisher::test_pair();
++        let mut pool = crate::AgentPool::from_slots(vec![]);
++
++        let follow_from = |sender: &Keys| {
++            let request = json!({"type": "log_follow", "requestId": "r1", "tail": 10});
++            let encrypted =
++                encrypt_observer_payload(sender, &agent.public_key(), &request).expect("encrypt");
++            buzz_sdk::build_agent_observer_frame(
++                &agent.public_key().to_hex(),
++                &agent.public_key().to_hex(),
++                OBSERVER_FRAME_CONTROL,
++                &encrypted,
++            )
++            .expect("control frame")
++            .sign_with_keys(sender)
++            .expect("sign")
++        };
++
++        let mut handle = |sender: &Keys| {
++            crate::handle_relay_observer_control_event(
++                &agent,
++                follow_from(sender),
++                &mut pool,
++                Some(&observer),
++                &owner.public_key().to_hex(),
++                publisher.clone(),
++                Some(&follows),
++            )
++        };
++
++        handle(&stranger);
++        assert_no_event(&mut rx).await;
++        handle(&owner);
++        assert_eq!(
++            next_log(&mut rx).await["lines"],
++            json!(["connected to relay"])
++        );
++    }
++
++    #[tokio::test(start_paused = true)]
++    async fn a_full_tail_is_published_as_one_encryptable_frame() {
++        let agent = Keys::generate();
++        let owner = Keys::generate();
++        let tail = LogTail::default();
++        for index in 0..LOG_TAIL_CAPACITY {
++            tail.push(&format!("{index:04} {}", "\"quoted\" ".repeat(500)));
++        }
++        let observer = ObserverHandle::in_process();
++        let (publisher, mut published) = crate::RelayEventPublisher::test_pair();
++        let _publishing = crate::spawn_relay_observer_publisher(
++            observer.clone(),
++            publisher,
++            agent.clone(),
++            agent.public_key().to_hex(),
++            owner.public_key().to_hex(),
++            owner.public_key(),
++        );
++
++        tail.follow(observer).request(LOG_TAIL_CAPACITY as u64);
++
++        let frame = timeout(Duration::from_secs(5), published.recv())
++            .await
++            .expect("a published frame")
++            .expect("publisher open");
++        let event: Value = decrypt_observer_payload(&owner, &frame).expect("decrypt");
++        assert_eq!(event["kind"], "log");
++        let lines = event["payload"]["lines"].as_array().expect("lines");
++        assert!(
++            lines.len() > 1 && lines.len() < LOG_TAIL_CAPACITY,
++            "{}",
++            lines.len()
++        );
++        assert!(lines
++            .last()
++            .and_then(Value::as_str)
++            .is_some_and(|line| line.starts_with("0999 ")));
++        assert_eq!(event["payload"]["dropped"], 0);
++    }
++}
+diff --git a/desktop/src/features/agents/hooks.ts b/desktop/src/features/agents/hooks.ts
+index 1b479a7630e47ac92e6878fb32e325ccef1aafac..2d153749d743bc0f9d7830debdb32542fc2facac 100644
+--- a/desktop/src/features/agents/hooks.ts
++++ b/desktop/src/features/agents/hooks.ts
+@@ -70,6 +70,7 @@ import {
+   updatePersona,
+ } from "@/shared/api/tauriPersonas";
+ import { teamsQueryKey } from "@/features/agents/teamHooks";
++import { useRemoteAgentLog } from "@/features/agents/remoteAgentLog";
+ import type {
+   AcpRuntime,
+   AgentPersona,
+@@ -907,6 +908,33 @@ export function useManagedAgentLogQuery(
+   });
+ }
+ 
++/**
++ * The harness log of a managed agent: read from disk for local agents and
++ * followed over the relay for remote ones.
++ */
++export function useManagedAgentLog(
++  agent: ManagedAgent | null | undefined,
++  lineCount = 120,
++) {
++  const isLocal = agent?.backend.type === "local";
++  const localLog = useManagedAgentLogQuery(
++    agent && isLocal ? agent.pubkey : null,
++    lineCount,
++  );
++  const remoteLog = useRemoteAgentLog(
++    agent && !isLocal ? agent.pubkey : null,
++    lineCount,
++  );
++  if (!isLocal) {
++    return remoteLog;
++  }
++  return {
++    content: localLog.data?.content ?? null,
++    error: localLog.error instanceof Error ? localLog.error : null,
++    isLoading: localLog.isLoading,
++  };
++}
++
+ export const agentConfigSurfaceQueryKey = (pubkey: string) =>
+   ["agent-config-surface", pubkey] as const;
+ 
+diff --git a/desktop/src/features/agents/observerRelayStore.ts b/desktop/src/features/agents/observerRelayStore.ts
+index 7720bcbd9d6cd3722623dba3cdc0dfc8f04256ab..cfa52d7ae17f41667a032ff8deda23727f76e448 100644
+--- a/desktop/src/features/agents/observerRelayStore.ts
++++ b/desktop/src/features/agents/observerRelayStore.ts
+@@ -16,6 +16,7 @@ import {
+   type ProjectChannelRequest,
+ } from "@/features/projects/projectChannelRequest";
+ import { normalizePubkey } from "@/shared/lib/pubkey";
++import { appendRemoteAgentLog, isAgentLogEvent } from "./remoteAgentLog";
+ import { useQueryClient } from "@tanstack/react-query";
+ import { agentConfigSurfaceQueryKey } from "@/features/agents/hooks";
+ import type {
+@@ -469,8 +470,18 @@ function unwrapObserverBatch(parsed: ObserverEvent): ObserverEvent[] {
+ // plain frame, many for a batch envelope).
+ function processLiveObserverEvents(
+   agentPubkey: string,
+-  events: readonly ObserverEvent[],
++  envelope: readonly ObserverEvent[],
+ ) {
++  // Log lines feed the Logs view only; keeping them out of the journal stops a
++  // followed log from evicting Activity history.
++  for (const logEvent of envelope.filter(isAgentLogEvent)) {
++    appendRemoteAgentLog(agentPubkey, logEvent.payload);
++  }
++  const events = envelope.filter((event) => !isAgentLogEvent(event));
++  if (events.length === 0) {
++    return;
++  }
++
+   // Commit the full envelope before dispatching synchronous specialized
+   // callbacks. Those callbacks historically observed their triggering frame
+   // in the raw/transcript stores; batching must preserve that visibility while
+@@ -866,6 +877,9 @@ export async function ingestArchivedObserverEvents(
+     try {
+       const parsed = (await _decryptFn(event)) as ObserverEvent;
+       for (const inner of unwrapObserverBatch(parsed)) {
++        if (isAgentLogEvent(inner)) {
++          continue;
++        }
+         // Route archived events to the channel-scoped archive window (no cap)
+         // rather than the per-agent live-relay store (MAX_OBSERVER_EVENTS cap).
+         // Events without a channelId fall through to the live store so they
+diff --git a/desktop/src/features/agents/remoteAgentLog.test.mjs b/desktop/src/features/agents/remoteAgentLog.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..b81eced82f946e614b8da57efa1dc2a1bad94237
+--- /dev/null
++++ b/desktop/src/features/agents/remoteAgentLog.test.mjs
+@@ -0,0 +1,147 @@
++import assert from "node:assert/strict";
++import { afterEach, beforeEach, mock, test } from "node:test";
++
++import {
++  _testProcessLiveObserverEvents,
++  _testRegisterKnownAgents,
++  getAgentObserverSnapshot,
++  ingestArchivedObserverEvents,
++  resetAgentObserverStore,
++} from "./observerRelayStore.ts";
++import {
++  appendRemoteAgentLog,
++  clearRemoteAgentLog,
++  followRemoteAgentLog,
++  getRemoteAgentLog,
++} from "./remoteAgentLog.ts";
++
++const AGENT = "a".repeat(64);
++const OWNER = "b".repeat(64);
++
++function observerEvent(seq, kind, payload, channelId = null) {
++  return {
++    seq,
++    timestamp: `2026-10-06T12:00:0${seq}.000Z`,
++    kind,
++    agentIndex: null,
++    channelId,
++    sessionId: null,
++    turnId: null,
++    payload,
++  };
++}
++
++beforeEach(() => {
++  resetAgentObserverStore();
++  clearRemoteAgentLog(AGENT);
++});
++
++afterEach(() => {
++  mock.timers.reset();
++});
++
++test("live log events feed the agent log and stay out of the activity journal", () => {
++  _testProcessLiveObserverEvents(AGENT, [
++    observerEvent(1, "log", { lines: ["connected to relay"] }),
++    observerEvent(2, "turn_started", {}, "chan-1"),
++    observerEvent(3, "log", { lines: ["turn started"], dropped: 0 }),
++  ]);
++
++  assert.deepEqual(getRemoteAgentLog(AGENT), {
++    answered: true,
++    lines: ["connected to relay", "turn started"],
++  });
++  assert.deepEqual(
++    getAgentObserverSnapshot(AGENT).events.map((event) => event.kind),
++    ["turn_started"],
++  );
++});
++
++test("archived log events are not replayed into activity or the log", async () => {
++  _testRegisterKnownAgents("sub", [AGENT]);
++  const raw = {
++    id: "e".repeat(64),
++    pubkey: AGENT,
++    created_at: 1,
++    kind: 24200,
++    tags: [
++      ["p", OWNER],
++      ["agent", AGENT],
++      ["frame", "telemetry"],
++    ],
++    content: "encrypted",
++    sig: "s".repeat(128),
++  };
++
++  await ingestArchivedObserverEvents([raw], async () =>
++    observerEvent(1, "log", { lines: ["stale line"] }),
++  );
++
++  assert.deepEqual(getAgentObserverSnapshot(AGENT).events, []);
++  assert.equal(getRemoteAgentLog(AGENT).answered, false);
++});
++
++test("an empty answer counts as answered, and skipped lines leave a gap marker", () => {
++  appendRemoteAgentLog(AGENT, { lines: [] });
++  assert.deepEqual(getRemoteAgentLog(AGENT), { answered: true, lines: [] });
++
++  appendRemoteAgentLog(AGENT, { lines: ["after the gap", 7], dropped: 3 });
++  assert.deepEqual(getRemoteAgentLog(AGENT).lines, [
++    "[3 log lines skipped]",
++    "after the gap",
++  ]);
++});
++
++test("the log keeps the newest 1000 lines", () => {
++  appendRemoteAgentLog(AGENT, {
++    lines: Array.from({ length: 1_005 }, (_, index) => `line ${index}`),
++  });
++
++  const { lines } = getRemoteAgentLog(AGENT);
++  assert.equal(lines.length, 1_000);
++  assert.equal(lines[0], "line 5");
++  assert.equal(lines.at(-1), "line 1004");
++});
++
++test("following asks for a fresh tail, renews with no tail, and stops on cleanup", () => {
++  mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
++  appendRemoteAgentLog(AGENT, { lines: ["from an earlier follow"] });
++  const tails = [];
++  const errors = [];
++
++  const stop = followRemoteAgentLog(
++    AGENT,
++    200,
++    (error) => errors.push(error),
++    async (_pubkey, tail) => {
++      tails.push(tail);
++    },
++  );
++  assert.equal(getRemoteAgentLog(AGENT).answered, false);
++  appendRemoteAgentLog(AGENT, { lines: ["tail"] });
++
++  mock.timers.tick(60_000);
++  stop();
++  mock.timers.tick(60_000);
++
++  assert.deepEqual(tails, [200, 0, 0]);
++  assert.deepEqual(getRemoteAgentLog(AGENT).lines, ["tail"]);
++  assert.deepEqual(errors, []);
++});
++
++test("an agent that never answers is reported", () => {
++  mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
++  const errors = [];
++
++  const stop = followRemoteAgentLog(
++    AGENT,
++    120,
++    (error) => errors.push(error.message),
++    async () => {},
++  );
++  mock.timers.tick(10_000);
++  stop();
++
++  assert.equal(errors.length, 1);
++  assert.match(errors[0], /has not sent its log/);
++});
+diff --git a/desktop/src/features/agents/remoteAgentLog.ts b/desktop/src/features/agents/remoteAgentLog.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..8bbccf16053aa4511c91d53be0f0e1630bce4471
+--- /dev/null
++++ b/desktop/src/features/agents/remoteAgentLog.ts
+@@ -0,0 +1,140 @@
++import * as React from "react";
++
++import { followManagedAgentLog } from "@/shared/api/agentControl";
++import { normalizePubkey } from "@/shared/lib/pubkey";
++import type { ObserverEvent } from "./ui/agentSessionTypes";
++
++const AGENT_LOG_EVENT_KIND = "log";
++/** Matches the harness's in-memory tail, the most an owner can request. */
++const MAX_REMOTE_LOG_LINES = 1_000;
++/** The harness streams for 60s after each request; renew well inside that. */
++const LOG_FOLLOW_RENEW_MS = 30_000;
++const LOG_FOLLOW_ANSWER_TIMEOUT_MS = 10_000;
++
++type RemoteAgentLog = {
++  answered: boolean;
++  lines: readonly string[];
++};
++
++const UNANSWERED: RemoteAgentLog = { answered: false, lines: [] };
++
++const logsByAgent = new Map<string, RemoteAgentLog>();
++const listeners = new Set<() => void>();
++
++function notify() {
++  for (const listener of listeners) {
++    listener();
++  }
++}
++
++function subscribe(listener: () => void) {
++  listeners.add(listener);
++  return () => {
++    listeners.delete(listener);
++  };
++}
++
++export function isAgentLogEvent(event: ObserverEvent) {
++  return event.kind === AGENT_LOG_EVENT_KIND;
++}
++
++export function getRemoteAgentLog(agentPubkey: string): RemoteAgentLog {
++  return logsByAgent.get(normalizePubkey(agentPubkey)) ?? UNANSWERED;
++}
++
++/** Append the lines of a `log` observer event, marking any gap the harness reports. */
++export function appendRemoteAgentLog(agentPubkey: string, payload: unknown) {
++  const { dropped, lines } = (payload ?? {}) as {
++    dropped?: unknown;
++    lines?: unknown;
++  };
++  if (!Array.isArray(lines)) {
++    return;
++  }
++  const gap =
++    typeof dropped === "number" && dropped > 0
++      ? [`[${dropped} log lines skipped]`]
++      : [];
++  const key = normalizePubkey(agentPubkey);
++  logsByAgent.set(key, {
++    answered: true,
++    lines: [
++      ...(logsByAgent.get(key)?.lines ?? []),
++      ...gap,
++      ...lines.filter((line): line is string => typeof line === "string"),
++    ].slice(-MAX_REMOTE_LOG_LINES),
++  });
++  notify();
++}
++
++export function clearRemoteAgentLog(agentPubkey: string) {
++  logsByAgent.delete(normalizePubkey(agentPubkey));
++  notify();
++}
++
++export function resetRemoteAgentLogs() {
++  logsByAgent.clear();
++  notify();
++}
++
++/**
++ * Ask the agent for a fresh tail of `lineCount` lines and keep its stream open
++ * until the returned cleanup runs. `onError` reports a failed request, or an
++ * agent that never answers (offline, or a harness without remote logs).
++ */
++export function followRemoteAgentLog(
++  agentPubkey: string,
++  lineCount: number,
++  onError: (error: Error) => void,
++  follow = followManagedAgentLog,
++) {
++  clearRemoteAgentLog(agentPubkey);
++  const request = (tail: number) =>
++    follow(agentPubkey, tail).catch((error) =>
++      onError(error instanceof Error ? error : new Error(String(error))),
++    );
++  void request(lineCount);
++  const renew = setInterval(() => void request(0), LOG_FOLLOW_RENEW_MS);
++  const overdue = setTimeout(() => {
++    if (!getRemoteAgentLog(agentPubkey).answered) {
++      onError(
++        new Error(
++          "The agent has not sent its log. It may be offline, or running a harness without remote logs.",
++        ),
++      );
++    }
++  }, LOG_FOLLOW_ANSWER_TIMEOUT_MS);
++  return () => {
++    clearInterval(renew);
++    clearTimeout(overdue);
++  };
++}
++
++export function useRemoteAgentLog(
++  agentPubkey: string | null,
++  lineCount: number,
++) {
++  const log = React.useSyncExternalStore(subscribe, () =>
++    agentPubkey ? getRemoteAgentLog(agentPubkey) : UNANSWERED,
++  );
++  const [error, setError] = React.useState<Error | null>(null);
++
++  React.useEffect(() => {
++    if (!agentPubkey) {
++      return;
++    }
++    setError(null);
++    return followRemoteAgentLog(agentPubkey, lineCount, setError);
++  }, [agentPubkey, lineCount]);
++
++  const content = React.useMemo(
++    () => (log.answered ? log.lines.join("\n") : null),
++    [log],
++  );
++  const unanswered = agentPubkey !== null && !log.answered;
++  return {
++    content,
++    error: unanswered ? error : null,
++    isLoading: unanswered && error === null,
++  };
++}
+diff --git a/desktop/src/features/agents/ui/ManagedAgentLogPanel.tsx b/desktop/src/features/agents/ui/ManagedAgentLogPanel.tsx
+index 4eb5c6e721ad5876577e6c58c9cafa228f1854e7..8a3fb9dd4588a9bd867a167f1e9ef23149f96358 100644
+--- a/desktop/src/features/agents/ui/ManagedAgentLogPanel.tsx
++++ b/desktop/src/features/agents/ui/ManagedAgentLogPanel.tsx
+@@ -4,7 +4,7 @@ import type { ManagedAgent } from "@/shared/api/types";
+ import { cn } from "@/shared/lib/cn";
+ import { Skeleton } from "@/shared/ui/skeleton";
+ import { CopyButton } from "./CopyButton";
+-import { describeLogFile } from "./agentUi";
++import { describeAgentLog } from "./agentUi";
+ 
+ export function ManagedAgentLogPanel({
+   chrome = "framed",
+@@ -23,9 +23,7 @@ export function ManagedAgentLogPanel({
+ }) {
+   const isInline = variant === "inline";
+   const isBare = chrome === "bare";
+-  const logFileLabel = selectedAgent
+-    ? describeLogFile(selectedAgent.logPath)
+-    : null;
++  const logFileLabel = selectedAgent ? describeAgentLog(selectedAgent) : null;
+ 
+   if (!selectedAgent && isInline) {
+     return null;
+diff --git a/desktop/src/features/agents/ui/agentUi.ts b/desktop/src/features/agents/ui/agentUi.ts
+index af4b157ae2c207b69a83554eaf16e3d1ef70a080..04ae8372ef96dc0962eb77d498f266a596018e33 100644
+--- a/desktop/src/features/agents/ui/agentUi.ts
++++ b/desktop/src/features/agents/ui/agentUi.ts
+@@ -1,3 +1,5 @@
++import type { ManagedAgent } from "@/shared/api/types";
++
+ function commandLooksLikePath(command: string) {
+   const trimmed = command.trim();
+   return (
+@@ -25,9 +27,14 @@ export function describeResolvedCommand(command: string, resolvedPath: string) {
+   return "installed on PATH";
+ }
+ 
+-export function describeLogFile(path: string) {
+-  const normalized = path.replace(/\\/g, "/");
+-  const basename = normalized.split("/").pop() ?? path;
++export function describeAgentLog(
++  agent: Pick<ManagedAgent, "backend" | "logPath">,
++) {
++  if (agent.backend.type !== "local") {
++    return "streamed from the agent";
++  }
++  const normalized = agent.logPath.replace(/\\/g, "/");
++  const basename = normalized.split("/").pop() ?? agent.logPath;
+ 
+   if (!basename.endsWith(".log")) {
+     return "local harness log";
+diff --git a/desktop/src/features/communities/useCommunityInit.ts b/desktop/src/features/communities/useCommunityInit.ts
+index 64ce9ab09d9a2f99977b62ae573366a77c3be350..ec4eb738a40af635b2119a33ff53853465dded4e 100644
+--- a/desktop/src/features/communities/useCommunityInit.ts
++++ b/desktop/src/features/communities/useCommunityInit.ts
+@@ -41,6 +41,7 @@ import {
+ } from "@/features/agents/activeAgentTurnsStore";
+ import { resetAgentWorkingSignal } from "@/features/agents/agentWorkingSignal";
+ import { resetAgentObserverStore } from "@/features/agents/observerRelayStore";
++import { resetRemoteAgentLogs } from "@/features/agents/remoteAgentLog";
+ import { resetAvatarPresentations } from "@/features/profile/avatarPresentationStore";
+ import { resetAvatarProfileSync } from "@/features/profile/avatarProfileSync";
+ import { resetSidebarRelayConnectionCardState } from "@/features/sidebar/ui/useSidebarRelayConnectionCard";
+@@ -72,6 +73,7 @@ async function resetCommunityState({
+   resetRateLimitGate();
+   clearAllDrafts();
+   resetAgentObserverStore();
++  resetRemoteAgentLogs();
+   resetActiveAgentTurnsStore();
+   resetAgentWorkingSignal();
+   if (isTauri() && isMacPlatform()) {
+diff --git a/desktop/src/features/profile/ui/UserProfilePanel.tsx b/desktop/src/features/profile/ui/UserProfilePanel.tsx
+index 311e3bb8c5ab39b288c87c122660f2aaeda595e2..dc55adb6e5d8788b59bcacfa1e683461d8de7738 100644
+--- a/desktop/src/features/profile/ui/UserProfilePanel.tsx
++++ b/desktop/src/features/profile/ui/UserProfilePanel.tsx
+@@ -12,7 +12,7 @@ import {
+   useCreatePersonaMutation,
+   useDeleteManagedAgentMutation,
+   useDeletePersonaMutation,
+-  useManagedAgentLogQuery,
++  useManagedAgentLog,
+   useRelayAgentsQuery,
+   useManagedAgentsQuery,
+   usePersonasQuery,
+@@ -30,7 +30,7 @@ import {
+   buildInstanceInputForDefinition,
+   resolveStartRuntimeForDefinition,
+ } from "@/features/agents/lib/instanceInputForDefinition";
+-import { describeLogFile } from "@/features/agents/ui/agentUi";
++import { describeAgentLog } from "@/features/agents/ui/agentUi";
+ import { useAgentLifecycleActions } from "@/features/profile/ui/useAgentLifecycleActions";
+ import {
+   duplicatePersonaDialogState,
+@@ -278,11 +278,8 @@ export function UserProfilePanel({
+   const relayAgent = relayAgentsQuery.data?.find(
+     (agent) => agent.pubkey.toLowerCase() === pubkeyLower,
+   );
+-  const managedAgentLogQuery = useManagedAgentLogQuery(
+-    (view === "diagnostics" || view === "logs") &&
+-      managedAgent?.backend.type === "local"
+-      ? managedAgent.pubkey
+-      : null,
++  const managedAgentLog = useManagedAgentLog(
++    view === "diagnostics" || view === "logs" ? managedAgent : null,
+   );
+   const isAgentByOaOwner = Boolean(
+     usersBatchQuery.data?.profiles[pubkeyLower]?.isAgent,
+@@ -326,8 +323,7 @@ export function UserProfilePanel({
+     viewerIsOwner &&
+     Boolean(effectivePubkey) &&
+     canOpenAgentActivity(effectivePubkey);
+-  const canOpenAgentLogs =
+-    isOwner === true && managedAgent?.backend.type === "local";
++  const canOpenAgentLogs = isOwner === true && managedAgent !== undefined;
+   const canInstantiateAgent =
+     !pubkey &&
+     isOwner === true &&
+@@ -753,17 +749,16 @@ export function UserProfilePanel({
+       relayAgent,
+     });
+   const isDiagnosticsLikeView = view === "diagnostics" || view === "logs";
+-  const managedAgentLogContent = managedAgentLogQuery.data?.content ?? null;
+   const logHeaderSubtitle =
+     isDiagnosticsLikeView && managedAgent
+-      ? `${managedAgent.name} · ${describeLogFile(managedAgent.logPath)}`
++      ? `${managedAgent.name} · ${describeAgentLog(managedAgent)}`
+       : null;
+   const { headerActions, headerLeftContent } = getUserProfilePanelHeaderContent(
+     {
+       agentSettingsMenu,
+       effectivePubkey,
+       ownerPubkey: profile?.ownerPubkey,
+-      logCopyValue: isDiagnosticsLikeView ? managedAgentLogContent : null,
++      logCopyValue: isDiagnosticsLikeView ? managedAgentLog.content : null,
+       logSubtitle: logHeaderSubtitle,
+       onBack: () => setView("summary"),
+       onEditAgent: canEditAgent ? handleEditAgent : undefined,
+@@ -869,13 +864,9 @@ export function UserProfilePanel({
+         <DiagnosticsFocusedView
+           canOpenAgentLogs={canOpenAgentLogs}
+           fields={diagnosticsFields}
+-          logContent={managedAgentLogContent}
+-          logError={
+-            managedAgentLogQuery.error instanceof Error
+-              ? managedAgentLogQuery.error
+-              : null
+-          }
+-          logLoading={managedAgentLogQuery.isLoading}
++          logContent={managedAgentLog.content}
++          logError={managedAgentLog.error}
++          logLoading={managedAgentLog.isLoading}
+           managedAgent={managedAgent}
+         />
+       ) : null}
+@@ -893,13 +884,9 @@ export function UserProfilePanel({
+         <DiagnosticsFocusedView
+           canOpenAgentLogs={canOpenAgentLogs}
+           fields={[]}
+-          logContent={managedAgentLogContent}
+-          logError={
+-            managedAgentLogQuery.error instanceof Error
+-              ? managedAgentLogQuery.error
+-              : null
+-          }
+-          logLoading={managedAgentLogQuery.isLoading}
++          logContent={managedAgentLog.content}
++          logError={managedAgentLog.error}
++          logLoading={managedAgentLog.isLoading}
+           managedAgent={managedAgent}
+         />
+       ) : null}
+diff --git a/desktop/src/shared/api/agentControl.ts b/desktop/src/shared/api/agentControl.ts
+index 67a6d377d284666d7721882152e9aa8320c5f3cf..12497c6f4ca60896f46f6570f5336dc38a2dbf1c 100644
+--- a/desktop/src/shared/api/agentControl.ts
++++ b/desktop/src/shared/api/agentControl.ts
+@@ -36,3 +36,19 @@ export async function switchManagedAgentModel(
+     requestId,
+   });
+ }
++
++/**
++ * Ask a running agent for its recent log lines and to stream new ones for the
++ * next minute. The lines arrive as `log` observer frames; renew with `tail: 0`
++ * to keep the stream open without resending the tail.
++ */
++export async function followManagedAgentLog(
++  pubkey: string,
++  tail: number,
++): Promise<void> {
++  await sendAgentObserverControl(pubkey, {
++    type: "log_follow",
++    requestId: crypto.randomUUID(),
++    tail,
++  });
++}
+diff --git a/docs/nips/NIP-AO.md b/docs/nips/NIP-AO.md
+index 36adea04871c830e38717c1badf149150b7b781e..2a09f8287c35852f27b098495dd05c863564039d 100644
+--- a/docs/nips/NIP-AO.md
++++ b/docs/nips/NIP-AO.md
+@@ -110,6 +110,7 @@ Unknown `kind` values MUST be ignored.
+ | `acp_write`        | Outbound ACP protocol frame (harness → model)            |
+ | `turn_started`     | A new agent turn has begun                               |
+ | `session_resolved` | Session completed or terminated                          |
++| `log`              | Harness log lines, sent only on owner request (§Logs)    |
+ 
+ ### Control (`frame=control`)
+ 
+@@ -122,8 +123,53 @@ The `content` field decrypts to:
+ }
+ ```
+ 
+-The only defined control type is `cancel_turn`. Implementations MUST ignore
+-events with unrecognized `type` values.
++Defined control types are `cancel_turn` and `log_follow` (§Logs).
++Implementations MUST ignore events with unrecognized `type` values.
++
++### Logs
++
++An owner reads a running agent's harness log over this channel; there is no
++other route to a remote agent's log. Nothing is sent unless the owner asks.
++
++The owner sends a control frame:
++
++```json
++{
++  "type":      "log_follow",
++  "requestId": "<uuid>",
++  "tail":      200
++}
++```
++
++`tail` (0–1000) is how many recent lines to send first. The agent MUST answer
++every `log_follow` from its owner with one `log` event carrying up to `tail`
++of its most recent lines, oldest first, dropping the oldest until the frame
++fits; it answers with `"lines": []` when it has none, so the owner can tell
++the agent supports logs. It then streams new lines as `log` events, at most
++one per second, until 60 seconds pass without another `log_follow`. Owners
++renew with `"tail": 0` (about every 30 seconds) for as long as they watch.
++
++```json
++{
++  "seq":       43,
++  "timestamp": "2026-10-06T12:00:41.500Z",
++  "kind":      "log",
++  "agentIndex": null,
++  "channelId": null,
++  "sessionId": null,
++  "turnId":    null,
++  "payload": {
++    "lines":   ["2026-10-06T12:00:41.200Z  INFO buzz_acp: connected to relay"],
++    "dropped": 0
++  }
++}
++```
++
++`lines` is REQUIRED: plain-text log records without trailing newlines, each
++at most 4096 bytes. `dropped` is OPTIONAL: lines skipped since the previous
++`log` event, so the owner can mark the gap. A `log` event MAY arrive inside a
++`batch` envelope. Lines MUST NOT contain decrypted observer payloads, keys, or
++tokens. Clients SHOULD keep `log` events out of session transcripts.
+ 
+ ## Ephemerality Contract
+ 
+diff --git a/docs/remote-agents.md b/docs/remote-agents.md
+index 56de86bade0fc8dfa830e91e370fdc52e3d1b85a..40cf8f1ab1470f4c8116736eaab4630fc59e7f17 100644
+--- a/docs/remote-agents.md
++++ b/docs/remote-agents.md
+@@ -94,7 +94,9 @@ The defining constraint, stated as a design axiom:
+   protocol contains **no substrate API**: no status query, no exec, no log
+   fetch, no kill. All post-deploy observation and control flows through `R`:
+   status is relay presence (kind:20001), stop is a relay message
+-  (`!shutdown`), and reconfiguration is a future re-deploy. The reduction M1
++  (`!shutdown`), the harness log is streamed by the agent on the owner's
++  request (NIP-AO `log_follow` / `log`), and reconfiguration is a future
++  re-deploy. The reduction M1
+   buys is **protocol surface, not credential absence**: ambient substrate
+   credentials may well exist on `D`'s machine (the Kubernetes binding uses
+   the user's kubeconfig by design), and `D` can always re-invoke `P`. What
+@@ -1375,7 +1377,8 @@ gives concurrency and Secret ownership one unambiguous order: reconcile
+ always observes a world with at most one candidate generation *older than
+ the gate*. Completed
+ pods from the *current* generation are left in place — their logs are the
+-only forensics M1 permits. That forensic window is deliberately fragile:
++only forensics M1 permits once the harness is gone (the NIP-AO log stream
++covers a *running* agent only). That forensic window is deliberately fragile:
+ next-deploy GC, node loss, or namespace deletion erases it, and M1 means
+ there is no log operation to reach for. **Cluster-native log shipping is
+ therefore a production prerequisite, not an optional nicety** — the

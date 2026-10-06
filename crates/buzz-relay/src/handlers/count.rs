@@ -47,10 +47,10 @@ pub async fn handle_count(
         ));
         return;
     }
-    if !super::req::engram_filters_authorized(&filters, &authed_pubkey_hex) {
+    if !super::req::agent_pair_filters_authorized(&filters, &authed_pubkey_hex) {
         conn.send(RelayMessage::closed(
             &sub_id,
-            "restricted: agent-engram reads require authors=[self] or #p=[self]",
+            "restricted: agent-pair reads require authors=[self] or #p=[self]",
         ));
         return;
     }

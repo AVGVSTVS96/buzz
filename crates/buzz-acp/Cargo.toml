@@ -77,6 +77,9 @@ toml = "1.0"
 # Filter expressions
 evalexpr = { workspace = true }
 
+# Shared-file walking (NIP-AF)
+ignore = "0.4.25"
+
 # Process-group kill (safe wrapper around killpg) — Unix-only; kill_process_group
 # has a #[cfg(not(unix))] fallback in acp.rs.
 [target.'cfg(unix)'.dependencies]

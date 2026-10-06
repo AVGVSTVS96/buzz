@@ -220,6 +220,9 @@ pub async fn update_managed_agent(
         if let Some(agent_args) = input.agent_args {
             record.agent_args = agent_args;
         }
+        if let Some(shared_paths) = input.shared_paths {
+            record.shared_paths = crate::managed_agents::validate_shared_paths(&shared_paths)?;
+        }
         // mcp_command is intentionally not applied here — the effective MCP
         // command is always catalog-derived (known_acp_runtime at spawn time)
         // and the per-record field is never read by the runtime.

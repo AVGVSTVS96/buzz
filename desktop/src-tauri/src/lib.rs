@@ -851,6 +851,8 @@ pub fn run() {
             fetch_join_policy,
             set_prevent_sleep_active,
             get_agent_memory,
+            get_agent_files,
+            propose_agent_file_edit,
             relay_reconnect_hook,
             relay_reconnect_hook_configured,
             observer_archive_default_enabled,

@@ -8,8 +8,10 @@ mod acp;
 mod config;
 mod edit_routing;
 mod engram_fetch;
+mod file_share;
 mod filter;
 mod isolated_execution;
+mod log_tail;
 mod observer;
 mod pool;
 mod pool_lifecycle;
@@ -56,7 +58,7 @@ use pool_lifecycle::PoolLifecycle;
 use queue::{CancelReason, EventQueue, FlushBatch, QueuedEvent, ThreadTags};
 use relay::{HarnessRelay, RelayEventPublisher};
 use tokio::sync::{mpsc, watch};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use uuid::Uuid;
 
 /// Check if argv[1] matches a subcommand name, before any clap parsing.
@@ -1287,7 +1289,7 @@ struct ObserverChunkKey {
     agent_index: Option<usize>,
 }
 
-/// Flush coalesced chunks before they exceed the NIP-44 plaintext limit (65,535 bytes).
+/// Flush coalesced chunks before they exceed the NIP-44 plaintext limit (65,408 bytes).
 /// Leave headroom for the JSON envelope wrapping the text. This is a SOFT pre-flush
 /// of raw text below the hard cap; `fit_observer_event_to_budget` (the final ceiling,
 /// keyed to `OBSERVER_MAX_PLAINTEXT_LEN` in buzz-core/observer.rs:25) is what actually
@@ -1632,6 +1634,7 @@ fn handle_relay_observer_control_event(
     observer: Option<&observer::ObserverHandle>,
     owner_pubkey_hex: &str,
     event_publisher: RelayEventPublisher,
+    log_follows: Option<&log_tail::LogFollows>,
 ) {
     // Defense-in-depth: verify signature even though the relay already checked.
     if let Err(e) = buzz_core::verify_event(&event) {
@@ -1684,6 +1687,16 @@ fn handle_relay_observer_control_event(
                 observer,
                 event_publisher,
             );
+        }
+        Some("log_follow") => {
+            if let Some(log_follows) = log_follows {
+                log_follows.request(
+                    payload
+                        .get("tail")
+                        .and_then(|tail| tail.as_u64())
+                        .unwrap_or(0),
+                );
+            }
         }
         _ => {
             tracing::debug!(payload = %payload, "ignoring unknown observer control frame");
@@ -2569,12 +2582,15 @@ async fn tokio_main() -> Result<()> {
 
     // Stdout is the ACP transport when buzz-acp is launched as an agent command.
     // Keep every harness diagnostic on stderr so logging can never corrupt NDJSON.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("buzz_acp=info")),
+    let log_tail = log_tail::LogTail::default();
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("buzz_acp=info")))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .compact(),
         )
-        .compact()
+        .with(log_tail.layer())
         .init();
 
     let config = Config::from_cli().map_err(|e| anyhow::anyhow!("configuration error: {e}"))?;
@@ -2615,7 +2631,7 @@ async fn tokio_main() -> Result<()> {
         let _ = tx.send(());
     });
     let (ready_tx, mut ready_rx) = tokio::sync::oneshot::channel();
-    let harness = run_harness(config, shutdown_tx, shutdown_rx.clone(), ready_tx);
+    let harness = run_harness(config, log_tail, shutdown_tx, shutdown_rx.clone(), ready_tx);
     tokio::pin!(harness);
     let result = tokio::select! {
         biased;
@@ -2629,6 +2645,7 @@ async fn tokio_main() -> Result<()> {
 
 async fn run_harness(
     config: Config,
+    log_tail: log_tail::LogTail,
     shutdown_tx: watch::Sender<()>,
     mut shutdown_rx: watch::Receiver<()>,
     startup_ready: tokio::sync::oneshot::Sender<()>,
@@ -2755,6 +2772,7 @@ async fn run_harness(
     let mut relay_observer_control_rx = None;
     let mut relay_observer_publisher_task = None;
     let mut relay_observer_publisher = None;
+    let mut log_follows = None;
     if config.relay_observer {
         if let (Some(observer), Some(owner_pubkey_hex)) =
             (observer.clone(), owner_cache.pubkey.clone())
@@ -2815,6 +2833,7 @@ async fn run_harness(
     if let Some((observer, publisher, keys, agent_pubkey, owner_pubkey, owner)) =
         relay_observer_publisher.take()
     {
+        log_follows = Some(log_tail.follow(observer.clone()));
         relay_observer_publisher_task = Some(spawn_relay_observer_publisher(
             observer,
             publisher,
@@ -2823,6 +2842,34 @@ async fn run_harness(
             owner_pubkey,
             owner,
         ));
+    }
+
+    let mut file_share_task = None;
+    if !config.share.is_empty() {
+        match owner_cache.pubkey.as_deref().map(PublicKey::from_hex) {
+            Some(Ok(owner)) => {
+                let cwd = std::env::current_dir()
+                    .and_then(|cwd| cwd.canonicalize())
+                    .context("failed to resolve working directory for --share")?;
+                let share = file_share::FileShare::new(
+                    relay.rest_client(),
+                    config.keys.clone(),
+                    owner,
+                    cwd,
+                    config.share.clone(),
+                );
+                file_share_task = Some(tokio::spawn(share.run()));
+                tracing::info!("sharing {} path(s) as agent files", config.share.len());
+            }
+            Some(Err(error)) => {
+                tracing::warn!("agent files disabled: invalid owner pubkey: {error}");
+            }
+            None => {
+                tracing::warn!(
+                    "--share requires an agent owner; set BUZZ_AUTH_TAG or --agent-owner"
+                );
+            }
+        }
     }
 
     let runtime_start_nonce = std::env::var("BUZZ_MANAGED_AGENT_START_NONCE").unwrap_or_default();
@@ -3215,6 +3262,7 @@ async fn run_harness(
                                     observer.as_ref(),
                                     owner_hex,
                                     relay.event_publisher(),
+                                    log_follows.as_ref(),
                                 );
                             } else {
                                 tracing::warn!("observer control frame received but no owner resolved — dropping");
@@ -4183,6 +4231,10 @@ async fn run_harness(
     }
 
     if let Some(handle) = relay_observer_publisher_task.take() {
+        handle.abort();
+    }
+
+    if let Some(handle) = file_share_task.take() {
         handle.abort();
     }
 
@@ -9551,6 +9603,7 @@ mod build_mcp_servers_tests {
             agent_owner: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            share: Vec::new(),
         }
     }
 
@@ -10567,6 +10620,7 @@ mod error_outcome_emission_tests {
             agent_owner: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            share: Vec::new(),
         }
     }
 
@@ -12806,5 +12860,82 @@ mod observer_payload_trim_tests {
         assert!(leaf.starts_with('…'));
         assert!(leaf.ends_with('…'));
         assert!(leaf.contains("[elided"));
+    }
+
+    const NIP_AO_MAX_PLAINTEXT_LEN: usize = 65_535;
+
+    async fn publish_through_relay_observer(
+        snapshot: Vec<observer::ObserverEvent>,
+    ) -> Vec<serde_json::Value> {
+        let agent = nostr::Keys::generate();
+        let owner = nostr::Keys::generate();
+        let (publisher, mut published) = RelayEventPublisher::test_pair();
+        let (_, closed) = tokio::sync::broadcast::channel(1);
+
+        run_relay_observer_publisher(
+            snapshot,
+            closed,
+            publisher,
+            agent.clone(),
+            agent.public_key().to_hex(),
+            owner.public_key().to_hex(),
+            owner.public_key(),
+        )
+        .await;
+
+        let mut frames = Vec::new();
+        while let Some(event) = published.recv().await {
+            frames.push(decrypt_observer_payload(&owner, &event).expect("decrypt published frame"));
+        }
+        frames
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_frame_at_spec_plaintext_max_is_trimmed_and_published() {
+        let mut event = event_with_payload("acp_read", serde_json::json!({ "body": "" }));
+        event.payload["body"] = "x"
+            .repeat(NIP_AO_MAX_PLAINTEXT_LEN - serialized(&event).len())
+            .into();
+        assert_eq!(serialized(&event).len(), NIP_AO_MAX_PLAINTEXT_LEN);
+
+        let frames = publish_through_relay_observer(vec![event]).await;
+
+        assert_eq!(frames.len(), 1, "the frame must be published, not dropped");
+        assert_eq!(frames[0]["kind"], "acp_read");
+        assert!(frames[0]["payload"]["body"]
+            .as_str()
+            .expect("body retained")
+            .contains("…[elided"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_batch_at_spec_plaintext_max_publishes_every_event() {
+        let first = event_with_payload(
+            "acp_read",
+            serde_json::json!({ "body": "a".repeat(30_000) }),
+        );
+        let mut second = event_with_payload("acp_read", serde_json::json!({ "body": "" }));
+        second.seq = 2;
+        let envelope_len = serialized_len(&batch_envelope(&[first.clone(), second.clone()]));
+        second.payload["body"] = "b".repeat(NIP_AO_MAX_PLAINTEXT_LEN - envelope_len).into();
+        assert_eq!(
+            serialized_len(&batch_envelope(&[first.clone(), second.clone()])),
+            NIP_AO_MAX_PLAINTEXT_LEN
+        );
+
+        let frames = publish_through_relay_observer(vec![first, second]).await;
+
+        let seqs: Vec<u64> = frames
+            .iter()
+            .flat_map(|frame| match frame["payload"]["events"].as_array() {
+                Some(inner) => inner.iter().map(|e| e["seq"].as_u64().unwrap()).collect(),
+                None => vec![frame["seq"].as_u64().unwrap()],
+            })
+            .collect();
+        assert_eq!(
+            seqs,
+            [1, 2],
+            "no event may be lost to an unencryptable batch"
+        );
     }
 }

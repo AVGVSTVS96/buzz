@@ -1,0 +1,209 @@
+name: Sync patched fork
+
+on:
+  schedule:
+    - cron: "17 10 * * *"
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Optional exact upstream commit SHA
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  UPSTREAM: block/buzz
+  SOURCE_OVERRIDE: ${{ inputs.source_sha || '' }}
+  CONTROL_FILES: .github fork
+
+concurrency:
+  group: patched-fork-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve one upstream source commit
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream "https://github.com/${UPSTREAM}.git"
+          git fetch --no-tags upstream main:refs/remotes/upstream/main
+          if [ -n "$SOURCE_OVERRIDE" ]; then
+            source_sha="$(git rev-parse "${SOURCE_OVERRIDE}^{commit}")"
+            git merge-base --is-ancestor "$source_sha" refs/remotes/upstream/main
+          else
+            source_sha="$(git rev-parse 'refs/remotes/upstream/main^{commit}')"
+          fi
+
+          # Sync commits merge the source as a second parent, so ancestry is
+          # the tree truth; patch metadata alone can't mark a source synced.
+          if git merge-base --is-ancestor "$source_sha" HEAD; then
+            source_synced=true
+          else
+            source_synced=false
+          fi
+          {
+            echo "source_sha=$source_sha"
+            echo "current_main=$(git rev-parse HEAD)"
+            echo "source_synced=$source_synced"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore control plane and apply patches
+        id: apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_main='${{ steps.resolve.outputs.current_main }}'
+          source_sha='${{ steps.resolve.outputs.source_sha }}'
+          git checkout --detach "$source_sha"
+          # .github is fork-owned: upstream workflow files can't be pushed with
+          # the default Actions token, and a repo holding a Claude token must
+          # not run newly imported upstream automation. Surface what this
+          # excludes so upstream automation changes are never silent.
+          last_source="$(git merge-base "$current_main" "$source_sha")"
+          if ! git diff --quiet "$last_source" "$source_sha" -- .github; then
+            git diff "$last_source" "$source_sha" -- .github > "$RUNNER_TEMP/upstream-github.diff"
+            echo "::warning title=upstream .github changed::.github is fork-owned; review the upstream-github-diff artifact for excluded upstream automation changes"
+          fi
+          git rm -r -q --ignore-unmatch .github
+          git checkout "$current_main" -- $CONTROL_FILES
+
+          failed="$(python3 fork/sync.py apply | paste -sd ' ' -)"
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+
+      - name: Upload upstream .github drift
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: upstream-github-diff
+          path: ${{ runner.temp }}/upstream-github.diff
+          if-no-files-found: ignore
+
+      - name: Install the toolchains fork/verify needs
+        uses: ./.github/actions/toolchain
+
+      - name: Heal patches with Claude only after they fail to apply
+        if: steps.apply.outputs.failed != ''
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          FAILED: ${{ steps.apply.outputs.failed }}
+        run: |
+          set -euo pipefail
+          npm install --global @anthropic-ai/claude-code@2.1.289
+          git add -A
+          before="$(git write-tree)"
+          claude -p \
+            --model claude-opus-5-5 \
+            --effort high \
+            --dangerously-skip-permissions <<PROMPT
+          These patch packages no longer apply to the checked-out upstream
+          Buzz source: ${FAILED}. Every other package is already applied.
+          For each failed package, read fork/patches/<id>/PATCH.md, which is
+          the authoritative contract, and its <id>.patch, which is the old
+          implementation, and implement that intent completely on this
+          source. Preserve upstream behavior outside those intents. Do not
+          modify .github or anything under fork/. Run fork/verify and leave
+          the working tree with the healed source implementation.
+          PROMPT
+          # A clean exit doesn't prove a heal, so require actual source changes.
+          git add -A -- ':(exclude).github' ':(exclude)fork'
+          if [ "$(git write-tree)" = "$before" ]; then
+            echo "claude exited cleanly but changed no source files" >&2
+            exit 1
+          fi
+
+      - name: Restore trusted control files after healing
+        if: steps.apply.outputs.failed != ''
+        shell: bash
+        run: |
+          rm -rf .github fork
+          git checkout '${{ steps.resolve.outputs.current_main }}' -- $CONTROL_FILES
+
+      - name: Warn when heal exceeds claimed patch paths
+        if: steps.apply.outputs.failed != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          if ! python3 fork/sync.py verify-changed-paths \
+            --source-sha '${{ steps.resolve.outputs.source_sha }}'; then
+            git diff --binary '${{ steps.resolve.outputs.source_sha }}' -- \
+              ':(exclude).github' ':(exclude)fork' > "$RUNNER_TEMP/healed.diff"
+            echo "::warning title=heal exceeded claimed patch paths::refresh sweeps the extra paths into fork/patches/heal-overflow; review the healed-diff artifact and reassign them to named patches"
+          fi
+
+      - name: Upload healed diff for maintainer adoption
+        if: always() && steps.apply.outputs.failed != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: healed-diff
+          path: ${{ runner.temp }}/healed.diff
+          if-no-files-found: ignore
+
+      - name: Verify rebuilt source
+        run: fork/verify
+
+      - name: Refresh deterministic patch artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A
+          python3 fork/sync.py refresh \
+            --source-sha '${{ steps.resolve.outputs.source_sha }}'
+          git add -A
+          git diff --cached --check -- . ':(exclude)fork/patches/**/*.patch'
+
+      - name: Commit verified tree to main as a signed commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current_main='${{ steps.resolve.outputs.current_main }}'
+          source_sha='${{ steps.resolve.outputs.source_sha }}'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          tree="$(git write-tree)"
+          if [ "$tree" = "$(git rev-parse "${current_main}^{tree}")" ]; then
+            echo "main is current"
+            exit 0
+          fi
+          if [ '${{ steps.resolve.outputs.source_synced }}' = "true" ]; then
+            message="chore: rebuild patched fork on ${source_sha}"
+            commit_parents=(-p "$current_main")
+            api_parents=(-f "parents[]=$current_main")
+          else
+            message="chore: sync patched fork to ${source_sha}"
+            commit_parents=(-p "$current_main" -p "$source_sha")
+            api_parents=(-f "parents[]=$current_main" -f "parents[]=$source_sha")
+          fi
+          if [ -n '${{ steps.apply.outputs.failed }}' ]; then
+            message="${message}"$'\n\n'"healed by Claude: ${{ steps.apply.outputs.failed }}"
+          fi
+          # Push the objects under a scratch ref, then have GitHub create the
+          # commit itself: commits made through the API are signed by GitHub.
+          carrier="$(printf 'carrier\n' | git commit-tree "$tree" "${commit_parents[@]}")"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          scratch="refs/heads/sync-objects-${GITHUB_RUN_ID}"
+          git push "$remote" "${carrier}:${scratch}"
+          trap 'git push "$remote" --delete "$scratch" || true' EXIT
+          signed="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits" \
+            -f message="$message" -f tree="$tree" \
+            "${api_parents[@]}" --jq .sha)"
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/main" -f sha="$signed" >/dev/null
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${signed}" \
+            --jq '"synced \(.sha[0:12]), verified: \(.commit.verification.verified)"'

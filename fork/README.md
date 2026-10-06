@@ -53,18 +53,25 @@ applied, plus this `fork/` directory and a fork-owned `.github/`
 (upstream's workflows never run here). Buzz already uses the top-level
 `patches/` for pnpm, so the fork keeps everything it owns under `fork/`.
 
-- `fork/sync.py` validates, applies, packages and refreshes patches.
+Packages stack, quilt style. `fork/patches/series` lists them in the order
+they apply, and each `.patch` is its diff on top of the baseline plus every
+package before it, so two features can change the same file. Put the
+packages most likely to be merged upstream first, so removing one disturbs
+the fewest others.
+
+- `fork/sync.py` validates, applies, packages and refreshes the stack.
 - `fork/verify` is the one check fork CI, the daily sync and a heal all run.
   Beyond the tooling's own tests, it only checks the crates and desktop code
-  the packages touch.
-- `.github/workflows/sync-upstream.yml` runs daily: it merges the latest
-  upstream commit, re-applies every package (falling back to a 3-way merge
-  when only its context moved), asks Claude to heal only the packages that
-  still don't apply, runs `fork/verify`, refreshes the packages and commits
-  the result to `main`. Heals that change paths no package claims (upstream
-  renames, file splits) land in an auto-managed `fork/patches/heal-overflow/`
-  package; reassign its hunks to the right named package, and refresh
-  deletes it once nothing unassigned remains.
+  the packages touch. CI provides the Postgres the relay's database-backed
+  unit tests expect.
+- `.github/workflows/sync-upstream.yml` runs daily. It merges the latest
+  upstream commit and applies the series one package at a time, falling back
+  to a 3-way merge when only a package's context moved. When a package still
+  doesn't apply, Claude heals that package alone, against the tree with the
+  earlier ones applied, and the result is snapshotted before the next one, so
+  every healed hunk belongs to exactly one package. Then it runs
+  `fork/verify`, writes each package back as the diff between its snapshot
+  and the one before, and commits the result to `main`.
 - `.github/workflows/desktop.yml` builds the macOS app after each sync and
   publishes it with its updater manifest to the `buzz-desktop-fork-latest`
   release.
@@ -76,16 +83,17 @@ off `upstream/main`.
 
 1. On a branch off this fork's `main`, write `fork/patches/<id>/PATCH.md`
    with `format`, `id` and `summary` in the frontmatter and the `Intent`,
-   `Verification` and `Removal` sections.
+   `Verification` and `Removal` sections. A new package goes at the end of
+   the series; to put it elsewhere, add its id to `fork/patches/series`
+   first.
 2. Run `python3 fork/sync.py package <id> <feature-branch>`. It takes the
-   branch's changes since it left `upstream/main`, rebuilds them on the
-   fork's baseline (`fork/sync.py baseline`), writes `<id>.patch`, fills in
-   the derived frontmatter and applies the change to the working tree. Run
-   it again whenever the feature branch moves; it swaps the old version out.
+   branch's changes since it left `upstream/main`, rebuilds the stack from
+   the baseline with them in place, writes every `.patch` and the derived
+   frontmatter, and updates the working tree. Run it again whenever the
+   feature branch moves. If the branch conflicts with a package before it,
+   build it on top of that package's branch and pass `--base <that-branch>`
+   so only its own changes are taken.
 3. Run `fork/verify` and commit.
 
-Packages never share a path. To change a package directly on `main`
-instead, edit its files and run
-`python3 fork/sync.py refresh --source-sha "$(python3 fork/sync.py baseline)"`.
 `python3 fork/sync.py check` confirms the tree is exactly the baseline plus
-the packages.
+the stack.

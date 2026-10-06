@@ -1,5 +1,5 @@
 name: Toolchain
-description: Buzz's pinned toolchains, caches and Linux Tauri libraries, as its own CI sets them up.
+description: Buzz's pinned toolchains, caches, Linux Tauri libraries and a Postgres with Buzz's schema, as its own CI sets them up.
 
 runs:
   using: composite
@@ -35,3 +35,23 @@ runs:
         path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
         key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
         restore-keys: pnpm-${{ runner.os }}-
+
+    - name: Start Postgres with Buzz's schema for relay and db unit tests
+      shell: bash
+      env:
+        PGHOST: localhost
+        PGPORT: "5432"
+        PGUSER: buzz
+        PGPASSWORD: buzz_dev
+        PGDATABASE: buzz
+        PGSCHEMA_PLAN_HOST: localhost
+        PGSCHEMA_PLAN_PORT: "5432"
+        PGSCHEMA_PLAN_DB: buzz
+        PGSCHEMA_PLAN_USER: buzz
+        PGSCHEMA_PLAN_PASSWORD: buzz_dev
+      run: |
+        docker run -d --name buzz-postgres -p 5432:5432 \
+          -e POSTGRES_USER=buzz -e POSTGRES_PASSWORD=buzz_dev -e POSTGRES_DB=buzz postgres:17-alpine
+        until docker exec buzz-postgres pg_isready -U buzz -d buzz -h localhost; do sleep 1; done
+        ./bin/pgschema apply --file schema/schema.sql --auto-approve
+        docker exec -i buzz-postgres psql -U buzz -d buzz -v ON_ERROR_STOP=1 < scripts/reconcile-schema-after-pgschema.sql

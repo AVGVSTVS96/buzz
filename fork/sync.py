@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,35 +15,11 @@ from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 PATCHES_DIR = ROOT / "fork" / "patches"
+SERIES = PATCHES_DIR / "series"
 CONTROL_PREFIXES = (".github/", "fork/")
+SOURCE = (".", ":(exclude).github", ":(exclude)fork")
 PATCH_FORMAT = "patch-md/v0.1"
-OVERFLOW_PATCH_ID = "heal-overflow"
-
-OVERFLOW_PATCH_MD = """---
-format: patch-md/v0.1
-id: heal-overflow
-summary: Healed changes not yet attributed to a named patch package.
-baseline: {baseline}
-patch_file: heal-overflow.patch
-patch_sha256: {patch_sha256}
----
-
-## Intent
-
-Preserve heal output that no named patch package claims, so the next
-deterministic sync reproduces the full verified tree unchanged.
-
-## Verification
-
-`git apply` succeeds against the baseline and the synced tree passes
-`fork/verify`.
-
-## Removal
-
-Reassign these hunks to the named packages whose intents they
-implement; refresh deletes this package automatically once no
-unassigned changes remain.
-"""
+UPSTREAM = "upstream/main"
 
 
 class PatchSpec(NamedTuple):
@@ -206,36 +181,36 @@ def load_patch(path: Path) -> PatchSpec:
     )
 
 
-def load_patches(documents: list[Path]) -> list[PatchSpec]:
-    patches: list[PatchSpec] = []
-    claimed_paths: dict[str, str] = {}
-    expected_baseline: str | None = None
-    for document in documents:
-        patch = load_patch(document)
-        if expected_baseline is None:
-            expected_baseline = patch.baseline
-        elif patch.baseline != expected_baseline:
-            raise SystemExit("all patches must use the same baseline")
+def series() -> list[str]:
+    if not SERIES.is_file():
+        raise SystemExit("missing fork/patches/series")
+    ids = SERIES.read_text().split()
+    if len(set(ids)) != len(ids):
+        raise SystemExit("fork/patches/series lists a package twice")
+    return ids
+
+
+def load_patches(ids: list[str]) -> list[PatchSpec]:
+    patches = [load_patch(PATCHES_DIR / patch_id / "PATCH.md") for patch_id in ids]
+    if len({patch.baseline for patch in patches}) > 1:
+        raise SystemExit("all patches must use the same baseline")
+    for patch in patches:
         for changed_path in patch.paths:
             if changed_path.startswith(CONTROL_PREFIXES):
                 raise SystemExit(
                     f"{patch.patch_id} changes fork-owned path {changed_path}"
                 )
-            if changed_path in claimed_paths:
-                raise SystemExit(
-                    f"{changed_path} is changed by both "
-                    f"{claimed_paths[changed_path]} and {patch.patch_id}"
-                )
-            claimed_paths[changed_path] = patch.patch_id
-        patches.append(patch)
     return patches
 
 
 def validate() -> list[PatchSpec]:
-    documents = patch_docs()
-    if not documents:
-        raise SystemExit("no PATCH.md files found")
-    return load_patches(documents)
+    ids = series()
+    if not ids:
+        raise SystemExit("no patch packages")
+    packaged = sorted(document.parent.name for document in patch_docs())
+    if sorted(ids) != packaged:
+        raise SystemExit("fork/patches/series must list every package exactly once")
+    return load_patches(ids)
 
 
 def git(
@@ -275,170 +250,194 @@ def set_frontmatter(path: Path, **fields: str) -> None:
     path.write_text("".join(lines))
 
 
-def patched_tree(baseline: str, diffs: list[bytes], *, three_way: bool = False) -> str:
+def stack_trees(
+    baseline: str, ids: list[str], diffs: list[bytes], *, three_way: bool = False
+) -> list[str]:
+    trees = []
     with tempfile.TemporaryDirectory() as tmp:
         index = str(Path(tmp) / "index")
         git("read-tree", baseline, index=index)
-        for diff in diffs:
-            git(
-                "apply",
-                "--cached",
-                *(("--3way",) if three_way else ()),
-                "-",
-                input=diff,
-                index=index,
-            )
-        return git("write-tree", index=index).stdout.strip()
+        for patch_id, diff in zip(ids, diffs, strict=True):
+            try:
+                git(
+                    "apply",
+                    "--cached",
+                    *(("--3way",) if three_way else ()),
+                    "-",
+                    input=diff,
+                    index=index,
+                )
+            except SystemExit as error:
+                raise SystemExit(f"{patch_id} does not apply:\n{error}") from None
+            trees.append(git("write-tree", index=index).stdout.strip())
+    return trees
 
 
-def changed_source_paths(source_sha: str) -> list[str]:
-    changed = git("diff", "--name-only", source_sha).stdout.splitlines()
-    return [path for path in changed if not path.startswith(CONTROL_PREFIXES)]
-
-
-def refresh(args: argparse.Namespace) -> None:
-    named = [patch for patch in validate() if patch.patch_id != OVERFLOW_PATCH_ID]
-    for patch in named:
-        result = git(
-            "diff",
-            "--binary",
-            "--full-index",
-            args.source_sha,
-            "--",
-            *patch.paths,
-            text=False,
-        )
-        patch.patch_path.write_bytes(result.stdout)
-        if not result.stdout:
-            raise SystemExit(
-                f"{patch.patch_id} became empty; review its removal condition"
-            )
-        set_frontmatter(
-            patch.directory / "PATCH.md",
-            baseline=args.source_sha,
-            patch_sha256=sha256(patch.patch_path),
-        )
-
-    # Heals may change paths no named patch claims (upstream renames, file
-    # splits). Sweep those into an auto-managed overflow package so the next
-    # deterministic sync reproduces the full verified tree instead of
-    # silently dropping healed hunks.
-    claimed = {path for patch in named for path in patch.paths}
-    overflow_paths = sorted(
-        path for path in changed_source_paths(args.source_sha) if path not in claimed
-    )
-    overflow_dir = PATCHES_DIR / OVERFLOW_PATCH_ID
-    if overflow_paths:
-        result = git(
-            "diff",
-            "--binary",
-            "--full-index",
-            args.source_sha,
-            "--",
-            *overflow_paths,
-            text=False,
-        )
-        if not result.stdout:
-            raise SystemExit("overflow paths produced an empty patch")
-        overflow_dir.mkdir(exist_ok=True)
-        patch_path = overflow_dir / f"{OVERFLOW_PATCH_ID}.patch"
-        patch_path.write_bytes(result.stdout)
-        (overflow_dir / "PATCH.md").write_text(
-            OVERFLOW_PATCH_MD.format(
-                baseline=args.source_sha,
-                patch_sha256=sha256(patch_path),
-            )
-        )
-    elif overflow_dir.exists():
-        shutil.rmtree(overflow_dir)
-    validate()
-
-
-def verify_changed_paths(args: argparse.Namespace) -> None:
-    patches = validate()
-    claimed = {path for patch in patches for path in patch.paths}
-    unexpected = [
-        path for path in changed_source_paths(args.source_sha) if path not in claimed
+def write_patches(baseline: str, ids: list[str], trees: list[str]) -> None:
+    diffs = [
+        git(
+            "diff", "--binary", "--full-index", before, after, "--", *SOURCE, text=False
+        ).stdout
+        for before, after in zip([baseline, *trees], trees)
     ]
-    if unexpected:
-        raise SystemExit(
-            "changed source paths are not assigned to a patch:\n"
-            + "\n".join(f"  {path}" for path in unexpected)
+    for patch_id, diff in zip(ids, diffs, strict=True):
+        if not diff:
+            raise SystemExit(f"{patch_id} became empty; review its removal condition")
+    for patch_id, diff in zip(ids, diffs, strict=True):
+        patch_path = PATCHES_DIR / patch_id / f"{patch_id}.patch"
+        patch_path.write_bytes(diff)
+        set_frontmatter(
+            patch_path.with_name("PATCH.md"),
+            baseline=baseline,
+            patch_file=patch_path.name,
+            patch_sha256=sha256(patch_path),
         )
+    SERIES.write_text("".join(f"{patch_id}\n" for patch_id in ids))
+
+
+def source_drift(tree: str) -> list[str]:
+    return git("diff", "--name-only", tree, "--", *SOURCE).stdout.splitlines()
+
+
+def stack_file() -> Path:
+    return ROOT / git("rev-parse", "--git-path", "fork-stack").stdout.strip()
+
+
+def snapshots() -> list[tuple[str, str]]:
+    path = stack_file()
+    lines = path.read_text().splitlines() if path.exists() else []
+    return [tuple(line.split()) for line in lines]
+
+
+def record(patch_id: str) -> None:
+    git("add", "-A")
+    with stack_file().open("a") as stack:
+        stack.write(f"{patch_id} {git('write-tree').stdout.strip()}\n")
 
 
 def apply() -> None:
-    for patch in validate():
+    patches = validate()
+    done = snapshots()
+    if [patch_id for patch_id, _ in done] != [
+        patch.patch_id for patch in patches[: len(done)]
+    ]:
+        raise SystemExit(
+            f"{stack_file()} doesn't match the series; delete it to start over"
+        )
+    if done and source_drift(done[-1][1]):
+        raise SystemExit(
+            "the tree changed since the last snapshot; snapshot the package first"
+        )
+    for patch in patches[len(done) :]:
         try:
-            patched_tree("HEAD", [patch.patch_path.read_bytes()], three_way=True)
+            stack_trees(
+                git("write-tree").stdout.strip(),
+                [patch.patch_id],
+                [patch.patch_path.read_bytes()],
+                three_way=True,
+            )
         except SystemExit as error:
-            print(f"{patch.patch_id} does not apply:\n{error}", file=sys.stderr)
+            print(error, file=sys.stderr)
             print(patch.patch_id)
-            continue
+            return
         git("apply", "--index", "--3way", str(patch.patch_path))
+        record(patch.patch_id)
+
+
+def snapshot(args: argparse.Namespace) -> None:
+    patches = validate()
+    done = snapshots()
+    if len(done) == len(patches) or patches[len(done)].patch_id != args.patch_id:
+        raise SystemExit(f"{args.patch_id} is not the next package to snapshot")
+    record(args.patch_id)
+
+
+def refresh(args: argparse.Namespace) -> None:
+    ids = [patch.patch_id for patch in validate()]
+    done = snapshots()
+    if [patch_id for patch_id, _ in done] != ids:
+        raise SystemExit("apply (and heal) every package before refreshing")
+    git("add", "-A")
+    drift = source_drift(done[-1][1])
+    if drift:
+        raise SystemExit(
+            "the tree changed outside a package:\n"
+            + "\n".join(f"  {path}" for path in drift)
+        )
+    write_patches(args.source_sha, ids, [tree for _, tree in done])
+    validate()
 
 
 def package(args: argparse.Namespace) -> None:
-    directory = PATCHES_DIR / args.patch_id
-    document = directory / "PATCH.md"
+    document = PATCHES_DIR / args.patch_id / "PATCH.md"
     if not document.is_file():
         raise SystemExit(f"write {document.relative_to(ROOT)} first")
-    others = load_patches([path for path in patch_docs() if path != document])
+    ids = series() if SERIES.exists() else []
+    if args.patch_id not in ids:
+        ids.append(args.patch_id)
+    others = {
+        patch.patch_id: patch
+        for patch in load_patches(
+            [patch_id for patch_id in ids if patch_id != args.patch_id]
+        )
+    }
     baseline = (
-        others[0].baseline
+        next(iter(others.values())).baseline
         if others
-        else git("merge-base", "HEAD", args.upstream).stdout.strip()
+        else git("merge-base", "HEAD", UPSTREAM).stdout.strip()
     )
 
-    base = git("merge-base", args.branch, args.upstream).stdout.strip()
+    base = git("merge-base", args.branch, args.base).stdout.strip()
     diff = git("diff", "--binary", "--full-index", base, args.branch, text=False).stdout
     if not diff:
-        raise SystemExit(f"{args.branch} has no changes since {args.upstream}")
+        raise SystemExit(f"{args.branch} has no changes since {args.base}")
+    diffs = [
+        diff if patch_id == args.patch_id else others[patch_id].patch_path.read_bytes()
+        for patch_id in ids
+    ]
     try:
-        tree = patched_tree(baseline, [diff], three_way=True)
+        trees = stack_trees(baseline, ids, diffs, three_way=True)
     except SystemExit as error:
         raise SystemExit(
-            f"{args.branch} does not apply to the fork baseline; "
-            f"rebase it onto {baseline}\n{error}"
+            f"{error}\nrebase {args.branch} onto the packages before it, "
+            f"or move {args.patch_id} in fork/patches/series"
         ) from None
-    patch = git("diff", "--binary", "--full-index", baseline, tree, text=False).stdout
-    changed = git(
-        "diff", "--name-only", "--no-renames", baseline, tree
-    ).stdout.splitlines()
-    claimed = {path: other.patch_id for other in others for path in other.paths}
-    clashes = [
-        f"  {path} ({claimed.get(path, 'fork-owned')})"
-        for path in changed
-        if path in claimed or path.startswith(CONTROL_PREFIXES)
+    fork_owned = [
+        path
+        for path in git("diff", "--name-only", base, args.branch).stdout.splitlines()
+        if path.startswith(CONTROL_PREFIXES)
     ]
-    if clashes:
-        raise SystemExit(
-            f"{args.patch_id} changes paths it can't own:\n" + "\n".join(clashes)
-        )
+    if fork_owned:
+        print(f"left out fork-owned paths: {', '.join(fork_owned)}", file=sys.stderr)
 
-    patch_path = directory / f"{args.patch_id}.patch"
-    if patch_path.exists():
-        git("apply", "--reverse", "--index", str(patch_path))
-    patch_path.write_bytes(patch)
-    git("apply", "--index", str(patch_path))
-    set_frontmatter(
-        document,
-        baseline=baseline,
-        patch_file=patch_path.name,
-        patch_sha256=sha256(patch_path),
-    )
+    current = git("write-tree").stdout.strip()
+    write_patches(baseline, ids, trees)
+    change = git(
+        "diff",
+        "--binary",
+        "--full-index",
+        current,
+        trees[-1],
+        "--",
+        *SOURCE,
+        text=False,
+    ).stdout
+    if change:
+        git("apply", "--index", "-", input=change)
     validate()
 
 
 def check() -> None:
     patches = validate()
-    tree = patched_tree(
-        patches[0].baseline, [patch.patch_path.read_bytes() for patch in patches]
+    trees = stack_trees(
+        patches[0].baseline,
+        [patch.patch_id for patch in patches],
+        [patch.patch_path.read_bytes() for patch in patches],
     )
-    drift = changed_source_paths(tree)
+    drift = source_drift(trees[-1])
     if drift:
         raise SystemExit(
-            "the tree differs from baseline + patches; run refresh or package:\n"
+            "the tree differs from baseline + packages; run package or refresh:\n"
             + "\n".join(f"  {path}" for path in drift)
         )
 
@@ -446,23 +445,19 @@ def check() -> None:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser()
     commands = root.add_subparsers(dest="command", required=True)
-    commands.add_parser("validate")
-    commands.add_parser("apply")
-    commands.add_parser("check")
-    commands.add_parser("baseline")
-    commands.add_parser("list-patches")
-    commands.add_parser("paths")
+    for command in ("validate", "apply", "check", "baseline", "list-patches", "paths"):
+        commands.add_parser(command)
+
+    snapshot_parser = commands.add_parser("snapshot")
+    snapshot_parser.add_argument("patch_id")
 
     refresh_parser = commands.add_parser("refresh")
     refresh_parser.add_argument("--source-sha", required=True)
 
-    changed_parser = commands.add_parser("verify-changed-paths")
-    changed_parser.add_argument("--source-sha", required=True)
-
     package_parser = commands.add_parser("package")
     package_parser.add_argument("patch_id")
     package_parser.add_argument("branch")
-    package_parser.add_argument("--upstream", default="upstream/main")
+    package_parser.add_argument("--base", default=UPSTREAM)
 
     return root
 
@@ -473,22 +468,21 @@ def main() -> None:
         validate()
     elif args.command == "apply":
         apply()
+    elif args.command == "snapshot":
+        snapshot(args)
+    elif args.command == "refresh":
+        refresh(args)
     elif args.command == "check":
         check()
+    elif args.command == "package":
+        package(args)
     elif args.command == "baseline":
         print(validate()[0].baseline)
     elif args.command == "list-patches":
         for patch in validate():
             print(patch.patch_path.relative_to(ROOT))
     elif args.command == "paths":
-        for patch in validate():
-            print(*patch.paths, sep="\n")
-    elif args.command == "refresh":
-        refresh(args)
-    elif args.command == "verify-changed-paths":
-        verify_changed_paths(args)
-    elif args.command == "package":
-        package(args)
+        print(*sorted({path for patch in validate() for path in patch.paths}), sep="\n")
 
 
 if __name__ == "__main__":

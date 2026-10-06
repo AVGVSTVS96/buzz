@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+export PYTHONDONTWRITEBYTECODE=1
+
+python3 fork/sync.py validate
+python3 fork/test_sync.py
+
+paths=$(if [ $# -gt 0 ]; then printf '%s\n' "$@"; else python3 fork/sync.py paths; fi)
+crates=$(printf '%s\n' "$paths" | sed -n 's|^crates/\([^/]*\)/.*|\1|p' | sort -u)
+
+if [ -n "$crates" ]; then
+  just fmt-check
+  cargo clippy --locked --all-targets $(cargo tree --workspace --prefix none -f '{p}' $(printf -- '-i %s ' $crates) | awk '{print "-p", $1}' | sort -u) -- -D warnings
+  for crate in $crates; do
+    if [ -f "crates/$crate/src/lib.rs" ]; then target=--lib; else target=--bins; fi
+    cargo test --locked -p "$crate" "$target"
+  done
+fi
+
+if printf '%s\n' "$paths" | grep -q '^desktop/src-tauri/' || { [ -n "$crates" ] &&
+  cargo metadata --locked --format-version 1 --manifest-path desktop/src-tauri/Cargo.toml |
+    jq -e 'any(.packages[]; .source == null and (.name | IN($ARGS.positional[])))' --args $crates >/dev/null; }; then
+  just desktop-tauri-fmt-check desktop-tauri-clippy desktop-tauri-test
+fi
+
+if printf '%s\n' "$paths" | grep -v '^desktop/src-tauri/' | grep -q '^desktop/'; then
+  pnpm install --frozen-lockfile
+  just desktop-check desktop-typecheck desktop-test
+fi

@@ -6,6 +6,7 @@ import {
 import type {
   ManagedAgent,
   ManagedAgentRuntimeStatus,
+  RespondToMode,
 } from "@/shared/api/types";
 
 export async function startManagedAgent(
@@ -113,4 +114,56 @@ export async function reconcileManagedAgentRuntimes(
   communities: readonly { relayUrl: string }[],
 ): Promise<ManagedAgentRuntimeStatus[]> {
   return invokeTauri("reconcile_managed_agent_runtimes", { communities });
+}
+
+export type ConnectedAgentPolicy = {
+  name: string;
+  respondTo: RespondToMode;
+  respondToAllowlist: string[];
+};
+
+export type ConnectedAgentHandoff = {
+  agentPubkey: string;
+  authTag: string;
+  relayUrl: string;
+  policy: ConnectedAgentPolicy;
+  policyKept: boolean;
+  policySyncError: string | null;
+};
+
+type RawConnectedAgentHandoff = {
+  agent_pubkey: string;
+  auth_tag: string;
+  relay_url: string;
+  policy: {
+    name: string;
+    respond_to: RespondToMode;
+    respond_to_allowlist?: string[];
+  };
+  policy_kept: boolean;
+  policy_sync_error: string | null;
+};
+
+export async function connectManagedAgent(input: {
+  agentPubkey: string;
+  name: string;
+  respondTo: RespondToMode;
+  respondToAllowlist: string[];
+}): Promise<ConnectedAgentHandoff> {
+  const response = await invokeTauri<RawConnectedAgentHandoff>(
+    "connect_managed_agent",
+    { input },
+  );
+  return {
+    agentPubkey: response.agent_pubkey,
+    authTag: response.auth_tag,
+    relayUrl: response.relay_url,
+    policy: {
+      name: response.policy.name,
+      respondTo: response.policy.respond_to,
+      respondToAllowlist: response.policy.respond_to_allowlist ?? [],
+    },
+    policyKept: response.policy_kept,
+    policySyncError: response.policy_sync_error,
+  };
 }

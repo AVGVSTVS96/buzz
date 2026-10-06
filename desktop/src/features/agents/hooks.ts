@@ -45,6 +45,7 @@ import { discoverAcpCommands } from "@/shared/api/acpCommands";
 import type { HarnessDefinitionInput } from "@/shared/api/tauri";
 import { discoverAcpRuntimes } from "@/shared/api/tauriAcpDiscovery";
 import {
+  connectManagedAgent,
   setManagedAgentAutoRestart,
   setManagedAgentStartOnAppLaunch,
   startManagedAgent,
@@ -416,6 +417,17 @@ export function useManagedAgentsQuery(options?: { enabled?: boolean }) {
         : false;
     },
     ...agentsFocusRefetchPolicy,
+  });
+}
+
+export function useConnectManagedAgentMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: connectManagedAgent,
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: relayAgentsQueryKey });
+    },
   });
 }
 

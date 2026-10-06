@@ -1,0 +1,1781 @@
+diff --git a/desktop/src-tauri/src/commands/agent_connect.rs b/desktop/src-tauri/src/commands/agent_connect.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e7b1f7db3d2d873232454f7e326b4aefbdaff72d
+--- /dev/null
++++ b/desktop/src-tauri/src/commands/agent_connect.rs
+@@ -0,0 +1,239 @@
++//! Connect an agent that runs elsewhere and already holds its own key.
++//!
++//! The owner attests the agent's public key (NIP-OA) and publishes its
++//! owner-signed kind:30177 policy; the agent's secret key never reaches this
++//! device. The attestation becomes owner provenance only once the agent
++//! presents it, which needs the agent's key: see `docs/owned-agent-discovery.md`.
++
++use buzz_core_pkg::kind::KIND_MANAGED_AGENT;
++use nostr::{Event, PublicKey};
++use serde::{Deserialize, Serialize};
++use tauri::{AppHandle, State};
++
++use super::agents::tombstone_managed_agent_at;
++use crate::{
++    app_state::AppState,
++    managed_agents::{
++        agent_events::{
++            agent_event_builder, managed_agent_content_from_event, ManagedAgentEventContent,
++        },
++        load_managed_agents,
++        persona_events::flush_pending_events_at,
++        reconcile::retain_agent_event,
++        retention::{active_retention_scope, open_retention_db, RetentionScope},
++        validate_managed_agent_definition_text, validate_respond_to_allowlist, RespondTo,
++    },
++    nostr_convert::verified_agent_owners_from_profiles,
++    relay::{query_relay_at, relay_http_base_url},
++};
++
++#[derive(Debug, Deserialize)]
++#[serde(rename_all = "camelCase")]
++pub struct ConnectManagedAgentRequest {
++    pub agent_pubkey: String,
++    pub name: String,
++    #[serde(default)]
++    pub respond_to: RespondTo,
++    #[serde(default)]
++    pub respond_to_allowlist: Vec<String>,
++}
++
++#[derive(Debug, Serialize)]
++pub struct ConnectManagedAgentResponse {
++    pub agent_pubkey: String,
++    pub auth_tag: String,
++    pub relay_url: String,
++    /// The owner policy on record for the agent after this call.
++    pub policy: ManagedAgentEventContent,
++    /// True when an existing policy was kept instead of the requested one.
++    pub policy_kept: bool,
++    pub policy_sync_error: Option<String>,
++}
++
++fn parse_agent_pubkey(input: &str) -> Result<PublicKey, String> {
++    PublicKey::parse(input.trim())
++        .map_err(|_| "Enter the agent's public key as an npub or 64-character hex key.".to_string())
++}
++
++/// The policy a connected agent publishes. The runtime is the operator's, so
++/// the record carries no definition fields.
++fn connected_agent_content(
++    name: String,
++    respond_to: RespondTo,
++    respond_to_allowlist: Vec<String>,
++) -> ManagedAgentEventContent {
++    ManagedAgentEventContent {
++        name,
++        persona_id: None,
++        system_prompt: None,
++        model: None,
++        provider: None,
++        persona_source_version: None,
++        parallelism: 1,
++        respond_to,
++        respond_to_allowlist,
++    }
++}
++
++/// The owner's policy already on record for `agent` among the relay's
++/// `events`, refusing an agent whose own profile attests a different owner.
++fn existing_owner_policy(
++    events: &[Event],
++    owner: &PublicKey,
++    agent: &PublicKey,
++) -> Result<Option<ManagedAgentEventContent>, String> {
++    let agent_hex = agent.to_hex();
++    if verified_agent_owners_from_profiles(events)
++        .get(&agent_hex)
++        .is_some_and(|attested| *attested != owner.to_hex())
++    {
++        return Err("This agent is already attested by another owner.".to_string());
++    }
++    events
++        .iter()
++        .filter(|event| {
++            event.kind == nostr::Kind::Custom(KIND_MANAGED_AGENT as u16)
++                && event.pubkey == *owner
++                && event.tags.identifier() == Some(agent_hex.as_str())
++        })
++        .max_by_key(|event| event.created_at)
++        .map(managed_agent_content_from_event)
++        .transpose()
++}
++
++fn ensure_not_managed_here(app: &AppHandle, state: &AppState, agent: &str) -> Result<(), String> {
++    let _store_guard = state
++        .managed_agents_store_lock
++        .lock()
++        .map_err(|error| error.to_string())?;
++    if load_managed_agents(app)?
++        .iter()
++        .any(|record| record.pubkey.eq_ignore_ascii_case(agent))
++    {
++        return Err("This agent is managed on this device.".to_string());
++    }
++    Ok(())
++}
++
++/// Attest an existing agent key and publish its owner policy.
++///
++/// Returns the NIP-OA auth tag for the operator to install as `BUZZ_AUTH_TAG`.
++/// An agent that already has a policy from this owner keeps it: connecting
++/// again only issues a new tag, so it never overwrites another device's record.
++#[tauri::command]
++pub async fn connect_managed_agent(
++    input: ConnectManagedAgentRequest,
++    app: AppHandle,
++    state: State<'_, AppState>,
++) -> Result<ConnectManagedAgentResponse, String> {
++    let scope = active_retention_scope(&app, &state)?;
++    ensure_not_managed_here(
++        &app,
++        &state,
++        &parse_agent_pubkey(&input.agent_pubkey)?.to_hex(),
++    )?;
++    connect_agent_at(&state, &scope, input).await
++}
++
++/// Scope-free core of [`connect_managed_agent`].
++async fn connect_agent_at(
++    state: &AppState,
++    scope: &RetentionScope,
++    input: ConnectManagedAgentRequest,
++) -> Result<ConnectManagedAgentResponse, String> {
++    let name = input.name.trim().to_string();
++    if name.is_empty() {
++        return Err("Name the agent.".to_string());
++    }
++    validate_managed_agent_definition_text(&name, None, None)?;
++    let agent = parse_agent_pubkey(&input.agent_pubkey)?;
++    let agent_pubkey = agent.to_hex();
++    let respond_to_allowlist = validate_respond_to_allowlist(&input.respond_to_allowlist)?;
++    if input.respond_to == RespondTo::Allowlist && respond_to_allowlist.is_empty() {
++        return Err(
++            "respond-to mode 'allowlist' requires at least one pubkey in the allowlist".to_string(),
++        );
++    }
++    let owner = scope.owner_keys.public_key();
++    if owner == agent {
++        return Err("That is your own key. Connect the agent's key instead.".to_string());
++    }
++
++    let events = query_relay_at(
++        state,
++        &relay_http_base_url(&scope.relay_url),
++        &[
++            serde_json::json!({
++                "kinds": [0],
++                "authors": [&agent_pubkey],
++                "limit": 1,
++            }),
++            serde_json::json!({
++                "kinds": [KIND_MANAGED_AGENT],
++                "authors": [owner.to_hex()],
++                "#d": [&agent_pubkey],
++                "limit": 1,
++            }),
++        ],
++    )
++    .await?;
++    let existing_policy = existing_owner_policy(&events, &owner, &agent)?;
++    let auth_tag = buzz_sdk_pkg::nip_oa::compute_auth_tag(&scope.owner_keys, &agent, "")
++        .map_err(|e| format!("failed to compute NIP-OA auth tag: {e}"))?;
++
++    let policy_kept = existing_policy.is_some();
++    let policy = match existing_policy {
++        Some(policy) => policy,
++        None => {
++            let policy = connected_agent_content(name, input.respond_to, respond_to_allowlist);
++            let conn = open_retention_db(&scope.db_path)?;
++            retain_agent_event(
++                &conn,
++                &scope.owner_keys,
++                &agent_pubkey,
++                agent_event_builder(&agent_pubkey, &policy)?,
++            )?;
++            policy
++        }
++    };
++    let policy_sync_error =
++        flush_pending_events_at(&scope.db_path, state, &scope.relay_url, &scope.owner_keys)
++            .await
++            .err();
++
++    Ok(ConnectManagedAgentResponse {
++        agent_pubkey,
++        auth_tag,
++        relay_url: scope.relay_url.clone(),
++        policy,
++        policy_kept,
++        policy_sync_error,
++    })
++}
++
++/// Withdraw the owner policy of an agent this device does not manage and
++/// archive its identity.
++///
++/// The agent's NIP-OA tag stays valid: an owner cannot revoke a signature it
++/// already handed out. Returns the relay sync error, if any; the tombstone is
++/// retained and retried by the flush loop.
++#[tauri::command]
++pub async fn disconnect_managed_agent(
++    agent_pubkey: String,
++    app: AppHandle,
++    state: State<'_, AppState>,
++) -> Result<Option<String>, String> {
++    let agent_pubkey = parse_agent_pubkey(&agent_pubkey)?.to_hex();
++    let scope = active_retention_scope(&app, &state)?;
++    ensure_not_managed_here(&app, &state, &agent_pubkey)?;
++    tombstone_managed_agent_at(&scope.db_path, &scope.owner_keys, &agent_pubkey)?;
++    Ok(
++        flush_pending_events_at(&scope.db_path, &state, &scope.relay_url, &scope.owner_keys)
++            .await
++            .err(),
++    )
++}
++
++#[cfg(test)]
++#[path = "agent_connect_tests.rs"]
++mod tests;
+diff --git a/desktop/src-tauri/src/commands/agent_connect_tests.rs b/desktop/src-tauri/src/commands/agent_connect_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7cec3d93763edadbedbda17e1b2e269cdeb36184
+--- /dev/null
++++ b/desktop/src-tauri/src/commands/agent_connect_tests.rs
+@@ -0,0 +1,218 @@
++use nostr::{Event, EventBuilder, Keys, Kind, Tag, ToBech32};
++
++use super::*;
++use crate::nostr_convert::relay_agents_from_directory_events;
++
++fn connected_policy(owner: &Keys, agent: &PublicKey, respond_to: RespondTo) -> Event {
++    agent_event_builder(
++        &agent.to_hex(),
++        &connected_agent_content("Hex".to_string(), respond_to, Vec::new()),
++    )
++    .unwrap()
++    .sign_with_keys(owner)
++    .unwrap()
++}
++
++fn profile_presenting_tag(owner: &Keys, agent: &Keys) -> Event {
++    let auth_tag = buzz_sdk_pkg::nip_oa::compute_auth_tag(owner, &agent.public_key(), "").unwrap();
++    let auth_tag: Vec<String> = serde_json::from_str(&auth_tag).unwrap();
++    EventBuilder::new(Kind::Metadata, r#"{"name":"Hex"}"#)
++        .tags([Tag::parse(auth_tag).unwrap()])
++        .sign_with_keys(agent)
++        .unwrap()
++}
++
++#[test]
++fn connected_policy_is_discovered_once_the_agent_presents_its_tag() {
++    let owner = Keys::generate();
++    let agent = Keys::generate();
++    let policy = connected_policy(&owner, &agent.public_key(), RespondTo::Anyone);
++
++    let agents = relay_agents_from_directory_events(
++        &[],
++        std::slice::from_ref(&policy),
++        &[profile_presenting_tag(&owner, &agent)],
++    );
++
++    assert_eq!(agents.len(), 1);
++    assert_eq!(agents[0].pubkey, agent.public_key().to_hex());
++    assert_eq!(agents[0].owner_pubkey, Some(owner.public_key().to_hex()));
++    assert_eq!(agents[0].name, "Hex");
++    assert_eq!(agents[0].respond_to, Some(RespondTo::Anyone));
++}
++
++#[test]
++fn connected_policy_alone_does_not_claim_the_key() {
++    let owner = Keys::generate();
++    let agent = Keys::generate();
++    let policy = connected_policy(&owner, &agent.public_key(), RespondTo::Anyone);
++
++    assert!(relay_agents_from_directory_events(&[], std::slice::from_ref(&policy), &[]).is_empty());
++    let attested_elsewhere = relay_agents_from_directory_events(
++        &[],
++        &[policy],
++        &[profile_presenting_tag(&Keys::generate(), &agent)],
++    );
++    assert!(attested_elsewhere
++        .iter()
++        .all(|found| found.owner_pubkey != Some(owner.public_key().to_hex())));
++}
++
++#[test]
++fn agent_pubkey_accepts_npub_or_hex_and_never_a_secret_key() {
++    let keys = Keys::generate();
++    let agent = keys.public_key();
++    let npub = agent.to_bech32().unwrap();
++
++    assert_eq!(parse_agent_pubkey(&format!(" {npub} ")).unwrap(), agent);
++    assert_eq!(parse_agent_pubkey(&agent.to_hex()).unwrap(), agent);
++    assert!(parse_agent_pubkey(&npub[..npub.len() - 1]).is_err());
++    assert!(parse_agent_pubkey(&keys.secret_key().to_bech32().unwrap()).is_err());
++}
++
++#[test]
++fn an_existing_owner_policy_is_kept() {
++    let owner = Keys::generate();
++    let agent = Keys::generate();
++    let policy = connected_policy(&owner, &agent.public_key(), RespondTo::Anyone);
++    let foreign_policy =
++        connected_policy(&Keys::generate(), &agent.public_key(), RespondTo::OwnerOnly);
++
++    let kept = existing_owner_policy(
++        &[
++            foreign_policy,
++            policy,
++            profile_presenting_tag(&owner, &agent),
++        ],
++        &owner.public_key(),
++        &agent.public_key(),
++    )
++    .unwrap();
++
++    assert_eq!(
++        kept.map(|policy| policy.respond_to),
++        Some(RespondTo::Anyone)
++    );
++    assert_eq!(
++        existing_owner_policy(&[], &owner.public_key(), &agent.public_key()).unwrap(),
++        None
++    );
++}
++
++/// A loopback relay that answers every query with its stored events and
++/// stores every accepted publish.
++async fn loopback_relay() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Event>>>) {
++    use axum::{routing::post, Json, Router};
++
++    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Event>::new()));
++    let (query_events, publish_events) = (events.clone(), events.clone());
++    let router = Router::new()
++        .route(
++            "/query",
++            post(move || {
++                let events = query_events.clone();
++                async move { Json(events.lock().unwrap().clone()) }
++            }),
++        )
++        .route(
++            "/events",
++            post(move |Json(event): Json<Event>| {
++                let events = publish_events.clone();
++                async move {
++                    let event_id = event.id.to_hex();
++                    events.lock().unwrap().push(event);
++                    Json(serde_json::json!({"event_id": event_id, "accepted": true, "message": ""}))
++                }
++            }),
++        );
++    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let address = listener.local_addr().unwrap();
++    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
++    (format!("ws://{address}"), events)
++}
++
++fn request(agent: &PublicKey, name: &str) -> ConnectManagedAgentRequest {
++    ConnectManagedAgentRequest {
++        agent_pubkey: agent.to_bech32().unwrap(),
++        name: name.to_string(),
++        respond_to: RespondTo::Anyone,
++        respond_to_allowlist: Vec::new(),
++    }
++}
++
++#[tokio::test]
++async fn connect_publishes_one_policy_and_reconnecting_keeps_it() {
++    let _serial = crate::relay_admission::TEST_SERIAL.lock().await;
++    crate::relay_admission::reset_rate_limit_gate();
++    let (relay_url, events) = loopback_relay().await;
++    let owner = Keys::generate();
++    let agent = Keys::generate().public_key();
++    let state = crate::app_state::build_app_state();
++    *state.keys.lock().unwrap() = owner.clone();
++    *state.relay_url_override.lock().unwrap() = Some(relay_url.clone());
++    let dir = tempfile::tempdir().unwrap();
++    let scope = RetentionScope {
++        db_path: dir.path().join("retention.sqlite3"),
++        relay_url,
++        owner_keys: owner.clone(),
++    };
++
++    let connected = connect_agent_at(&state, &scope, request(&agent, "Hex"))
++        .await
++        .unwrap();
++
++    assert_eq!(connected.policy_sync_error, None);
++    assert!(!connected.policy_kept);
++    assert_eq!(
++        buzz_sdk_pkg::nip_oa::verify_auth_tag(&connected.auth_tag, &agent).unwrap(),
++        owner.public_key()
++    );
++    let published = events.lock().unwrap().clone();
++    assert_eq!(published.len(), 1);
++    assert_eq!(published[0].pubkey, owner.public_key());
++    assert_eq!(
++        published[0].tags.identifier(),
++        Some(agent.to_hex().as_str())
++    );
++    assert_eq!(
++        managed_agent_content_from_event(&published[0]).unwrap(),
++        connected.policy
++    );
++
++    let reconnected = connect_agent_at(&state, &scope, request(&agent, "Renamed"))
++        .await
++        .unwrap();
++
++    assert!(reconnected.policy_kept);
++    assert_eq!(reconnected.policy.name, "Hex");
++    assert_eq!(events.lock().unwrap().len(), 1);
++}
++
++#[tokio::test]
++async fn connect_refuses_another_owners_agent_before_publishing() {
++    let _serial = crate::relay_admission::TEST_SERIAL.lock().await;
++    crate::relay_admission::reset_rate_limit_gate();
++    let (relay_url, events) = loopback_relay().await;
++    let owner = Keys::generate();
++    let agent = Keys::generate();
++    events
++        .lock()
++        .unwrap()
++        .push(profile_presenting_tag(&Keys::generate(), &agent));
++    let state = crate::app_state::build_app_state();
++    *state.keys.lock().unwrap() = owner.clone();
++    *state.relay_url_override.lock().unwrap() = Some(relay_url.clone());
++    let dir = tempfile::tempdir().unwrap();
++    let scope = RetentionScope {
++        db_path: dir.path().join("retention.sqlite3"),
++        relay_url,
++        owner_keys: owner,
++    };
++
++    assert!(
++        connect_agent_at(&state, &scope, request(&agent.public_key(), "Hex"))
++            .await
++            .is_err()
++    );
++    assert_eq!(events.lock().unwrap().len(), 1);
++}
+diff --git a/desktop/src-tauri/src/commands/agents.rs b/desktop/src-tauri/src/commands/agents.rs
+index ba28ba67c0391e65280c26c5805e4ddd37ab637d..86e8f10b7bafa483f7a19ff13845f90212864c52 100644
+--- a/desktop/src-tauri/src/commands/agents.rs
++++ b/desktop/src-tauri/src/commands/agents.rs
+@@ -30,7 +30,9 @@ pub(super) fn workspace_owner_hex(state: &AppState) -> Result<String, String> {
+ mod pending;
+ #[cfg(test)]
+ use pending::build_agent_archive_request;
+-pub(crate) use pending::{retain_managed_agent_pending, tombstone_managed_agent_pending};
++pub(crate) use pending::{
++    retain_managed_agent_pending, tombstone_managed_agent_at, tombstone_managed_agent_pending,
++};
+ 
+ /// Build a summary from fresh disk state (personas, teams, global config).
+ /// For one-shot command paths only — the 5s list poll calls
+diff --git a/desktop/src-tauri/src/commands/mod.rs b/desktop/src-tauri/src/commands/mod.rs
+index 01b1ddc8828638d2cb5e1531cb50336c9067e406..e141975a79ddff8009846722e06cac295c130060 100644
+--- a/desktop/src-tauri/src/commands/mod.rs
++++ b/desktop/src-tauri/src/commands/mod.rs
+@@ -2,6 +2,7 @@ pub mod admin;
+ mod agent_access;
+ mod agent_auth;
+ mod agent_config;
++mod agent_connect;
+ mod agent_discovery;
+ mod agent_logs;
+ mod agent_metric_archive;
+@@ -80,6 +81,7 @@ pub use admin::*;
+ pub use agent_access::*;
+ pub use agent_auth::*;
+ pub use agent_config::*;
++pub use agent_connect::*;
+ pub use agent_discovery::*;
+ pub use agent_logs::*;
+ pub use agent_metric_archive::*;
+diff --git a/desktop/src-tauri/src/egress_guard_tests.rs b/desktop/src-tauri/src/egress_guard_tests.rs
+index 5511aa8d72d994599650e54b1a6a9372fd020cea..8fd906320a493796b3b6985eb8a191e094d2fcab 100644
+--- a/desktop/src-tauri/src/egress_guard_tests.rs
++++ b/desktop/src-tauri/src/egress_guard_tests.rs
+@@ -295,6 +295,9 @@ const EVENTS_INVENTORY: &[(&str, usize, usize)] = &[
+     ("src/commands/teams/pending/tests/gate.rs", 1, 0),
+     // Accepting stub relay in the starter-channel creation tests.
+     ("src/commands/channels/starter_tests.rs", 1, 0),
++    // Recording stub relay in the connect-agent tests; production publish
++    // goes through the guarded boundary-1 funnel via the flush loop.
++    ("src/commands/agent_connect_tests.rs", 1, 0),
+     // Admin API mutations: every JSON body passes the guard in
+     // `helpers::send_admin_mutation` (injection tests in admin `direct_action_tests.rs`).
+     // The `/events/{id}/delete` route + its path test and the native delete
+diff --git a/desktop/src-tauri/src/lib.rs b/desktop/src-tauri/src/lib.rs
+index e9c96a2fe314e96d38bd28714ecfaee5fde2ecfc..9208898ecd77cc3941102b6266d8c1d3f97f61a1 100644
+--- a/desktop/src-tauri/src/lib.rs
++++ b/desktop/src-tauri/src/lib.rs
+@@ -712,6 +712,8 @@ pub fn run() {
+             reconcile_managed_agent_runtimes,
+             put_managed_agent_runtime_lifecycle,
+             create_managed_agent,
++            connect_managed_agent,
++            disconnect_managed_agent,
+             start_managed_agent,
+             stop_managed_agent,
+             set_agent_managed_profiles,
+diff --git a/desktop/src-tauri/src/managed_agents/agent_events.rs b/desktop/src-tauri/src/managed_agents/agent_events.rs
+index 6e020469bbdcb0d1e64cf047cf4b939acdb9a65f..762661257df6f1680be842181c7758878229993a 100644
+--- a/desktop/src-tauri/src/managed_agents/agent_events.rs
++++ b/desktop/src-tauri/src/managed_agents/agent_events.rs
+@@ -117,10 +117,20 @@ pub fn build_agent_event(record: &ManagedAgentRecord) -> Result<EventBuilder, St
+         record.system_prompt.as_deref(),
+     )
+     .map_err(|error| format!("Managed agent definition is unsafe to publish: {error}"))?;
+-    let content = serde_json::to_string(&agent_event_content(record))
++    agent_event_builder(&record.pubkey, &agent_event_content(record))
++}
++
++/// Build a kind:30177 event carrying `content` for `agent_pubkey`, the `d` tag.
++///
++/// [`build_agent_event`] is the path for records this device holds; agents
++/// connected by public key have no record and publish their projection here.
++pub fn agent_event_builder(
++    agent_pubkey: &str,
++    content: &ManagedAgentEventContent,
++) -> Result<EventBuilder, String> {
++    let content = serde_json::to_string(content)
+         .map_err(|e| format!("failed to serialize managed-agent content: {e}"))?;
+-    let tags =
+-        vec![Tag::parse(["d", record.pubkey.as_str()]).map_err(|e| format!("invalid d-tag: {e}"))?];
++    let tags = vec![Tag::parse(["d", agent_pubkey]).map_err(|e| format!("invalid d-tag: {e}"))?];
+     Ok(EventBuilder::new(Kind::Custom(KIND_MANAGED_AGENT as u16), content).tags(tags))
+ }
+ 
+diff --git a/desktop/src-tauri/src/managed_agents/reconcile.rs b/desktop/src-tauri/src/managed_agents/reconcile.rs
+index 90f05c5750dfddae122270fde2cf39512c5e1f2c..a04977b95eda88d83a4631f4321face08390e92a 100644
+--- a/desktop/src-tauri/src/managed_agents/reconcile.rs
++++ b/desktop/src-tauri/src/managed_agents/reconcile.rs
+@@ -126,9 +126,22 @@ pub(crate) fn retain_agent_record(
+     conn: &rusqlite::Connection,
+     keys: &nostr::Keys,
+     record: &ManagedAgentRecord,
++) -> Result<bool, String> {
++    retain_agent_event(conn, keys, &record.pubkey, build_agent_event(record)?)
++}
++
++/// The content-diff + monotonic-bump engine behind [`retain_agent_record`],
++/// for a kind:30177 `builder` whose `d` tag is `agent_pubkey`. Agents this
++/// device does not run (see `commands::agent_connect`) have no record and
++/// retain their projection through here directly.
++pub(crate) fn retain_agent_event(
++    conn: &rusqlite::Connection,
++    keys: &nostr::Keys,
++    agent_pubkey: &str,
++    builder: nostr::EventBuilder,
+ ) -> Result<bool, String> {
+     let owner_pubkey = keys.public_key().to_hex();
+-    let existing = get_retained_event(conn, KIND_MANAGED_AGENT, &owner_pubkey, &record.pubkey)?;
++    let existing = get_retained_event(conn, KIND_MANAGED_AGENT, &owner_pubkey, agent_pubkey)?;
+ 
+     // Build the event first and compare ITS content, so the comparison and
+     // the retained row share one serialization of the projection (mirrors
+@@ -137,12 +150,12 @@ pub(crate) fn retain_agent_record(
+     // it serializes — republishing every agent every boot. Content is
+     // timestamp-independent, so the monotonic bump below never forces a
+     // spurious republish; an unchanged agent is still a true no-op.
+-    let event = build_agent_event(record)?
++    let event = builder
+         .custom_created_at(monotonic_created_at(
+             existing.as_ref().map(|row| row.created_at),
+         ))
+         .sign_with_keys(keys)
+-        .map_err(|e| format!("failed to sign event for '{}': {e}", record.name))?;
++        .map_err(|e| format!("failed to sign managed-agent event for {agent_pubkey}: {e}"))?;
+ 
+     let content = event.content.clone();
+     if existing.as_ref().is_some_and(|row| row.content == content) {
+@@ -154,14 +167,14 @@ pub(crate) fn retain_agent_record(
+         &RetainedEvent {
+             kind: KIND_MANAGED_AGENT,
+             pubkey: owner_pubkey,
+-            d_tag: record.pubkey.clone(),
++            d_tag: agent_pubkey.to_string(),
+             content,
+             created_at: event.created_at.as_secs() as i64,
+             raw_event: event.as_json(),
+             pending_sync: true,
+         },
+     )
+-    .map_err(|e| format!("failed to retain '{}': {e}", record.name))?;
++    .map_err(|e| format!("failed to retain managed-agent event for {agent_pubkey}: {e}"))?;
+     Ok(true)
+ }
+ 
+diff --git a/desktop/src/features/agents/hooks.ts b/desktop/src/features/agents/hooks.ts
+index 2d153749d743bc0f9d7830debdb32542fc2facac..85e9d635cddb4ee19df8e001ffeb59d866778fae 100644
+--- a/desktop/src/features/agents/hooks.ts
++++ b/desktop/src/features/agents/hooks.ts
+@@ -45,6 +45,8 @@ import { discoverAcpCommands } from "@/shared/api/acpCommands";
+ import type { HarnessDefinitionInput } from "@/shared/api/tauri";
+ import { discoverAcpRuntimes } from "@/shared/api/tauriAcpDiscovery";
+ import {
++  connectManagedAgent,
++  disconnectManagedAgent,
+   setManagedAgentAutoRestart,
+   setManagedAgentStartOnAppLaunch,
+   startManagedAgent,
+@@ -420,6 +422,28 @@ export function useManagedAgentsQuery(options?: { enabled?: boolean }) {
+   });
+ }
+ 
++export function useConnectManagedAgentMutation() {
++  const queryClient = useQueryClient();
++
++  return useMutation({
++    mutationFn: connectManagedAgent,
++    onSettled: async () => {
++      await queryClient.invalidateQueries({ queryKey: relayAgentsQueryKey });
++    },
++  });
++}
++
++export function useDisconnectManagedAgentMutation() {
++  const queryClient = useQueryClient();
++
++  return useMutation({
++    mutationFn: disconnectManagedAgent,
++    onSettled: async () => {
++      await queryClient.invalidateQueries({ queryKey: relayAgentsQueryKey });
++    },
++  });
++}
++
+ export function useCreateManagedAgentMutation() {
+   const queryClient = useQueryClient();
+ 
+diff --git a/desktop/src/features/agents/lib/connectedAgentHandoff.test.mjs b/desktop/src/features/agents/lib/connectedAgentHandoff.test.mjs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3afb833a3c5ad10262ba794233a2c7863bf221bc
+--- /dev/null
++++ b/desktop/src/features/agents/lib/connectedAgentHandoff.test.mjs
+@@ -0,0 +1,80 @@
++import assert from "node:assert/strict";
++import { execFileSync } from "node:child_process";
++import test from "node:test";
++
++import {
++  connectedAgentEnv,
++  connectedAgentProfileCommand,
++  looksLikeSecretKey,
++} from "./connectedAgentHandoff.ts";
++
++const AUTH_TAG = JSON.stringify(["auth", "a".repeat(64), "", "b".repeat(128)]);
++
++function handoff(policy) {
++  return {
++    authTag: AUTH_TAG,
++    relayUrl: "wss://relay.example",
++    policy: {
++      name: "Hex",
++      respondTo: "owner-only",
++      respondToAllowlist: [],
++      ...policy,
++    },
++  };
++}
++
++function sourceInShell(env, variable) {
++  return execFileSync(
++    "sh",
++    ["-c", `set -a; eval "$ENV_LINES"; printf %s "$${variable}"`],
++    { encoding: "utf8", env: { ENV_LINES: env } },
++  );
++}
++
++test("the environment hands the exact tag to the agent's shell", () => {
++  const env = connectedAgentEnv(handoff());
++
++  assert.equal(sourceInShell(env, "BUZZ_AUTH_TAG"), AUTH_TAG);
++  assert.equal(sourceInShell(env, "BUZZ_RELAY_URL"), "wss://relay.example");
++  assert.equal(sourceInShell(env, "BUZZ_ACP_RESPOND_TO"), "owner-only");
++  assert.equal(sourceInShell(env, "BUZZ_ACP_RELAY_OBSERVER"), "true");
++  assert.doesNotMatch(env, /RESPOND_TO_ALLOWLIST/);
++});
++
++test("the environment carries the policy's allowlist", () => {
++  const env = connectedAgentEnv(
++    handoff({
++      respondTo: "allowlist",
++      respondToAllowlist: ["c".repeat(64), "d".repeat(64)],
++    }),
++  );
++
++  assert.equal(
++    sourceInShell(env, "BUZZ_ACP_RESPOND_TO_ALLOWLIST"),
++    `${"c".repeat(64)},${"d".repeat(64)}`,
++  );
++});
++
++test("the profile command keeps the agent's name intact", () => {
++  const name = 'Bassim\'s "Hex" $HOME';
++  const args = execFileSync(
++    "sh",
++    ["-c", `buzz() { printf '%s\\n' "$@"; }; eval "$COMMAND"`],
++    {
++      encoding: "utf8",
++      env: { COMMAND: connectedAgentProfileCommand(handoff({ name })) },
++    },
++  );
++
++  assert.deepEqual(args.trimEnd().split("\n"), [
++    "users",
++    "set-profile",
++    "--name",
++    name,
++  ]);
++});
++
++test("an nsec is recognized as a secret key", () => {
++  assert.equal(looksLikeSecretKey(" NSEC1qqqq "), true);
++  assert.equal(looksLikeSecretKey("npub1qqqq"), false);
++});
+diff --git a/desktop/src/features/agents/lib/connectedAgentHandoff.ts b/desktop/src/features/agents/lib/connectedAgentHandoff.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d8b54f7486116e0418fac7bd5c240d5518a8d0f6
+--- /dev/null
++++ b/desktop/src/features/agents/lib/connectedAgentHandoff.ts
+@@ -0,0 +1,33 @@
++import type { ConnectedAgentHandoff } from "@/shared/api/tauriManagedAgents";
++
++function shellQuote(value: string) {
++  return `'${value.replaceAll("'", `'\\''`)}'`;
++}
++
++/** Environment the agent's launcher sets beside its own BUZZ_PRIVATE_KEY. */
++export function connectedAgentEnv({
++  authTag,
++  policy,
++  relayUrl,
++}: Pick<ConnectedAgentHandoff, "authTag" | "policy" | "relayUrl">) {
++  return [
++    `BUZZ_RELAY_URL=${relayUrl}`,
++    `BUZZ_AUTH_TAG=${shellQuote(authTag)}`,
++    `BUZZ_ACP_RESPOND_TO=${policy.respondTo}`,
++    ...(policy.respondTo === "allowlist"
++      ? [`BUZZ_ACP_RESPOND_TO_ALLOWLIST=${policy.respondToAllowlist.join(",")}`]
++      : []),
++    "BUZZ_ACP_RELAY_OBSERVER=true",
++  ].join("\n");
++}
++
++/** Publishes the agent's profile carrying the tag, which is what makes it show as yours. */
++export function connectedAgentProfileCommand({
++  policy,
++}: Pick<ConnectedAgentHandoff, "policy">) {
++  return `buzz users set-profile --name ${shellQuote(policy.name)}`;
++}
++
++export function looksLikeSecretKey(input: string) {
++  return input.trim().toLowerCase().startsWith("nsec1");
++}
+diff --git a/desktop/src/features/agents/lib/managedAgentControlActions.ts b/desktop/src/features/agents/lib/managedAgentControlActions.ts
+index 98ddf8b71a54af7aa66b2dd46d6c26d933206016..c67ac6e99ec2fb03114c73dbf3408db46aba6498 100644
+--- a/desktop/src/features/agents/lib/managedAgentControlActions.ts
++++ b/desktop/src/features/agents/lib/managedAgentControlActions.ts
+@@ -115,6 +115,25 @@ export async function respawnManagedAgentWithRules({
+   await startManagedAgent(agent.pubkey);
+ }
+ 
++/** Ask an agent this device does not run to exit, via the owner `!shutdown` command. */
++export async function requestAgentShutdown(
++  agent: Pick<ManagedAgent, "pubkey">,
++  context: ManagedAgentChannelContext,
++): Promise<ManagedAgentActionResult> {
++  const channelId = resolveManagedAgentChannelId(agent, context);
++  if (!channelId) {
++    throw new Error("Cannot stop: agent is not in any channel");
++  }
++
++  await sendChannelMessage(channelId, "!shutdown", undefined, undefined, [
++    agent.pubkey,
++  ]);
++  return {
++    noticeMessage:
++      "Shutdown requested. This does not confirm the agent has stopped.",
++  };
++}
++
+ export async function stopManagedAgentWithRules({
+   agent,
+   channels,
+@@ -126,22 +145,11 @@ export async function stopManagedAgentWithRules({
+   stopManagedAgent: StopManagedAgent;
+ } & ManagedAgentChannelContext): Promise<ManagedAgentActionResult> {
+   if (agent.backend.type === "provider") {
+-    const channelId = resolveManagedAgentChannelId(agent, {
++    return requestAgentShutdown(agent, {
+       channels,
+       preferredChannelId,
+       relayAgents,
+     });
+-    if (!channelId) {
+-      throw new Error("Cannot stop: agent is not in any channel");
+-    }
+-
+-    await sendChannelMessage(channelId, "!shutdown", undefined, undefined, [
+-      agent.pubkey,
+-    ]);
+-    return {
+-      noticeMessage:
+-        "Shutdown requested. This does not confirm the agent has stopped.",
+-    };
+   }
+ 
+   await stopManagedAgent(agent.pubkey);
+diff --git a/desktop/src/features/agents/lib/otherSetupAgent.test.mjs b/desktop/src/features/agents/lib/otherSetupAgent.test.mjs
+index a45ddb5e64ce0e39acb1b2bafd6a708f3c936576..979b10df7cbfeb3b2371251e6c0c910dce4370ad 100644
+--- a/desktop/src/features/agents/lib/otherSetupAgent.test.mjs
++++ b/desktop/src/features/agents/lib/otherSetupAgent.test.mjs
+@@ -4,6 +4,7 @@ import test from "node:test";
+ import {
+   isOtherSetupAgent,
+   isOwnedAgentNotManagedOnDevice,
++  ownedAgentsRunningElsewhere,
+ } from "./otherSetupAgent.ts";
+ 
+ const OWNER = "a".repeat(64);
+@@ -71,3 +72,47 @@ for (const [name, overrides, expected] of [
+     );
+   });
+ }
++
++test("lists only viewer-owned relay agents without a local record", () => {
++  const relayAgent = (pubkey, ownerPubkey) => ({
++    pubkey,
++    ownerPubkey,
++    name: pubkey.slice(0, 4),
++    agentType: "agent",
++    channels: [],
++    channelIds: [],
++    capabilities: [],
++    status: "unknown",
++    respondTo: "owner-only",
++    respondToAllowlist: [],
++  });
++  const LOCAL = "c".repeat(64);
++  const FOREIGN = "d".repeat(64);
++  const relayAgents = [
++    relayAgent(AGENT, OWNER),
++    relayAgent(LOCAL, OWNER),
++    relayAgent(FOREIGN, "e".repeat(64)),
++    relayAgent("f".repeat(64), null),
++  ];
++
++  const listed = ownedAgentsRunningElsewhere({
++    currentPubkey: OWNER,
++    localInventoryReady: true,
++    managedAgents: [{ pubkey: LOCAL.toUpperCase() }],
++    relayAgents,
++  });
++
++  assert.deepEqual(
++    listed.map((agent) => agent.pubkey),
++    [AGENT],
++  );
++  assert.deepEqual(
++    ownedAgentsRunningElsewhere({
++      currentPubkey: OWNER,
++      localInventoryReady: false,
++      managedAgents: [],
++      relayAgents,
++    }),
++    [],
++  );
++});
+diff --git a/desktop/src/features/agents/lib/otherSetupAgent.ts b/desktop/src/features/agents/lib/otherSetupAgent.ts
+index f94215e1f3a4377fa6bd20a8f7e633d8b8c9470b..fbd9fe7d015c95a545a4defe63d09fe65a98395a 100644
+--- a/desktop/src/features/agents/lib/otherSetupAgent.ts
++++ b/desktop/src/features/agents/lib/otherSetupAgent.ts
+@@ -61,3 +61,28 @@ export function isOwnedAgentNotManagedOnDevice({
+       normalizePubkey(ownerPubkey) === normalizePubkey(currentPubkey),
+   );
+ }
++
++/** Viewer-owned relay agents with no local record, for the Agents page. */
++export function ownedAgentsRunningElsewhere({
++  currentPubkey,
++  localInventoryReady,
++  managedAgents,
++  relayAgents,
++}: {
++  currentPubkey?: string;
++  localInventoryReady: boolean;
++  managedAgents: readonly ManagedAgent[];
++  relayAgents: readonly RelayAgent[];
++}): RelayAgent[] {
++  const localPubkeys = new Set(
++    managedAgents.map((agent) => normalizePubkey(agent.pubkey)),
++  );
++  return relayAgents.filter((agent) =>
++    isOwnedAgentNotManagedOnDevice({
++      currentPubkey,
++      ownerPubkey: agent.ownerPubkey,
++      localInventoryReady,
++      isLocallyManaged: localPubkeys.has(normalizePubkey(agent.pubkey)),
++    }),
++  );
++}
+diff --git a/desktop/src/features/agents/ui/AgentsView.tsx b/desktop/src/features/agents/ui/AgentsView.tsx
+index 3cc5d11331b2803008548f0c88570fe47e786a3b..63801362a4b13a94b1873435c0f89d2e724332a5 100644
+--- a/desktop/src/features/agents/ui/AgentsView.tsx
++++ b/desktop/src/features/agents/ui/AgentsView.tsx
+@@ -1,5 +1,5 @@
+ import * as React from "react";
+-import { EllipsisVertical, OctagonX, Settings2 } from "lucide-react";
++import { EllipsisVertical, Link2, OctagonX, Settings2 } from "lucide-react";
+ import {
+   consumePendingSnapshotImport,
+   subscribeSnapshotImport,
+@@ -9,6 +9,8 @@ import { AddTeamToChannelDialog } from "./AddTeamToChannelDialog";
+ import { AgentDefaultsDialog } from "./AgentDefaultsDialog";
+ import { AgentDialog } from "./AgentDialog";
+ import { CommunityCatalogDialog } from "./CommunityCatalogDialog";
++import { ConnectAgentDialog } from "./ConnectAgentDialog";
++import { ConnectedAgentsSection } from "./ConnectedAgentsSection";
+ import { PersonaDeleteDialog } from "./PersonaDeleteDialog";
+ import { PersonaShareDialog } from "./PersonaShareDialog";
+ import { AgentSnapshotExportDialog } from "./AgentSnapshotExportDialog";
+@@ -49,6 +51,7 @@ export function AgentsView() {
+   const fullAiDefaultsTriggerRef = React.useRef<HTMLButtonElement>(null);
+   const compactActionsTriggerRef = React.useRef<HTMLButtonElement>(null);
+   const [isAiDefaultsOpen, setIsAiDefaultsOpen] = React.useState(false);
++  const [isConnectAgentOpen, setIsConnectAgentOpen] = React.useState(false);
+ 
+   function openAiDefaults(trigger: HTMLButtonElement | null) {
+     aiDefaultsTriggerRef.current = trigger;
+@@ -159,6 +162,15 @@ export function AgentsView() {
+                       ? "Agent defaults"
+                       : "Set agent defaults"}
+                   </Button>
++                  <Button
++                    data-testid="connect-agent-button"
++                    onClick={() => setIsConnectAgentOpen(true)}
++                    size="sm"
++                    variant="outline"
++                  >
++                    <Link2 />
++                    Connect agent
++                  </Button>
+                   {runningAgentCount > 0 ? (
+                     <Button
+                       disabled={isActionPending}
+@@ -199,6 +211,12 @@ export function AgentsView() {
+                         ? "Agent defaults"
+                         : "Set agent defaults"}
+                     </DropdownMenuItem>
++                    <DropdownMenuItem
++                      onSelect={() => setIsConnectAgentOpen(true)}
++                    >
++                      <Link2 />
++                      Connect agent
++                    </DropdownMenuItem>
+                     {runningAgentCount > 0 ? (
+                       <DropdownMenuItem
+                         disabled={isActionPending}
+@@ -278,6 +296,12 @@ export function AgentsView() {
+               onDeletePersona={personas.openDelete}
+             />
+ 
++            <ConnectedAgentsSection
++              onOpenAgentProfile={(pubkey) => {
++                openProfilePanel?.(pubkey);
++              }}
++            />
++
+             <TeamsSection
+               error={
+                 teamActions.teamsQuery.error instanceof Error
+@@ -312,6 +336,10 @@ export function AgentsView() {
+         open={isAiDefaultsOpen}
+         returnFocusRef={aiDefaultsTriggerRef}
+       />
++      <ConnectAgentDialog
++        onOpenChange={setIsConnectAgentOpen}
++        open={isConnectAgentOpen}
++      />
+ 
+       {agents.agentToAddToChannel ? (
+         <AddAgentToChannelDialog
+diff --git a/desktop/src/features/agents/ui/ConnectAgentDialog.tsx b/desktop/src/features/agents/ui/ConnectAgentDialog.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..1e7e1d7783f692d3bf56e1d9e90bff9854cee5f6
+--- /dev/null
++++ b/desktop/src/features/agents/ui/ConnectAgentDialog.tsx
+@@ -0,0 +1,290 @@
++import * as React from "react";
++
++import { useConnectManagedAgentMutation } from "@/features/agents/hooks";
++import {
++  connectedAgentEnv,
++  connectedAgentProfileCommand,
++  looksLikeSecretKey,
++} from "@/features/agents/lib/connectedAgentHandoff";
++import { useAgentAccessOwnerOnlyQuery } from "@/features/agents/useAgentAccessOwnerOnly";
++import type { ConnectedAgentHandoff } from "@/shared/api/tauriManagedAgents";
++import type { RespondToMode } from "@/shared/api/types";
++import { parsePubkeyInput, pubkeyToNpub } from "@/shared/lib/nostrUtils";
++import { Button } from "@/shared/ui/button";
++import {
++  Dialog,
++  DialogContent,
++  DialogDescription,
++  DialogHeader,
++  DialogTitle,
++} from "@/shared/ui/dialog";
++import { Input } from "@/shared/ui/input";
++import { CopyButton } from "./CopyButton";
++import {
++  CreateAgentRespondToField,
++  OWNER_ONLY_ACCESS_DISABLED_REASON,
++} from "./RespondToField";
++
++export function ConnectAgentDialog({
++  onOpenChange,
++  open,
++}: {
++  onOpenChange: (open: boolean) => void;
++  open: boolean;
++}) {
++  return (
++    <Dialog onOpenChange={onOpenChange} open={open}>
++      <DialogContent className="max-w-lg">
++        {open ? <ConnectAgentFlow onDone={() => onOpenChange(false)} /> : null}
++      </DialogContent>
++    </Dialog>
++  );
++}
++
++function ConnectAgentFlow({ onDone }: { onDone: () => void }) {
++  const connectMutation = useConnectManagedAgentMutation();
++  const accessLocked = useAgentAccessOwnerOnlyQuery().data === true;
++  const [isReviewing, setIsReviewing] = React.useState(false);
++  const [pubkeyInput, setPubkeyInput] = React.useState("");
++  const [name, setName] = React.useState("");
++  const [respondTo, setRespondTo] = React.useState<RespondToMode>("owner-only");
++  const [respondToAllowlist, setRespondToAllowlist] = React.useState<string[]>(
++    [],
++  );
++
++  const agentPubkey = parsePubkeyInput(pubkeyInput);
++  const pubkeyError = looksLikeSecretKey(pubkeyInput)
++    ? "That is a private key. Keep it where the agent runs and enter its public key instead."
++    : pubkeyInput.trim() && !agentPubkey
++      ? "Enter an npub or a 64-character hex public key."
++      : null;
++  const effectiveRespondTo = accessLocked ? "owner-only" : respondTo;
++  const canContinue =
++    agentPubkey !== null &&
++    name.trim().length > 0 &&
++    (effectiveRespondTo !== "allowlist" || respondToAllowlist.length > 0);
++
++  if (connectMutation.data) {
++    return (
++      <ConnectAgentHandoff handoff={connectMutation.data} onDone={onDone} />
++    );
++  }
++
++  if (isReviewing && agentPubkey) {
++    return (
++      <>
++        <DialogHeader>
++          <DialogTitle>Connect {name.trim()}?</DialogTitle>
++          <DialogDescription>
++            Buzz will sign, with your key, a statement that this key belongs to
++            your agent.
++          </DialogDescription>
++        </DialogHeader>
++        <p
++          className="rounded-lg border border-border/70 bg-muted/50 px-3 py-2 font-mono text-xs break-all"
++          data-testid="connect-agent-review-npub"
++        >
++          {pubkeyToNpub(agentPubkey)}
++        </p>
++        <ul className="list-disc space-y-2 pl-5 text-sm text-muted-foreground">
++          <li>The agent&apos;s private key stays where it runs.</li>
++          <li>
++            Whoever holds that key can sign in here as your agent, even where
++            only members are let in, and instruct your agents that answer only
++            you.
++          </li>
++          <li>
++            You can disconnect it later, but you cannot take the signature back:
++            it stays valid until the agent&apos;s key is retired.
++          </li>
++          <li>
++            Check the key with whoever runs the agent. A wrong key does nothing
++            on its own.
++          </li>
++        </ul>
++        {connectMutation.error instanceof Error ? (
++          <p className="text-sm text-destructive">
++            {connectMutation.error.message}
++          </p>
++        ) : null}
++        <div className="flex justify-end gap-2">
++          <Button
++            disabled={connectMutation.isPending}
++            onClick={() => setIsReviewing(false)}
++            size="sm"
++            type="button"
++            variant="outline"
++          >
++            Back
++          </Button>
++          <Button
++            disabled={connectMutation.isPending}
++            onClick={() =>
++              connectMutation.mutate({
++                agentPubkey,
++                name: name.trim(),
++                respondTo: effectiveRespondTo,
++                respondToAllowlist:
++                  effectiveRespondTo === "allowlist" ? respondToAllowlist : [],
++              })
++            }
++            size="sm"
++            type="button"
++          >
++            {connectMutation.isPending ? "Connecting..." : "Sign and connect"}
++          </Button>
++        </div>
++      </>
++    );
++  }
++
++  return (
++    <>
++      <DialogHeader>
++        <DialogTitle>Connect an agent</DialogTitle>
++        <DialogDescription>
++          Make an agent that runs somewhere else one of yours. Its private key
++          never leaves the machine it runs on.
++        </DialogDescription>
++      </DialogHeader>
++      <div className="space-y-1.5">
++        <label className="text-sm font-medium" htmlFor="connect-agent-pubkey">
++          Agent public key
++        </label>
++        <Input
++          aria-describedby={
++            pubkeyError ? "connect-agent-pubkey-error" : undefined
++          }
++          aria-invalid={pubkeyError ? true : undefined}
++          id="connect-agent-pubkey"
++          onChange={(event) => setPubkeyInput(event.target.value)}
++          placeholder="npub1..."
++          value={pubkeyInput}
++        />
++        {pubkeyError ? (
++          <p
++            className="text-sm text-destructive"
++            id="connect-agent-pubkey-error"
++          >
++            {pubkeyError}
++          </p>
++        ) : null}
++      </div>
++      <div className="space-y-1.5">
++        <label className="text-sm font-medium" htmlFor="connect-agent-name">
++          Name
++        </label>
++        <Input
++          id="connect-agent-name"
++          onChange={(event) => setName(event.target.value)}
++          value={name}
++        />
++      </div>
++      <CreateAgentRespondToField
++        allowlist={accessLocked ? [] : respondToAllowlist}
++        disabled={accessLocked}
++        disabledReason={
++          accessLocked ? OWNER_ONLY_ACCESS_DISABLED_REASON : undefined
++        }
++        mode={effectiveRespondTo}
++        onAllowlistChange={setRespondToAllowlist}
++        onModeChange={setRespondTo}
++        runLocation="remote"
++      />
++      <div className="flex justify-end gap-2">
++        <Button onClick={onDone} size="sm" type="button" variant="outline">
++          Cancel
++        </Button>
++        <Button
++          disabled={!canContinue}
++          onClick={() => {
++            connectMutation.reset();
++            setIsReviewing(true);
++          }}
++          size="sm"
++          type="button"
++        >
++          Continue
++        </Button>
++      </div>
++    </>
++  );
++}
++
++function ConnectAgentHandoff({
++  handoff,
++  onDone,
++}: {
++  handoff: ConnectedAgentHandoff;
++  onDone: () => void;
++}) {
++  const env = connectedAgentEnv(handoff);
++  const profileCommand = connectedAgentProfileCommand(handoff);
++
++  return (
++    <>
++      <DialogHeader>
++        <DialogTitle>Hand the tag to {handoff.policy.name}</DialogTitle>
++        <DialogDescription>
++          Add these lines to the agent&apos;s environment, next to its own
++          BUZZ_PRIVATE_KEY, and restart it.
++        </DialogDescription>
++      </DialogHeader>
++      {handoff.policyKept ? (
++        <p className="text-sm text-muted-foreground">
++          {handoff.policy.name} was already one of your agents, so its settings
++          were kept.
++        </p>
++      ) : null}
++      <HandoffBlock label="Copy environment" testId="connect-agent-env">
++        {env}
++      </HandoffBlock>
++      <p className="text-sm text-muted-foreground">
++        Then publish its profile once from the same environment, so Buzz shows
++        it as yours:
++      </p>
++      <HandoffBlock label="Copy command" testId="connect-agent-profile-command">
++        {profileCommand}
++      </HandoffBlock>
++      <p className="text-sm text-muted-foreground">
++        It then appears under Running elsewhere. Mention it in a channel to
++        invite it there.
++      </p>
++      {handoff.policySyncError ? (
++        <p className="text-sm text-warning">
++          Its settings are saved but not published yet (
++          {handoff.policySyncError}). Buzz will retry.
++        </p>
++      ) : null}
++      <div className="flex justify-end">
++        <Button onClick={onDone} size="sm" type="button">
++          Done
++        </Button>
++      </div>
++    </>
++  );
++}
++
++function HandoffBlock({
++  children,
++  label,
++  testId,
++}: {
++  children: string;
++  label: string;
++  testId: string;
++}) {
++  return (
++    <div className="space-y-2">
++      <pre
++        className="max-h-48 overflow-auto rounded-lg border border-border/70 bg-muted/50 px-3 py-2 font-mono text-xs whitespace-pre-wrap break-all"
++        data-testid={testId}
++      >
++        {children}
++      </pre>
++      <div className="flex justify-end">
++        <CopyButton label={label} value={children} />
++      </div>
++    </div>
++  );
++}
+diff --git a/desktop/src/features/agents/ui/ConnectedAgentsSection.tsx b/desktop/src/features/agents/ui/ConnectedAgentsSection.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..8c12e2895b960679937fe0890e0e5ec47aff9d0e
+--- /dev/null
++++ b/desktop/src/features/agents/ui/ConnectedAgentsSection.tsx
+@@ -0,0 +1,242 @@
++import * as React from "react";
++import { EllipsisVertical, OctagonX, Unlink } from "lucide-react";
++import { toast } from "sonner";
++
++import {
++  useDisconnectManagedAgentMutation,
++  useManagedAgentsQuery,
++  useRelayAgentsQuery,
++} from "@/features/agents/hooks";
++import { isAgentDirectoryReady } from "@/features/agents/lib/agentAutocompleteEligibility";
++import { requestAgentShutdown } from "@/features/agents/lib/managedAgentControlActions";
++import { ownedAgentsRunningElsewhere } from "@/features/agents/lib/otherSetupAgent";
++import { useAgentAvailabilityLookup } from "@/features/agents/lib/useAgentAvailability";
++import { useChannelsQuery } from "@/features/channels/hooks";
++import { useUserProfileQuery } from "@/features/profile/hooks";
++import {
++  DEFAULT_HOVER_PROFILE_STATUS_GEOMETRY,
++  ProfileAvatarWithStatus,
++  scaleProfileAvatarStatusGeometry,
++} from "@/features/profile/ui/ProfileAvatarWithStatus";
++import { useIdentityQuery } from "@/shared/api/hooks";
++import type { PresenceStatus, RelayAgent } from "@/shared/api/types";
++import {
++  AlertDialog,
++  AlertDialogAction,
++  AlertDialogCancel,
++  AlertDialogContent,
++  AlertDialogDescription,
++  AlertDialogFooter,
++  AlertDialogHeader,
++  AlertDialogTitle,
++} from "@/shared/ui/alert-dialog";
++import { Button } from "@/shared/ui/button";
++import {
++  DropdownMenu,
++  DropdownMenuContent,
++  DropdownMenuItem,
++  DropdownMenuTrigger,
++} from "@/shared/ui/dropdown-menu";
++import { AgentIdentityCard } from "./AgentIdentityCard";
++import { OtherSetupAgentMarker } from "./OtherSetupAgentMarker";
++import { IDENTITY_CARD_GRID_CLASS } from "./UnifiedAgentsSection";
++
++const AVATAR_SIZE = 96;
++const AVATAR_STATUS_GEOMETRY = scaleProfileAvatarStatusGeometry(
++  DEFAULT_HOVER_PROFILE_STATUS_GEOMETRY,
++  AVATAR_SIZE,
++);
++
++/** The viewer's agents that run somewhere this device does not manage. */
++export function ConnectedAgentsSection({
++  onOpenAgentProfile,
++}: {
++  onOpenAgentProfile: (pubkey: string) => void;
++}) {
++  const currentPubkey = useIdentityQuery().data?.pubkey;
++  const managedAgentsQuery = useManagedAgentsQuery();
++  const relayAgentsQuery = useRelayAgentsQuery();
++  const agents = ownedAgentsRunningElsewhere({
++    currentPubkey,
++    localInventoryReady:
++      isAgentDirectoryReady(managedAgentsQuery) &&
++      isAgentDirectoryReady(relayAgentsQuery),
++    managedAgents: managedAgentsQuery.data ?? [],
++    relayAgents: relayAgentsQuery.data ?? [],
++  });
++  const channelsQuery = useChannelsQuery({ enabled: agents.length > 0 });
++  const { getAvailability } = useAgentAvailabilityLookup(
++    agents.map((agent) => agent.pubkey),
++  );
++  const disconnectMutation = useDisconnectManagedAgentMutation();
++  const [agentToDisconnect, setAgentToDisconnect] =
++    React.useState<RelayAgent | null>(null);
++
++  if (agents.length === 0) return null;
++
++  async function handleShutdown(agent: RelayAgent) {
++    try {
++      const { noticeMessage } = await requestAgentShutdown(agent, {
++        channels: channelsQuery.data ?? [],
++        relayAgents: relayAgentsQuery.data ?? [],
++      });
++      if (noticeMessage) toast.success(noticeMessage);
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : String(error));
++    }
++  }
++
++  async function handleDisconnect(agent: RelayAgent) {
++    try {
++      const syncError = await disconnectMutation.mutateAsync(agent.pubkey);
++      if (syncError) {
++        toast.warning(
++          `Disconnected ${agent.name}. Buzz will retry publishing the change: ${syncError}`,
++        );
++      } else {
++        toast.success(`Disconnected ${agent.name}.`);
++      }
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : String(error));
++    }
++  }
++
++  return (
++    <section className="space-y-2" data-testid="connected-agents">
++      <h2 className="px-1 text-sm font-medium">
++        Running elsewhere{" "}
++        <span className="text-xs font-normal text-muted-foreground">
++          ({agents.length})
++        </span>
++      </h2>
++      <div className={IDENTITY_CARD_GRID_CLASS}>
++        {agents.map((agent) => (
++          <ConnectedAgentCard
++            agent={agent}
++            availability={getAvailability(agent.pubkey)}
++            isPending={disconnectMutation.isPending}
++            key={agent.pubkey}
++            onDisconnect={setAgentToDisconnect}
++            onOpenProfile={onOpenAgentProfile}
++            onShutdown={(target) => void handleShutdown(target)}
++          />
++        ))}
++      </div>
++      <AlertDialog
++        onOpenChange={(open) => {
++          if (!open) setAgentToDisconnect(null);
++        }}
++        open={agentToDisconnect !== null}
++      >
++        <AlertDialogContent>
++          <AlertDialogHeader>
++            <AlertDialogTitle>
++              Disconnect {agentToDisconnect?.name}?
++            </AlertDialogTitle>
++            <AlertDialogDescription>
++              This removes it from your agents and archives its identity, so it
++              no longer appears in member lists or mention suggestions. It
++              cannot take back the tag you gave it: until its key is retired, it
++              can still sign in as your agent. Shut it down first if it should
++              stop. If Buzz on another of your computers runs it, delete it
++              there instead.
++            </AlertDialogDescription>
++          </AlertDialogHeader>
++          <AlertDialogFooter>
++            <AlertDialogCancel asChild>
++              <Button type="button" variant="outline">
++                Cancel
++              </Button>
++            </AlertDialogCancel>
++            <AlertDialogAction asChild>
++              <Button
++                onClick={() => {
++                  if (agentToDisconnect) {
++                    void handleDisconnect(agentToDisconnect);
++                  }
++                }}
++                type="button"
++                variant="destructive"
++              >
++                Disconnect
++              </Button>
++            </AlertDialogAction>
++          </AlertDialogFooter>
++        </AlertDialogContent>
++      </AlertDialog>
++    </section>
++  );
++}
++
++function ConnectedAgentCard({
++  agent,
++  availability,
++  isPending,
++  onDisconnect,
++  onOpenProfile,
++  onShutdown,
++}: {
++  agent: RelayAgent;
++  availability: PresenceStatus | undefined;
++  isPending: boolean;
++  onDisconnect: (agent: RelayAgent) => void;
++  onOpenProfile: (pubkey: string) => void;
++  onShutdown: (agent: RelayAgent) => void;
++}) {
++  const avatarUrl = useUserProfileQuery(agent.pubkey).data?.avatarUrl ?? null;
++
++  return (
++    <AgentIdentityCard
++      actions={
++        <DropdownMenu modal={false}>
++          <DropdownMenuTrigger asChild>
++            <button
++              aria-label={`Open actions for ${agent.name}`}
++              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
++              type="button"
++            >
++              <EllipsisVertical className="h-4 w-4" />
++            </button>
++          </DropdownMenuTrigger>
++          <DropdownMenuContent
++            align="end"
++            onCloseAutoFocus={(event) => event.preventDefault()}
++          >
++            <DropdownMenuItem
++              disabled={availability === "offline"}
++              onClick={() => onShutdown(agent)}
++            >
++              <OctagonX className="h-4 w-4" />
++              Shut down
++            </DropdownMenuItem>
++            <DropdownMenuItem
++              className="text-destructive focus:text-destructive"
++              disabled={isPending}
++              onClick={() => onDisconnect(agent)}
++            >
++              <Unlink className="h-4 w-4" />
++              Disconnect
++            </DropdownMenuItem>
++          </DropdownMenuContent>
++        </DropdownMenu>
++      }
++      ariaLabel={`${agent.name} agent profile`}
++      avatar={
++        <ProfileAvatarWithStatus
++          avatarUrl={avatarUrl}
++          className="h-24 w-24"
++          geometry={AVATAR_STATUS_GEOMETRY}
++          label={agent.name}
++          shape="squircle"
++          size={AVATAR_SIZE}
++          status={availability}
++        />
++      }
++      avatarUrl={avatarUrl}
++      dataTestId={`connected-agent-${agent.pubkey}`}
++      footerAccessory={<OtherSetupAgentMarker />}
++      label={agent.name}
++      onClick={() => onOpenProfile(agent.pubkey)}
++    />
++  );
++}
+diff --git a/desktop/src/features/channels/ui/ChannelScreen.tsx b/desktop/src/features/channels/ui/ChannelScreen.tsx
+index c6a8907896190a385ee6112d87c8914102ad712c..f54757ebdaeaf572cd00f26de8395c7c2fbd02d3 100644
+--- a/desktop/src/features/channels/ui/ChannelScreen.tsx
++++ b/desktop/src/features/channels/ui/ChannelScreen.tsx
+@@ -360,6 +360,7 @@ export function ChannelScreen({
+     activeChannel,
+     activeChannelId,
+     channelMembers,
++    currentPubkey,
+     managedAgents,
+     openThreadHeadId: effectiveOpenThreadHeadId,
+     relayAgents,
+diff --git a/desktop/src/features/channels/ui/unknownRelayAgentStatus.test.mjs b/desktop/src/features/channels/ui/unknownRelayAgentStatus.test.mjs
+index 7adba9ece1954e214f05a52019049dd92ee09a94..79b12eda37fbf8465aa949cf12bdd53bb6bc9869 100644
+--- a/desktop/src/features/channels/ui/unknownRelayAgentStatus.test.mjs
++++ b/desktop/src/features/channels/ui/unknownRelayAgentStatus.test.mjs
+@@ -33,3 +33,27 @@ test("active-agent lookup requires positive relay liveness evidence", () => {
+   renderToStaticMarkup(React.createElement(Probe));
+   assert.deepEqual([...active], ["online", "away"]);
+ });
++
++test("only the verified owner may stop a relay agent's turn", () => {
++  const owner = "a".repeat(64);
++  const candidates = buildChannelAgentSessionCandidates({
++    currentPubkey: owner.toUpperCase(),
++    managedAgents: [],
++    relayAgents: [
++      { ...relayAgents[1], pubkey: "owned", ownerPubkey: owner },
++      { ...relayAgents[1], pubkey: "foreign", ownerPubkey: "b".repeat(64) },
++      { ...relayAgents[1], pubkey: "ownerless", ownerPubkey: null },
++    ],
++  });
++  assert.deepEqual(
++    candidates.map(({ pubkey, canInterruptTurn }) => [
++      pubkey,
++      canInterruptTurn,
++    ]),
++    [
++      ["owned", true],
++      ["foreign", false],
++      ["ownerless", false],
++    ],
++  );
++});
+diff --git a/desktop/src/features/channels/ui/useChannelActivityTyping.ts b/desktop/src/features/channels/ui/useChannelActivityTyping.ts
+index 75a8974d00cccc9cea3f267acc8794662d3d911a..49db80fe7e4a28671500f5593d896fa09b80c1ff 100644
+--- a/desktop/src/features/channels/ui/useChannelActivityTyping.ts
++++ b/desktop/src/features/channels/ui/useChannelActivityTyping.ts
+@@ -36,6 +36,7 @@ export function useChannelActivityTyping({
+   activeChannel,
+   activeChannelId,
+   channelMembers,
++  currentPubkey,
+   managedAgents,
+   openThreadHeadId,
+   relayAgents,
+@@ -44,6 +45,7 @@ export function useChannelActivityTyping({
+   activeChannel: Channel | null;
+   activeChannelId: string | null;
+   channelMembers?: ChannelMember[];
++  currentPubkey?: string;
+   managedAgents: ManagedAgent[];
+   openThreadHeadId: string | null;
+   relayAgents: RelayAgent[];
+@@ -53,10 +55,11 @@ export function useChannelActivityTyping({
+     () =>
+       buildChannelAgentSessionCandidates({
+         channelMembers,
++        currentPubkey,
+         managedAgents,
+         relayAgents,
+       }),
+-    [channelMembers, managedAgents, relayAgents],
++    [channelMembers, currentPubkey, managedAgents, relayAgents],
+   );
+   const channelAgentSessionAgents = React.useMemo(
+     () =>
+diff --git a/desktop/src/features/channels/ui/useChannelAgentSessions.ts b/desktop/src/features/channels/ui/useChannelAgentSessions.ts
+index d5cd1824e0d125f2324ae66eebaed9e1eeff5146..2f3036cb63734e2032d40a412d20245b492602ae 100644
+--- a/desktop/src/features/channels/ui/useChannelAgentSessions.ts
++++ b/desktop/src/features/channels/ui/useChannelAgentSessions.ts
+@@ -57,14 +57,17 @@ function relayStatusToManagedStatus(
+ 
+ export function buildChannelAgentSessionCandidates({
+   channelMembers,
++  currentPubkey,
+   managedAgents,
+   relayAgents,
+ }: {
+   channelMembers?: ChannelMember[];
++  currentPubkey?: string;
+   managedAgents: ManagedAgent[];
+   relayAgents: RelayAgent[];
+ }): ChannelAgentSessionAgent[] {
+   const byPubkey = new Map<string, ChannelAgentSessionAgent>();
++  const viewer = currentPubkey ? normalizePubkey(currentPubkey) : null;
+ 
+   for (const agent of relayAgents) {
+     byPubkey.set(normalizePubkey(agent.pubkey), {
+@@ -72,7 +75,10 @@ export function buildChannelAgentSessionCandidates({
+       name: agent.name,
+       status: relayStatusToManagedStatus(agent.status),
+       agentSource: "relay",
+-      canInterruptTurn: false,
++      canInterruptTurn:
++        viewer !== null &&
++        agent.ownerPubkey !== null &&
++        normalizePubkey(agent.ownerPubkey) === viewer,
+       channelIds: agent.channelIds,
+       channels: agent.channels,
+     });
+diff --git a/desktop/src/shared/api/tauriManagedAgents.ts b/desktop/src/shared/api/tauriManagedAgents.ts
+index ed7e053f25962fdbcdc96ccc6d6f27e610423eb4..7446d20bc71baf4714bd5b6ab8ac0cf2380d677e 100644
+--- a/desktop/src/shared/api/tauriManagedAgents.ts
++++ b/desktop/src/shared/api/tauriManagedAgents.ts
+@@ -6,6 +6,7 @@ import {
+ import type {
+   ManagedAgent,
+   ManagedAgentRuntimeStatus,
++  RespondToMode,
+ } from "@/shared/api/types";
+ 
+ export async function startManagedAgent(
+@@ -114,3 +115,63 @@ export async function reconcileManagedAgentRuntimes(
+ ): Promise<ManagedAgentRuntimeStatus[]> {
+   return invokeTauri("reconcile_managed_agent_runtimes", { communities });
+ }
++
++export type ConnectedAgentPolicy = {
++  name: string;
++  respondTo: RespondToMode;
++  respondToAllowlist: string[];
++};
++
++export type ConnectedAgentHandoff = {
++  agentPubkey: string;
++  authTag: string;
++  relayUrl: string;
++  policy: ConnectedAgentPolicy;
++  policyKept: boolean;
++  policySyncError: string | null;
++};
++
++type RawConnectedAgentHandoff = {
++  agent_pubkey: string;
++  auth_tag: string;
++  relay_url: string;
++  policy: {
++    name: string;
++    respond_to: RespondToMode;
++    respond_to_allowlist?: string[];
++  };
++  policy_kept: boolean;
++  policy_sync_error: string | null;
++};
++
++export async function connectManagedAgent(input: {
++  agentPubkey: string;
++  name: string;
++  respondTo: RespondToMode;
++  respondToAllowlist: string[];
++}): Promise<ConnectedAgentHandoff> {
++  const response = await invokeTauri<RawConnectedAgentHandoff>(
++    "connect_managed_agent",
++    { input },
++  );
++  return {
++    agentPubkey: response.agent_pubkey,
++    authTag: response.auth_tag,
++    relayUrl: response.relay_url,
++    policy: {
++      name: response.policy.name,
++      respondTo: response.policy.respond_to,
++      respondToAllowlist: response.policy.respond_to_allowlist ?? [],
++    },
++    policyKept: response.policy_kept,
++    policySyncError: response.policy_sync_error,
++  };
++}
++
++export async function disconnectManagedAgent(
++  agentPubkey: string,
++): Promise<string | null> {
++  return invokeTauri<string | null>("disconnect_managed_agent", {
++    agentPubkey,
++  });
++}
+diff --git a/docs/agent-management-provenance.md b/docs/agent-management-provenance.md
+index a8665b1c3bc9eb464017460f81a87fff5dfb7e59..ced234cc3b02eb3c459491bc463e44b69c666128 100644
+--- a/docs/agent-management-provenance.md
++++ b/docs/agent-management-provenance.md
+@@ -13,10 +13,11 @@ Picker candidates preserve exact local-management flags and use the same pure
+ predicate. Profile ownership can supplement the shared directory evidence.
+ 
+ Pickers, member cards, authors, markdown mention chips, address controls, hover
+-cards, profile headers/hero/subviews, new-message recipients and DM headers/sidebar
+-rows use the same glyph and accessible label. The marker grants no membership,
+-mention eligibility, availability or local management capability. This change does
+-not change profile navigation, presence, native discovery or invitation/routing.
++cards, profile headers/hero/subviews, new-message recipients, DM headers/sidebar
++rows and the Agents page's Running elsewhere cards use the same glyph and
++accessible label. The marker grants no membership, mention eligibility,
++availability or local management capability. This change does not change profile
++navigation, presence, native discovery or invitation/routing.
+ 
+ Regression gates: `otherSetupAgent.test.mjs`, `useKnownAgentPubkeys.test.mjs`,
+ `buildMentionCandidates.test.mjs`, `MentionAutocomplete.test.mjs`, and
+diff --git a/docs/remote-agents.md b/docs/remote-agents.md
+index 40cf8f1ab1470f4c8116736eaab4630fc59e7f17..7a387cda704e0136b215eecd34f35bcc4b9e3e8e 100644
+--- a/docs/remote-agents.md
++++ b/docs/remote-agents.md
+@@ -130,7 +130,10 @@ bind at the same layer. Three contracts, nested:
+    and **intentional clean exit is terminal to automatic supervisor
+    restart** (I5). A bash script that exports `BUZZ_PRIVATE_KEY`,
+    `BUZZ_RELAY_URL`, `BUZZ_AUTH_TAG` and execs the harness is a conforming
+-   launcher at this layer — today, with no code change.
++   launcher at this layer — today, with no code change. Such a launcher
++   generates its own keypair; the desktop's **Connect agent** action signs
++   `BUZZ_AUTH_TAG` for its public key and publishes the owner's kind:30177
++   policy, so the private key never leaves the launcher's host.
+ 2. **The provider/deployer contract — binds provider-managed launches
+    only.** The two operations (`info`/`deploy`), the reconciliation loop,
+    and at-most-one-live-instance *per deploy scope* (I4). Hand-launched

@@ -712,6 +712,8 @@ pub fn run() {
             reconcile_managed_agent_runtimes,
             put_managed_agent_runtime_lifecycle,
             create_managed_agent,
+            connect_managed_agent,
+            disconnect_managed_agent,
             start_managed_agent,
             stop_managed_agent,
             set_agent_managed_profiles,

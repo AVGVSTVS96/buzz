@@ -115,6 +115,25 @@ export async function respawnManagedAgentWithRules({
   await startManagedAgent(agent.pubkey);
 }
 
+/** Ask an agent this device does not run to exit, via the owner `!shutdown` command. */
+export async function requestAgentShutdown(
+  agent: Pick<ManagedAgent, "pubkey">,
+  context: ManagedAgentChannelContext,
+): Promise<ManagedAgentActionResult> {
+  const channelId = resolveManagedAgentChannelId(agent, context);
+  if (!channelId) {
+    throw new Error("Cannot stop: agent is not in any channel");
+  }
+
+  await sendChannelMessage(channelId, "!shutdown", undefined, undefined, [
+    agent.pubkey,
+  ]);
+  return {
+    noticeMessage:
+      "Shutdown requested. This does not confirm the agent has stopped.",
+  };
+}
+
 export async function stopManagedAgentWithRules({
   agent,
   channels,
@@ -126,22 +145,11 @@ export async function stopManagedAgentWithRules({
   stopManagedAgent: StopManagedAgent;
 } & ManagedAgentChannelContext): Promise<ManagedAgentActionResult> {
   if (agent.backend.type === "provider") {
-    const channelId = resolveManagedAgentChannelId(agent, {
+    return requestAgentShutdown(agent, {
       channels,
       preferredChannelId,
       relayAgents,
     });
-    if (!channelId) {
-      throw new Error("Cannot stop: agent is not in any channel");
-    }
-
-    await sendChannelMessage(channelId, "!shutdown", undefined, undefined, [
-      agent.pubkey,
-    ]);
-    return {
-      noticeMessage:
-        "Shutdown requested. This does not confirm the agent has stopped.",
-    };
   }
 
   await stopManagedAgent(agent.pubkey);

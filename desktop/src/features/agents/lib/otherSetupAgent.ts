@@ -61,3 +61,28 @@ export function isOwnedAgentNotManagedOnDevice({
       normalizePubkey(ownerPubkey) === normalizePubkey(currentPubkey),
   );
 }
+
+/** Viewer-owned relay agents with no local record, for the Agents page. */
+export function ownedAgentsRunningElsewhere({
+  currentPubkey,
+  localInventoryReady,
+  managedAgents,
+  relayAgents,
+}: {
+  currentPubkey?: string;
+  localInventoryReady: boolean;
+  managedAgents: readonly ManagedAgent[];
+  relayAgents: readonly RelayAgent[];
+}): RelayAgent[] {
+  const localPubkeys = new Set(
+    managedAgents.map((agent) => normalizePubkey(agent.pubkey)),
+  );
+  return relayAgents.filter((agent) =>
+    isOwnedAgentNotManagedOnDevice({
+      currentPubkey,
+      ownerPubkey: agent.ownerPubkey,
+      localInventoryReady,
+      isLocallyManaged: localPubkeys.has(normalizePubkey(agent.pubkey)),
+    }),
+  );
+}

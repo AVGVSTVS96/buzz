@@ -3407,10 +3407,10 @@ index 6d059e2700044956b3b36b9b4c5e7b88ed5b86b2..0b33ecc5b6d424b60621a44c19e8c3e8
          // command is always catalog-derived (known_acp_runtime at spawn time)
          // and the per-record field is never read by the runtime.
 diff --git a/desktop/src-tauri/src/commands/agents.rs b/desktop/src-tauri/src/commands/agents.rs
-index ba28ba67c0391e65280c26c5805e4ddd37ab637d..e48c26f72b305f577ae5dc923ed43df1a797c7dd 100644
+index 86e8f10b7bafa483f7a19ff13845f90212864c52..f01f0934645144cfe04b5d78bc267103bddaf6ef 100644
 --- a/desktop/src-tauri/src/commands/agents.rs
 +++ b/desktop/src-tauri/src/commands/agents.rs
-@@ -750,6 +750,7 @@ async fn create_managed_agent_in<R: tauri::Runtime>(
+@@ -752,6 +752,7 @@ async fn create_managed_agent_in<R: tauri::Runtime>(
                  relay_mesh.clone()
              },
              effort_level: None,
@@ -3568,20 +3568,20 @@ index 74de12949253b4f29e52140c8dee4e6661298dc6..66a7ddeb74c431268ecfdeb727a9afed
      // Owner = viewer. Clone the secret key out of the lock immediately so
      // we don't hold the mutex across the relay round trip.
 diff --git a/desktop/src-tauri/src/commands/mod.rs b/desktop/src-tauri/src/commands/mod.rs
-index 01b1ddc8828638d2cb5e1531cb50336c9067e406..f163940ec050068307347336fd2e33996d2c1380 100644
+index e141975a79ddff8009846722e06cac295c130060..b146452c20949e0a9083d901f537f29e8c42b745 100644
 --- a/desktop/src-tauri/src/commands/mod.rs
 +++ b/desktop/src-tauri/src/commands/mod.rs
-@@ -3,6 +3,7 @@ mod agent_access;
- mod agent_auth;
+@@ -4,6 +4,7 @@ mod agent_auth;
  mod agent_config;
+ mod agent_connect;
  mod agent_discovery;
 +mod agent_files;
  mod agent_logs;
  mod agent_metric_archive;
  mod agent_model_process;
-@@ -81,6 +82,7 @@ pub use agent_access::*;
- pub use agent_auth::*;
+@@ -83,6 +84,7 @@ pub use agent_auth::*;
  pub use agent_config::*;
+ pub use agent_connect::*;
  pub use agent_discovery::*;
 +pub use agent_files::*;
  pub use agent_logs::*;
@@ -3684,10 +3684,10 @@ index 4cf1bf49e4c66458538109774360eb0b6eacba49..675b6bd40294c547985ccd460030e70d
          name_pool: vec![],
      };
 diff --git a/desktop/src-tauri/src/lib.rs b/desktop/src-tauri/src/lib.rs
-index e9c96a2fe314e96d38bd28714ecfaee5fde2ecfc..8daa76d3107cdc1f7b983c21f05103e220b3b41a 100644
+index 9208898ecd77cc3941102b6266d8c1d3f97f61a1..d37ba5a6bbc108d50115da5ebb32d068675e8754 100644
 --- a/desktop/src-tauri/src/lib.rs
 +++ b/desktop/src-tauri/src/lib.rs
-@@ -851,6 +851,8 @@ pub fn run() {
+@@ -853,6 +853,8 @@ pub fn run() {
              fetch_join_policy,
              set_prevent_sleep_active,
              get_agent_memory,
@@ -3697,7 +3697,7 @@ index e9c96a2fe314e96d38bd28714ecfaee5fde2ecfc..8daa76d3107cdc1f7b983c21f05103e2
              relay_reconnect_hook_configured,
              observer_archive_default_enabled,
 diff --git a/desktop/src-tauri/src/managed_agents/agent_events.rs b/desktop/src-tauri/src/managed_agents/agent_events.rs
-index 6e020469bbdcb0d1e64cf047cf4b939acdb9a65f..44a17d1068f51c909463c6c0e806a0fe5ea4dde4 100644
+index 762661257df6f1680be842181c7758878229993a..df4890d64090838429a97944ee5225c2f779f825 100644
 --- a/desktop/src-tauri/src/managed_agents/agent_events.rs
 +++ b/desktop/src-tauri/src/managed_agents/agent_events.rs
 @@ -19,6 +19,7 @@
@@ -3708,7 +3708,7 @@ index 6e020469bbdcb0d1e64cf047cf4b939acdb9a65f..44a17d1068f51c909463c6c0e806a0fe
  //! - any runtime field (`runtime_pid`, `last_*`, `backend_agent_id`, …) — these
  //!   mutate on every start/stop and describe transient process state.
  
-@@ -227,6 +228,7 @@ mod tests {
+@@ -237,6 +238,7 @@ mod tests {
              definition_parallelism: None,
              relay_mesh: None,
              effort_level: None,

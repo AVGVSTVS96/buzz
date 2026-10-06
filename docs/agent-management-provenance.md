@@ -13,10 +13,11 @@ Picker candidates preserve exact local-management flags and use the same pure
 predicate. Profile ownership can supplement the shared directory evidence.
 
 Pickers, member cards, authors, markdown mention chips, address controls, hover
-cards, profile headers/hero/subviews, new-message recipients and DM headers/sidebar
-rows use the same glyph and accessible label. The marker grants no membership,
-mention eligibility, availability or local management capability. This change does
-not change profile navigation, presence, native discovery or invitation/routing.
+cards, profile headers/hero/subviews, new-message recipients, DM headers/sidebar
+rows and the Agents page's Running elsewhere cards use the same glyph and
+accessible label. The marker grants no membership, mention eligibility,
+availability or local management capability. This change does not change profile
+navigation, presence, native discovery or invitation/routing.
 
 Regression gates: `otherSetupAgent.test.mjs`, `useKnownAgentPubkeys.test.mjs`,
 `buildMentionCandidates.test.mjs`, `MentionAutocomplete.test.mjs`, and

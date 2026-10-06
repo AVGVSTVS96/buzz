@@ -33,3 +33,27 @@ test("active-agent lookup requires positive relay liveness evidence", () => {
   renderToStaticMarkup(React.createElement(Probe));
   assert.deepEqual([...active], ["online", "away"]);
 });
+
+test("only the verified owner may stop a relay agent's turn", () => {
+  const owner = "a".repeat(64);
+  const candidates = buildChannelAgentSessionCandidates({
+    currentPubkey: owner.toUpperCase(),
+    managedAgents: [],
+    relayAgents: [
+      { ...relayAgents[1], pubkey: "owned", ownerPubkey: owner },
+      { ...relayAgents[1], pubkey: "foreign", ownerPubkey: "b".repeat(64) },
+      { ...relayAgents[1], pubkey: "ownerless", ownerPubkey: null },
+    ],
+  });
+  assert.deepEqual(
+    candidates.map(({ pubkey, canInterruptTurn }) => [
+      pubkey,
+      canInterruptTurn,
+    ]),
+    [
+      ["owned", true],
+      ["foreign", false],
+      ["ownerless", false],
+    ],
+  );
+});

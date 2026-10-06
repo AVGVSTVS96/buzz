@@ -1,5 +1,5 @@
 import * as React from "react";
-import { EllipsisVertical, OctagonX, Settings2 } from "lucide-react";
+import { EllipsisVertical, Link2, OctagonX, Settings2 } from "lucide-react";
 import {
   consumePendingSnapshotImport,
   subscribeSnapshotImport,
@@ -9,6 +9,8 @@ import { AddTeamToChannelDialog } from "./AddTeamToChannelDialog";
 import { AgentDefaultsDialog } from "./AgentDefaultsDialog";
 import { AgentDialog } from "./AgentDialog";
 import { CommunityCatalogDialog } from "./CommunityCatalogDialog";
+import { ConnectAgentDialog } from "./ConnectAgentDialog";
+import { ConnectedAgentsSection } from "./ConnectedAgentsSection";
 import { PersonaDeleteDialog } from "./PersonaDeleteDialog";
 import { PersonaShareDialog } from "./PersonaShareDialog";
 import { AgentSnapshotExportDialog } from "./AgentSnapshotExportDialog";
@@ -49,6 +51,7 @@ export function AgentsView() {
   const fullAiDefaultsTriggerRef = React.useRef<HTMLButtonElement>(null);
   const compactActionsTriggerRef = React.useRef<HTMLButtonElement>(null);
   const [isAiDefaultsOpen, setIsAiDefaultsOpen] = React.useState(false);
+  const [isConnectAgentOpen, setIsConnectAgentOpen] = React.useState(false);
 
   function openAiDefaults(trigger: HTMLButtonElement | null) {
     aiDefaultsTriggerRef.current = trigger;
@@ -159,6 +162,15 @@ export function AgentsView() {
                       ? "Agent defaults"
                       : "Set agent defaults"}
                   </Button>
+                  <Button
+                    data-testid="connect-agent-button"
+                    onClick={() => setIsConnectAgentOpen(true)}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <Link2 />
+                    Connect agent
+                  </Button>
                   {runningAgentCount > 0 ? (
                     <Button
                       disabled={isActionPending}
@@ -198,6 +210,12 @@ export function AgentsView() {
                       {hasSavedAgentDefaults
                         ? "Agent defaults"
                         : "Set agent defaults"}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => setIsConnectAgentOpen(true)}
+                    >
+                      <Link2 />
+                      Connect agent
                     </DropdownMenuItem>
                     {runningAgentCount > 0 ? (
                       <DropdownMenuItem
@@ -278,6 +296,12 @@ export function AgentsView() {
               onDeletePersona={personas.openDelete}
             />
 
+            <ConnectedAgentsSection
+              onOpenAgentProfile={(pubkey) => {
+                openProfilePanel?.(pubkey);
+              }}
+            />
+
             <TeamsSection
               error={
                 teamActions.teamsQuery.error instanceof Error
@@ -311,6 +335,10 @@ export function AgentsView() {
         onOpenChange={setAiDefaultsDialogOpen}
         open={isAiDefaultsOpen}
         returnFocusRef={aiDefaultsTriggerRef}
+      />
+      <ConnectAgentDialog
+        onOpenChange={setIsConnectAgentOpen}
+        open={isConnectAgentOpen}
       />
 
       {agents.agentToAddToChannel ? (

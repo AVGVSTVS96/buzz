@@ -127,8 +127,21 @@ pub(crate) fn retain_agent_record(
     keys: &nostr::Keys,
     record: &ManagedAgentRecord,
 ) -> Result<bool, String> {
+    retain_agent_event(conn, keys, &record.pubkey, build_agent_event(record)?)
+}
+
+/// The content-diff + monotonic-bump engine behind [`retain_agent_record`],
+/// for a kind:30177 `builder` whose `d` tag is `agent_pubkey`. Agents this
+/// device does not run (see `commands::agent_connect`) have no record and
+/// retain their projection through here directly.
+pub(crate) fn retain_agent_event(
+    conn: &rusqlite::Connection,
+    keys: &nostr::Keys,
+    agent_pubkey: &str,
+    builder: nostr::EventBuilder,
+) -> Result<bool, String> {
     let owner_pubkey = keys.public_key().to_hex();
-    let existing = get_retained_event(conn, KIND_MANAGED_AGENT, &owner_pubkey, &record.pubkey)?;
+    let existing = get_retained_event(conn, KIND_MANAGED_AGENT, &owner_pubkey, agent_pubkey)?;
 
     // Build the event first and compare ITS content, so the comparison and
     // the retained row share one serialization of the projection (mirrors
@@ -137,12 +150,12 @@ pub(crate) fn retain_agent_record(
     // it serializes — republishing every agent every boot. Content is
     // timestamp-independent, so the monotonic bump below never forces a
     // spurious republish; an unchanged agent is still a true no-op.
-    let event = build_agent_event(record)?
+    let event = builder
         .custom_created_at(monotonic_created_at(
             existing.as_ref().map(|row| row.created_at),
         ))
         .sign_with_keys(keys)
-        .map_err(|e| format!("failed to sign event for '{}': {e}", record.name))?;
+        .map_err(|e| format!("failed to sign managed-agent event for {agent_pubkey}: {e}"))?;
 
     let content = event.content.clone();
     if existing.as_ref().is_some_and(|row| row.content == content) {
@@ -154,14 +167,14 @@ pub(crate) fn retain_agent_record(
         &RetainedEvent {
             kind: KIND_MANAGED_AGENT,
             pubkey: owner_pubkey,
-            d_tag: record.pubkey.clone(),
+            d_tag: agent_pubkey.to_string(),
             content,
             created_at: event.created_at.as_secs() as i64,
             raw_event: event.as_json(),
             pending_sync: true,
         },
     )
-    .map_err(|e| format!("failed to retain '{}': {e}", record.name))?;
+    .map_err(|e| format!("failed to retain managed-agent event for {agent_pubkey}: {e}"))?;
     Ok(true)
 }
 

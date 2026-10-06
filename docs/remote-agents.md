@@ -130,7 +130,10 @@ bind at the same layer. Three contracts, nested:
    and **intentional clean exit is terminal to automatic supervisor
    restart** (I5). A bash script that exports `BUZZ_PRIVATE_KEY`,
    `BUZZ_RELAY_URL`, `BUZZ_AUTH_TAG` and execs the harness is a conforming
-   launcher at this layer — today, with no code change.
+   launcher at this layer — today, with no code change. Such a launcher
+   generates its own keypair; the desktop's **Connect agent** action signs
+   `BUZZ_AUTH_TAG` for its public key and publishes the owner's kind:30177
+   policy, so the private key never leaves the launcher's host.
 2. **The provider/deployer contract — binds provider-managed launches
    only.** The two operations (`info`/`deploy`), the reconciliation loop,
    and at-most-one-live-instance *per deploy scope* (I4). Hand-launched

@@ -36,7 +36,7 @@ pub enum ObserverPayloadError {
     /// Ciphertext did not fit the expected NIP-44 v2 length envelope.
     #[error("invalid NIP-44 ciphertext length: {0}")]
     InvalidCiphertextLength(usize),
-    /// Decrypted JSON exceeded the observer plaintext size limit.
+    /// Serialized JSON exceeded the observer plaintext size limit.
     #[error("observer plaintext exceeds {max} bytes (got {got})")]
     PlaintextTooLarge {
         /// Maximum accepted plaintext bytes.
@@ -96,15 +96,6 @@ pub fn decrypt_observer_payload<T: DeserializeOwned>(
         &event.pubkey,
         event.content.as_str(),
     )?;
-    if plaintext.len() > OBSERVER_MAX_PLAINTEXT_LEN {
-        let got = plaintext.len();
-        plaintext.zeroize();
-        return Err(ObserverPayloadError::PlaintextTooLarge {
-            max: OBSERVER_MAX_PLAINTEXT_LEN,
-            got,
-        });
-    }
-
     let result = serde_json::from_str(&plaintext);
     plaintext.zeroize();
     Ok(result?)

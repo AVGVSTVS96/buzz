@@ -1,0 +1,276 @@
+name: Desktop fork build
+
+on:
+  workflow_run:
+    workflows: [Sync patched fork]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-fork-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_REF: main
+  RELEASE_TAG: buzz-desktop-fork-latest
+  BUZZ_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/download/buzz-desktop-fork-latest/latest.json
+  BUZZ_UPDATER_PUBLIC_KEY: ${{ vars.BUZZ_UPDATER_PUBLIC_KEY }}
+  SIGNING_IDENTITY: Buzz Fork Self-Signed
+
+jobs:
+  plan:
+    name: Plan
+    if: >-
+      github.repository == 'AVGVSTVS96/buzz' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - name: Compare source with published build
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE_REF" --jq .sha)
+          PUBLISHED=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha 2>/dev/null || true)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          if [[ "$PUBLISHED" == "$SHA" ]]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "$RELEASE_TAG already holds $SHA; nothing to build."
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Building $SHA (published: ${PUBLISHED:-none})"
+          fi
+
+  build:
+    name: Build, sign and publish (Apple Silicon)
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - name: Install desktop dependencies
+        run: just desktop-install-ci
+
+      # Keyed before the version patch so the per-build version doesn't churn the key.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          workspaces: |
+            . -> target
+            desktop/src-tauri -> target
+          shared-key: desktop-fork-release
+
+      # Upstream only bumps the version at releases, so every fork build is the
+      # next patch with a run-number prerelease: 0.5.26 on main -> 0.5.27-fork.N.
+      # It sorts above the release it is built from and above every earlier
+      # fork build, which is the only comparison the updater makes.
+      - name: Derive fork version
+        id: version
+        run: |
+          set -euo pipefail
+          BASE_VERSION=$(node -p "require('./desktop/package.json').version")
+          if ! [[ "$BASE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Desktop version '$BASE_VERSION' is not semver"
+            exit 1
+          fi
+          VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))-fork.${GITHUB_RUN_NUMBER}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION from $SOURCE_SHA"
+
+      - name: Patch version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd desktop && node scripts/set-version-from-tag.mjs "$VERSION"
+          cd src-tauri && cargo update --workspace
+
+      - name: Generate release config
+        run: cd desktop && node scripts/build-release-config.mjs
+
+      - name: Build sidecars
+        run: |
+          cargo build --release -p buzz-acp -p buzz-agent -p buzz-backend-kubernetes -p buzz-dev-mcp -p git-credential-nostr -p buzz-cli
+          ./scripts/bundle-sidecars.sh
+
+      - name: Resolve mesh-llm rev
+        id: mesh_rev
+        run: |
+          set -euo pipefail
+          REV=$(python3 -c 'import tomllib; d=tomllib.load(open("Cargo.lock", "rb")); p=next(p for p in d["package"] if p["name"] == "mesh-llm-sdk"); print(p["source"].rsplit("#", 1)[1])')
+          [[ -n "$REV" ]] || { echo "::error::could not resolve mesh-llm rev from Cargo.lock"; exit 1; }
+          echo "rev=$REV" >> "$GITHUB_OUTPUT"
+          echo "short=${REV:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore mesh llama build cache
+        id: llama_cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ github.workspace }}/.cache/mesh-llama
+          key: mesh-llama-${{ runner.os }}-metal-${{ steps.mesh_rev.outputs.rev }}
+
+      - name: Build mesh llama native libraries
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        env:
+          MESH_REV_SHORT: ${{ steps.mesh_rev.outputs.short }}
+        run: |
+          set -euo pipefail
+          cargo fetch --manifest-path desktop/src-tauri/Cargo.toml
+          MESH_ROOT=$(find "${CARGO_HOME:-$HOME/.cargo}/git/checkouts" -path "*/$MESH_REV_SHORT" -type d -name "$MESH_REV_SHORT" | head -1)
+          if [[ -z "$MESH_ROOT" ]]; then
+            echo "::error::mesh-llm checkout for $MESH_REV_SHORT not found after cargo fetch"
+            exit 1
+          fi
+          export LLAMA_STAGE_BACKEND=metal
+          export LLAMA_STAGE_BUILD_DIR="$GITHUB_WORKSPACE/.cache/mesh-llama/build-stage-abi-metal"
+          export CMAKE_OSX_DEPLOYMENT_TARGET=10.15
+          "$MESH_ROOT/scripts/prepare-llama.sh" pinned
+          "$MESH_ROOT/scripts/build-llama.sh" -DCMAKE_OSX_DEPLOYMENT_TARGET=10.15
+
+      - name: Save mesh llama build cache
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ github.workspace }}/.cache/mesh-llama
+          key: mesh-llama-${{ runner.os }}-metal-${{ steps.mesh_rev.outputs.rev }}
+
+      # Tauri signs every nested binary and the app with this identity, then
+      # builds the DMG and updater archive from the signed app. With no
+      # APPLE_ID / APPLE_API_KEY in the environment it skips notarization.
+      - name: Import signing identity
+        env:
+          CERTIFICATE: ${{ secrets.FORK_MACOS_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.FORK_MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/fork-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 7200 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          base64 --decode <<<"$CERTIFICATE" > "$RUNNER_TEMP/fork-signing.p12"
+          security import "$RUNNER_TEMP/fork-signing.p12" -k "$KEYCHAIN" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/fork-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user | xargs security list-keychains -d user -s "$KEYCHAIN"
+          security find-identity -p codesigning "$KEYCHAIN"
+          security find-certificate -c "$SIGNING_IDENTITY" -Z "$KEYCHAIN" | awk '/SHA-1 hash:/ {print $3}' > "$RUNNER_TEMP/fork-signing.sha1"
+
+      - name: Build signed Tauri app
+        run: cd desktop && pnpm tauri build --verbose --features mesh-llm --config src-tauri/tauri.release.conf.json
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ env.SIGNING_IDENTITY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "10.15"
+          LLAMA_STAGE_BACKEND: metal
+          LLAMA_STAGE_BUILD_DIR: ${{ github.workspace }}/.cache/mesh-llama/build-stage-abi-metal
+          SKIPPY_LLAMA_AUTO_BUILD: "0"
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
+
+      - name: Verify code signature
+        run: |
+          set -euo pipefail
+          APP=desktop/src-tauri/target/release/bundle/macos/Buzz.app
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv "$APP" 2>&1 | grep -E '^(Identifier|Authority|TeamIdentifier|CodeDirectory)'
+          REQUIREMENT=$(codesign -dr - "$APP" 2>&1 | sed -n 's/^designated => //p')
+          echo "Designated requirement: $REQUIREMENT"
+          CERT_HASH=$(tr 'A-F' 'a-f' < "$RUNNER_TEMP/fork-signing.sha1")
+          [[ "$REQUIREMENT" == "identifier \"xyz.block.buzz.app\" and certificate "*" = H\"$CERT_HASH\"" ]] || {
+            echo "::error::designated requirement is not pinned to the fork certificate"
+            exit 1
+          }
+          desktop/scripts/verify-macos-entitlements.sh "$APP"
+
+      - name: Stage release assets
+        id: assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR=desktop/src-tauri/target/release/bundle
+          STAGE="$RUNNER_TEMP/release"
+          mkdir -p "$STAGE"
+          DMG=$(find "$BUNDLE_DIR/dmg" -name '*.dmg' -type f | head -1)
+          [[ -n "$DMG" ]] || { echo "::error::No DMG found"; exit 1; }
+          [[ -f "$BUNDLE_DIR/macos/Buzz.app.tar.gz" && -f "$BUNDLE_DIR/macos/Buzz.app.tar.gz.sig" ]] || {
+            echo "::error::Updater archive or signature not found"
+            exit 1
+          }
+          ARCHIVE="Buzz_${VERSION}_aarch64.app.tar.gz"
+          cp "$DMG" "$STAGE/Buzz_${VERSION}_aarch64.dmg"
+          cp "$BUNDLE_DIR/macos/Buzz.app.tar.gz" "$STAGE/$ARCHIVE"
+          cp "$BUNDLE_DIR/macos/Buzz.app.tar.gz.sig" "$STAGE/$ARCHIVE.sig"
+          bash desktop/scripts/generate-oss-latest-json.sh "$VERSION" \
+            "darwin-aarch64:$STAGE/$ARCHIVE.sig:https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$ARCHIVE" \
+            > "$STAGE/latest.json"
+          cat "$STAGE/latest.json"
+          ls -la "$STAGE"
+          echo "dir=$STAGE" >> "$GITHUB_OUTPUT"
+
+      # latest.json goes up only after the archive it names, and the tag moves
+      # last, so a failed run never looks published to the next one.
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE: ${{ steps.assets.outputs.dir }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES="Buzz Desktop $VERSION for Apple Silicon, built from $GITHUB_REPOSITORY@$SOURCE_SHA. Self-signed, not notarized."
+          binaries=("$STAGE"/Buzz_*)
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --target "$SOURCE_SHA" --prerelease \
+              --title "Buzz Desktop (fork)" --notes "$NOTES" "${binaries[@]}" "$STAGE/latest.json"
+            exit 0
+          fi
+          previous=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
+          gh release upload "$RELEASE_TAG" "${binaries[@]}" --clobber
+          gh release upload "$RELEASE_TAG" "$STAGE/latest.json" --clobber
+          while IFS= read -r asset; do
+            [[ -z "$asset" || -e "$STAGE/$asset" ]] || gh release delete-asset "$RELEASE_TAG" "$asset" --yes
+          done <<<"$previous"
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" -f sha="$SOURCE_SHA" -F force=true >/dev/null
+          gh release edit "$RELEASE_TAG" --notes "$NOTES"
+
+      - name: Remove signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/fork-signing.keychain-db" 2>/dev/null || true
+
+      - name: Save pnpm store cache
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}

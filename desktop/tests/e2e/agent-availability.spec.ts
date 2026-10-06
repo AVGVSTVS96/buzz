@@ -826,3 +826,72 @@ test("owned remote deployment can be deployed again under the same identity", as
     ),
   ).toEqual([]);
 });
+
+test("Pulse shows relay presence for an agent, not its saved deployment", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    managedAgents: [
+      {
+        pubkey: LOCAL,
+        name: "Pulse deployment",
+        status: "deployed",
+        backend: { type: "provider", id: "fixture", config: {} },
+        channelNames: ["agents"],
+      },
+    ],
+  });
+  await page.goto("/");
+  await page.getByTestId("open-pulse-view").click();
+  await page.evaluate((pubkey) => {
+    const w = window as typeof window & {
+      __TAURI_INTERNALS__: {
+        invoke: (
+          command: string,
+          payload: unknown,
+          options: unknown,
+        ) => Promise<unknown>;
+      };
+    };
+    const original = w.__TAURI_INTERNALS__.invoke.bind(w.__TAURI_INTERNALS__);
+    w.__TAURI_INTERNALS__.invoke = async (command, payload, options) => {
+      if (
+        command === "get_notes_timeline" &&
+        (payload as { pubkeys?: string[] }).pubkeys?.includes(pubkey)
+      ) {
+        return {
+          notes: [
+            {
+              id: "pulse-deployment-note",
+              pubkey,
+              created_at: Math.floor(Date.now() / 1000) - 60,
+              content: "Nightly sync finished.",
+              tags: [],
+            },
+          ],
+          next_cursor: null,
+        };
+      }
+      return original(command, payload, options);
+    };
+  }, LOCAL);
+  await page.getByRole("tab", { name: "Agents" }).click();
+  await expect(page.getByText("Nightly sync finished.")).toBeVisible();
+  await expect(page.getByRole("img", { name: "Agent offline" })).toBeVisible();
+
+  await page.evaluate(async (pubkey) => {
+    const w = window as typeof window & {
+      __BUZZ_E2E_QUERY_CLIENT__?: {
+        invalidateQueries: (filter: { queryKey: string[] }) => Promise<void>;
+      };
+    };
+    const emit = window.__BUZZ_E2E_EMIT_MOCK_PRESENCE__;
+    if (!emit || !w.__BUZZ_E2E_QUERY_CLIENT__)
+      throw new Error("Mock presence is unavailable.");
+    emit({ pubkey, status: "online" });
+    await w.__BUZZ_E2E_QUERY_CLIENT__.invalidateQueries({
+      queryKey: ["presence"],
+    });
+  }, LOCAL);
+  await expect(page.getByRole("img", { name: "Agent online" })).toBeVisible();
+});

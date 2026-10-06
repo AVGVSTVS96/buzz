@@ -23,6 +23,7 @@ import {
   EDIT_AGENT_PARALLELISM_HELP,
   parallelismCapHint,
 } from "../lib/agentParallelism";
+import { SHARED_PATHS_HELP, sharedPathsError } from "../lib/sharedPaths";
 import {
   deriveNumericDescriptors,
   structuredEnvKeys,
@@ -52,6 +53,7 @@ export function EditAgentAdvancedFields({
   requiredEnvKeys,
   catalogStatus = "ready",
   selectedRuntime,
+  sharedPaths,
   systemPrompt,
   onAcpCommandChange,
   onAgentArgsChange,
@@ -59,6 +61,7 @@ export function EditAgentAdvancedFields({
   onInheritHarnessChange,
   onParallelismChange,
   onAutoRestartChange,
+  onSharedPathsChange,
   onSystemPromptChange,
 }: {
   acpCommand: string;
@@ -104,6 +107,8 @@ export function EditAgentAdvancedFields({
    * When undefined after the catalog has settled, no numeric controls render.
    */
   selectedRuntime?: AcpRuntimeCatalogEntry;
+  /** One path per line. */
+  sharedPaths: string;
   systemPrompt: string;
   onAcpCommandChange: (value: string) => void;
   onAgentArgsChange: (value: string) => void;
@@ -111,6 +116,7 @@ export function EditAgentAdvancedFields({
   onInheritHarnessChange: (value: boolean) => void;
   onParallelismChange: (value: string) => void;
   onAutoRestartChange: (value: boolean) => void;
+  onSharedPathsChange: (value: string) => void;
   onSystemPromptChange: (value: string) => void;
 }) {
   const acpCommandPicker = React.useMemo(
@@ -156,6 +162,7 @@ export function EditAgentAdvancedFields({
       requested,
     );
   }, [selectedRuntime, parallelism]);
+  const sharedPathsValidation = sharedPathsError(sharedPaths);
 
   return (
     <div className="space-y-5 pt-2">
@@ -272,6 +279,51 @@ export function EditAgentAdvancedFields({
         {parallelismHint !== null ? (
           <p className="text-xs text-amber-600 dark:text-amber-400">
             {parallelismHint}
+          </p>
+        ) : null}
+      </div>
+
+      {/* Shared files */}
+      <div className="space-y-1.5">
+        <label
+          className="text-sm font-medium text-foreground"
+          htmlFor="edit-agent-shared-paths"
+        >
+          Shared files
+          <span className={PERSONA_LABEL_OPTIONAL_CLASS}>Optional</span>
+        </label>
+        <div className={PERSONA_FIELD_SHELL_CLASS}>
+          <Textarea
+            aria-describedby={
+              sharedPathsValidation
+                ? "edit-agent-shared-paths-help edit-agent-shared-paths-error"
+                : "edit-agent-shared-paths-help"
+            }
+            aria-invalid={sharedPathsValidation ? true : undefined}
+            className={cn(
+              "min-h-24 resize-y px-3 py-3 leading-5",
+              PERSONA_FIELD_CONTROL_CLASS,
+            )}
+            disabled={disabled}
+            id="edit-agent-shared-paths"
+            onChange={(event) => onSharedPathsChange(event.target.value)}
+            placeholder="One path per line"
+            value={sharedPaths}
+          />
+        </div>
+        <p
+          className="text-xs text-muted-foreground"
+          id="edit-agent-shared-paths-help"
+        >
+          {SHARED_PATHS_HELP}
+        </p>
+        {sharedPathsValidation ? (
+          <p
+            className="text-xs text-destructive"
+            id="edit-agent-shared-paths-error"
+            role="alert"
+          >
+            {sharedPathsValidation}
           </p>
         ) : null}
       </div>

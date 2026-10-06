@@ -24,6 +24,7 @@ export type ProfilePanelView =
   | "configuration"
   | "diagnostics"
   | "memories"
+  | "files"
   | "channels"
   | "logs";
 
@@ -36,6 +37,7 @@ export const PROFILE_PANEL_VIEW_TITLES: Record<ProfilePanelView, string> = {
   configuration: "Runtime",
   diagnostics: "Harness log",
   memories: "Memories",
+  files: "Files",
   channels: "Channels",
   logs: "Harness log",
 };

@@ -343,6 +343,7 @@ function toCamelAgent(raw) {
     backendAgentId: raw.backend_agent_id,
     respondTo: raw.respond_to,
     respondToAllowlist: raw.respond_to_allowlist,
+    sharedPaths: raw.shared_paths ?? [],
   };
 }
 
@@ -1236,4 +1237,36 @@ test("a registered harness whose id is custom is selected by its command", async
     "My Harness",
     "the saved command matches the harness registered under the id custom",
   );
+});
+
+test("shared files ride the locked update and a comma blocks Save", async () => {
+  installIpc();
+  await act(async () => {
+    renderDialog(() => {});
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /Advanced/ }));
+  });
+  const field = dom.window.document.getElementById("edit-agent-shared-paths");
+  const save = screen.getByRole("button", { name: "Save changes" });
+
+  await act(async () => {
+    fireEvent.change(field, { target: { value: "PLANS\na,b.md" } });
+  });
+  assert.equal(
+    screen.getByRole("alert").textContent,
+    "Paths can't contain commas.",
+  );
+  assert.equal(save.disabled, true, "a comma path must block Save");
+
+  await act(async () => {
+    fireEvent.change(field, { target: { value: " PLANS \n\nnotes.md" } });
+  });
+  await act(async () => {
+    fireEvent.click(save);
+  });
+
+  const updates = ipcCalls.filter((c) => c.cmd === "update_managed_agent");
+  assert.equal(updates.length, 1, "Save must dispatch exactly one update");
+  assert.deepEqual(updates[0].args.input.sharedPaths, ["PLANS", "notes.md"]);
 });

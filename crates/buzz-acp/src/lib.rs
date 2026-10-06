@@ -8,6 +8,7 @@ mod acp;
 mod config;
 mod edit_routing;
 mod engram_fetch;
+mod file_share;
 mod filter;
 mod isolated_execution;
 mod observer;
@@ -2825,6 +2826,34 @@ async fn run_harness(
         ));
     }
 
+    let mut file_share_task = None;
+    if !config.share.is_empty() {
+        match owner_cache.pubkey.as_deref().map(PublicKey::from_hex) {
+            Some(Ok(owner)) => {
+                let cwd = std::env::current_dir()
+                    .and_then(|cwd| cwd.canonicalize())
+                    .context("failed to resolve working directory for --share")?;
+                let share = file_share::FileShare::new(
+                    relay.rest_client(),
+                    config.keys.clone(),
+                    owner,
+                    cwd,
+                    config.share.clone(),
+                );
+                file_share_task = Some(tokio::spawn(share.run()));
+                tracing::info!("sharing {} path(s) as agent files", config.share.len());
+            }
+            Some(Err(error)) => {
+                tracing::warn!("agent files disabled: invalid owner pubkey: {error}");
+            }
+            None => {
+                tracing::warn!(
+                    "--share requires an agent owner; set BUZZ_AUTH_TAG or --agent-owner"
+                );
+            }
+        }
+    }
+
     let runtime_start_nonce = std::env::var("BUZZ_MANAGED_AGENT_START_NONCE").unwrap_or_default();
     let dedup_mode = config.dedup_mode;
     let mut queue =
@@ -4183,6 +4212,10 @@ async fn run_harness(
     }
 
     if let Some(handle) = relay_observer_publisher_task.take() {
+        handle.abort();
+    }
+
+    if let Some(handle) = file_share_task.take() {
         handle.abort();
     }
 
@@ -9551,6 +9584,7 @@ mod build_mcp_servers_tests {
             agent_owner: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            share: Vec::new(),
         }
     }
 
@@ -10567,6 +10601,7 @@ mod error_outcome_emission_tests {
             agent_owner: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            share: Vec::new(),
         }
     }
 

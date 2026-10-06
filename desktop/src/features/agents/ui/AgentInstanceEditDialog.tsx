@@ -17,6 +17,7 @@ import {
 } from "@/features/agents/hooks";
 import { useAgentAccessOwnerOnlyQuery } from "@/features/agents/useAgentAccessOwnerOnly";
 import { isManagedAgentActive } from "@/features/agents/lib/managedAgentControlActions";
+import { sharedPathsError, sharedPathsUpdate } from "../lib/sharedPaths";
 import type {
   ManagedAgent,
   RespondToMode,
@@ -143,6 +144,9 @@ export function AgentInstanceEditDialog({
   const [parallelism, setParallelism] = React.useState(
     String(agent.parallelism),
   );
+  const [sharedPaths, setSharedPaths] = React.useState(
+    agent.sharedPaths.join("\n"),
+  );
   const [systemPrompt, setSystemPrompt] = React.useState(
     agent.systemPrompt ?? "",
   );
@@ -208,6 +212,7 @@ export function AgentInstanceEditDialog({
       );
       setAgentArgs(agent.agentArgs.join(","));
       setParallelism(String(agent.parallelism));
+      setSharedPaths(agent.sharedPaths.join("\n"));
       setSystemPrompt(agent.systemPrompt ?? "");
       setModel(agent.model ?? "");
       setIsCustomModelEditing(false);
@@ -633,6 +638,7 @@ export function AgentInstanceEditDialog({
       requiredEnvKeyMissing,
     }) &&
     providerValid &&
+    sharedPathsError(sharedPaths) === null &&
     !isSaving &&
     !isAvatarUploadPending;
 
@@ -702,6 +708,7 @@ export function AgentInstanceEditDialog({
           parsedParallelism > 0 && parsedParallelism !== agent.parallelism
             ? parsedParallelism
             : undefined,
+        sharedPaths: sharedPathsUpdate(sharedPaths, agent.sharedPaths),
         // Linked instances defer model/provider/systemPrompt to the definition.
         systemPrompt:
           linkedPersona != null
@@ -734,12 +741,8 @@ export function AgentInstanceEditDialog({
           ? undefined
           : submitEnvVars,
         respondTo: respondTo !== agent.respondTo ? respondTo : undefined,
-        // The allowlist is preserved across mode toggles in local UI state
-        // (so a user can flip away from allowlist and back without losing
-        // their entries), but we only send it on the wire when (a) it
-        // actually changed, AND (b) the saved mode will need it. Sending
-        // an allowlist while switching to a non-allowlist mode would be
-        // harmless server-side, but it's noise in the persisted record.
+        // Kept across mode toggles in local state, but sent only when it
+        // changed and the saved mode will use it.
         respondToAllowlist:
           respondTo === "allowlist" &&
           respondToAllowlist.join(",") !== agent.respondToAllowlist.join(",")
@@ -1015,7 +1018,6 @@ export function AgentInstanceEditDialog({
               onModeChange={setRespondTo}
             />
             <RunOnSummarySection backend={agent.backend} />
-
             {/* Provider (runtime) */}
             <div className="space-y-1.5">
               <label
@@ -1110,7 +1112,6 @@ export function AgentInstanceEditDialog({
               onModelChange={setModel}
               modelStatusMessage={modelStatusMessage}
             />
-
             <EffortPickerField
               backend={agent.backend}
               // The inherit transition clears effort, so nothing to pick.
@@ -1121,7 +1122,6 @@ export function AgentInstanceEditDialog({
               value={effortPickKept ? effortLevel : storedEffort}
               onChange={setEffortLevel}
             />
-
             <AgentAiDefaultsNotice
               onEditDefaults={() => {
                 if (!isSaving) setAiDefaultsOpen(true);
@@ -1137,7 +1137,6 @@ export function AgentInstanceEditDialog({
               open={aiDefaultsOpen}
               returnFocusRef={aiDefaultsTriggerRef}
             />
-
             {/* Advanced settings */}
             <div className="space-y-3">
               <button
@@ -1196,6 +1195,7 @@ export function AgentInstanceEditDialog({
                       requiredEnvKeys={advancedRequiredEnvKeys}
                       catalogStatus={runtimeCatalogStatus}
                       selectedRuntime={prospectiveRuntime}
+                      sharedPaths={sharedPaths}
                       systemPrompt={systemPrompt}
                       onAcpCommandChange={setAcpCommand}
                       onAgentArgsChange={setAgentArgs}
@@ -1203,13 +1203,13 @@ export function AgentInstanceEditDialog({
                       onEnvVarsChange={setEnvVars}
                       onInheritHarnessChange={setInheritHarness}
                       onParallelismChange={setParallelism}
+                      onSharedPathsChange={setSharedPaths}
                       onSystemPromptChange={setSystemPrompt}
                     />
                   </motion.div>
                 ) : null}
               </AnimatePresence>
             </div>
-
             {/* Error — covers both the locked update (React Query) and the
                 standalone setters (setterError); setter error takes precedence
                 since the update already committed when it fires. */}

@@ -1361,10 +1361,10 @@ async fn query_events_authed(
             "restricted: p-gated kinds require #p tag matching your pubkey",
         ));
     }
-    if !crate::handlers::req::engram_filters_authorized(&filters, &authed_pubkey_hex) {
+    if !crate::handlers::req::agent_pair_filters_authorized(&filters, &authed_pubkey_hex) {
         return Err(api_error(
             StatusCode::FORBIDDEN,
-            "restricted: agent-engram reads require authors=[self] or #p=[self]",
+            "restricted: agent-pair reads require authors=[self] or #p=[self]",
         ));
     }
     if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
@@ -1981,10 +1981,10 @@ async fn count_events_authed(
             "restricted: p-gated kinds require #p tag matching your pubkey",
         ));
     }
-    if !crate::handlers::req::engram_filters_authorized(&filters, &authed_pubkey_hex) {
+    if !crate::handlers::req::agent_pair_filters_authorized(&filters, &authed_pubkey_hex) {
         return Err(api_error(
             StatusCode::FORBIDDEN,
-            "restricted: agent-engram reads require authors=[self] or #p=[self]",
+            "restricted: agent-pair reads require authors=[self] or #p=[self]",
         ));
     }
     if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {

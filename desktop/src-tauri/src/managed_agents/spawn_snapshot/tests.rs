@@ -100,6 +100,7 @@ fn record() -> ManagedAgentRecord {
         definition_parallelism: None,
         relay_mesh: None,
         effort_level: None,
+        shared_paths: Vec::new(),
     }
 }
 
@@ -408,6 +409,17 @@ fn non_default_max_turn_duration_changes_snapshot() {
     let rec = record();
     let mut edited = record();
     edited.max_turn_duration_seconds = Some(42);
+    assert_ne!(
+        snapshot(&rec, &[], &[], "wss://ws.example", &Default::default()),
+        snapshot(&edited, &[], &[], "wss://ws.example", &Default::default())
+    );
+}
+
+#[test]
+fn shared_paths_edit_changes_snapshot() {
+    let rec = record();
+    let mut edited = record();
+    edited.shared_paths = vec!["PLANS".into()];
     assert_ne!(
         snapshot(&rec, &[], &[], "wss://ws.example", &Default::default()),
         snapshot(&edited, &[], &[], "wss://ws.example", &Default::default())

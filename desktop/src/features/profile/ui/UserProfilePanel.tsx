@@ -59,6 +59,7 @@ import {
   AgentInfoFocusedView,
   ChannelsFocusedView,
   DiagnosticsFocusedView,
+  FilesFocusedView,
   MemoryFocusedView,
 } from "@/features/profile/ui/UserProfilePanelFocusedViews";
 import { AgentConfigurationFocusedView } from "@/features/profile/ui/UserProfilePanelAgentDetails";
@@ -839,6 +840,7 @@ export function UserProfilePanel({
           onOpenActivity={handleOpenActivity}
           onOpenChannel={handleOpenChannel}
           onOpenDiagnostics={() => setView("diagnostics")}
+          onOpenFiles={() => setView("files")}
           onStickyChromeChange={handleStickyChromeChange}
           onTabChange={setTab}
           presenceStatus={presenceStatus}
@@ -852,6 +854,12 @@ export function UserProfilePanel({
       ) : null}
       {view === "memories" && effectivePubkey ? (
         <MemoryFocusedView
+          agentPubkey={effectivePubkey}
+          viewerIsOwner={viewerIsOwner}
+        />
+      ) : null}
+      {view === "files" && effectivePubkey ? (
+        <FilesFocusedView
           agentPubkey={effectivePubkey}
           viewerIsOwner={viewerIsOwner}
         />

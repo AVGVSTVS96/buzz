@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import { AgentManagementMarker } from "@/features/agents/ui/OtherSetupAgentMarker";
 import { CopyButton } from "@/features/agents/ui/CopyButton";
+import { FilesRefreshButton } from "@/features/agent-files/ui/FilesSection";
 import { MemoryRefreshButton } from "@/features/agent-memory/ui/MemorySection";
 import {
   PROFILE_PANEL_VIEW_TITLES,
@@ -63,6 +64,13 @@ export function getUserProfilePanelHeaderContent({
     <AuxiliaryPanelHeaderActions>
       {view === "memories" && viewerIsOwner && effectivePubkey ? (
         <MemoryRefreshButton
+          agentPubkey={effectivePubkey}
+          variant="outline"
+          viewerIsOwner={viewerIsOwner}
+        />
+      ) : null}
+      {view === "files" && viewerIsOwner && effectivePubkey ? (
+        <FilesRefreshButton
           agentPubkey={effectivePubkey}
           variant="outline"
           viewerIsOwner={viewerIsOwner}

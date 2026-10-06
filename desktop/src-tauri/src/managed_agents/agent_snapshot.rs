@@ -26,6 +26,7 @@
 //!   - nonportable `acp_command` values / `agent_command` / `agent_command_override` / `agent_args`
 //!     (machine-local harness paths)
 //!   - `mcp_command` (machine-local)
+//!   - `shared_paths` (machine-local file paths)
 //!   - runtime state: `runtime_pid`, `backend_agent_id`, `backend` blob,
 //!     `provider_binary_path`, `last_*`
 //!   - lineage ids: `persona_id`, `team_id`, `source_team`, `source_team_persona_slug`,

@@ -19,6 +19,7 @@
 //! - `auth_tag` — the NIP-OA owner attestation.
 //! - `env_vars` — may hold API keys / credentials.
 //! - `backend` — `Provider { config }` is an opaque blob that may hold secrets.
+//! - `shared_paths` — filesystem paths on the agent's host.
 //! - any runtime field (`runtime_pid`, `last_*`, `backend_agent_id`, …) — these
 //!   mutate on every start/stop and describe transient process state.
 
@@ -227,6 +228,7 @@ mod tests {
             definition_parallelism: None,
             relay_mesh: None,
             effort_level: None,
+            shared_paths: Vec::new(),
         }
     }
 

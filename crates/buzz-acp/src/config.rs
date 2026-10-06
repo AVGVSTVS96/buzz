@@ -530,6 +530,13 @@ pub struct CliArgs {
     /// ignored (the watermark stays at startup time).
     #[arg(long, env = "BUZZ_ACP_REPLAY_FLOOR")]
     pub replay_floor: Option<u64>,
+
+    /// File or directory to share with the agent's owner as NIP-AF agent
+    /// files, relative to the working directory. Repeatable; directories are
+    /// shared recursively, skipping hidden and git-ignored entries. Requires
+    /// an agent owner.
+    #[arg(long, env = "BUZZ_ACP_SHARE", value_delimiter = ',')]
+    pub share: Vec<PathBuf>,
 }
 
 /// Merged NIP-01 subscription filter for a single channel.
@@ -634,6 +641,10 @@ pub struct Config {
     /// `from_cli()`. `None` when using the compiled-in default or when
     /// `--no-base-prompt` is set.
     pub base_prompt_content: Option<String>,
+    /// Absolute paths shared with the owner as NIP-AF agent files
+    /// (`--share` / `BUZZ_ACP_SHARE`), validated in `from_args()` to stay
+    /// inside the working directory.
+    pub share: Vec<PathBuf>,
 }
 
 /// Maximum length, in characters, of a session title sent to the adapter.
@@ -1155,6 +1166,14 @@ impl Config {
 
         validate_multiple_event_handling(args.multiple_event_handling, args.dedup)?;
 
+        let share = if args.share.is_empty() {
+            Vec::new()
+        } else {
+            let cwd = std::env::current_dir()?;
+            crate::file_share::resolve_shared_paths(&cwd, &args.share)
+                .map_err(ConfigError::ConfigFile)?
+        };
+
         let config = Config {
             keys,
             relay_url: args.relay_url,
@@ -1209,6 +1228,7 @@ impl Config {
             agent_owner: args.agent_owner.map(|s| s.trim().to_ascii_lowercase()),
             no_base_prompt: args.no_base_prompt,
             base_prompt_content,
+            share,
         };
 
         Ok(config)
@@ -1587,6 +1607,7 @@ mod tests {
             agent_owner: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            share: Vec::new(),
         }
     }
 
@@ -2971,6 +2992,45 @@ channels = "ALL"
     // A minimal valid private key for test use (secp256k1 scalar = 1).
     const TEST_PRIVATE_KEY: &str =
         "0000000000000000000000000000000000000000000000000000000000000001";
+
+    #[test]
+    fn share_is_repeatable_and_comma_delimited() {
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--share",
+            "PLANS,notes.md",
+            "--share",
+            "AGENTS.md",
+        ])
+        .expect("clap should parse args");
+        assert_eq!(
+            args.share,
+            [
+                PathBuf::from("PLANS"),
+                PathBuf::from("notes.md"),
+                PathBuf::from("AGENTS.md")
+            ]
+        );
+        let config = Config::from_args(args).expect("shares inside the working directory");
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(config.share[0], cwd.join("PLANS"));
+    }
+
+    #[test]
+    fn share_outside_the_working_directory_is_a_config_error() {
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--share",
+            "../elsewhere",
+        ])
+        .expect("clap should parse args");
+        let msg = Config::from_args(args).unwrap_err().to_string();
+        assert!(msg.contains("outside the working directory"), "{msg}");
+    }
 
     #[test]
     fn allowed_respond_to_full_path_rejects_disallowed_mode() {

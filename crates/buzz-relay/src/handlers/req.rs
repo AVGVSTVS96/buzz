@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 
 use buzz_core::filter::filters_match;
 use buzz_core::kind::{
-    is_unshared_gated_event, AUTHOR_ONLY_KINDS, KIND_AGENT_ENGRAM, KIND_AGENT_TURN_METRIC,
+    is_unshared_gated_event, AGENT_PAIR_KINDS, AUTHOR_ONLY_KINDS, KIND_AGENT_TURN_METRIC,
     KIND_DM_VISIBILITY, KIND_HUDDLE_LIVENESS, P_GATED_KINDS, RESULT_GATED_KINDS,
     SHARED_GATED_KINDS,
 };
@@ -262,10 +262,10 @@ pub async fn handle_req(
             ));
             return;
         }
-        if !engram_filters_authorized(&filters, &authed_pubkey_hex) {
+        if !agent_pair_filters_authorized(&filters, &authed_pubkey_hex) {
             conn.send(RelayMessage::closed(
                 &sub_id,
-                "restricted: agent-engram reads require authors=[self] or #p=[self]",
+                "restricted: agent-pair reads require authors=[self] or #p=[self]",
             ));
             return;
         }
@@ -1546,28 +1546,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex: 
     })
 }
 
-/// Authorize read access for filters that can match KIND_AGENT_ENGRAM events.
+/// Authorize read access for filters that can match [`AGENT_PAIR_KINDS`]
+/// events: NIP-AE engrams and NIP-AF agent files, edit requests and results.
 ///
-/// NIP-AE engrams are global (no channel scope) and have encrypted content,
-/// but their public `#p` (owner) and timestamps still leak who-pairs-with-whom
-/// plus write-activity patterns. Only the agent (the event's author) or the
-/// owner (the `#p` value) should be able to enumerate them.
+/// These kinds are global (no channel scope) and have encrypted content,
+/// but their public `#p` (counterparty) and timestamps still leak
+/// who-pairs-with-whom plus write-activity patterns. Only the event's author
+/// or its `#p` value should be able to enumerate them.
 ///
 /// A filter is authorized when at least one of:
 ///   - `authors` is non-empty and every entry equals the authed pubkey
-///     (the agent reading its own engrams), OR
+///     (reading events you signed), OR
 ///   - `#p` is non-empty and every entry equals the authed pubkey
-///     (the owner reading engrams addressed to them).
+///     (reading events addressed to you).
 ///
 /// Filters with explicit `ids` are exempt — knowing the event id already
-/// implies authorization (the engram event id is itself derived from the
-/// signed envelope, which only the agent could have produced).
+/// implies authorization (the event id is itself derived from the signed
+/// envelope, which only its author could have produced).
 ///
 /// Mixed-kind filters (e.g. `{kinds:[30174, 9]}`) are evaluated under this
-/// gate when KIND_AGENT_ENGRAM is present; matching events of other kinds in
+/// gate when any agent-pair kind is present; matching events of other kinds in
 /// the same filter is also restricted, but that is the conservative choice
-/// — clients should query engrams in a dedicated filter.
-pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &str) -> bool {
+/// — clients should query agent-pair kinds in a dedicated filter.
+pub(crate) fn agent_pair_filters_authorized(filters: &[Filter], authed_pubkey_hex: &str) -> bool {
     let p_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::P);
     filters.iter().all(|filter| {
         // Specific-event lookups don't fish.
@@ -1575,11 +1576,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
             return true;
         }
 
-        let can_match_engram = filter
-            .kinds
-            .as_ref()
-            .is_none_or(|ks| ks.iter().any(|k| k.as_u16() as u32 == KIND_AGENT_ENGRAM));
-        if !can_match_engram {
+        let can_match_agent_pair = filter.kinds.as_ref().is_none_or(|ks| {
+            ks.iter()
+                .any(|k| AGENT_PAIR_KINDS.contains(&(k.as_u16() as u32)))
+        });
+        if !can_match_agent_pair {
             return true;
         }
 
@@ -1747,6 +1748,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buzz_core::kind::{
+        KIND_AGENT_ENGRAM, KIND_AGENT_FILE, KIND_AGENT_FILE_EDIT_REQUEST,
+        KIND_AGENT_FILE_EDIT_RESULT,
+    };
     use nostr::{Alphabet, Filter, SingleLetterTag};
 
     fn lifecycle_conn() -> (
@@ -3067,7 +3072,7 @@ mod tests {
             .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
             .author(nostr::PublicKey::from_hex(&agent).unwrap())
             .custom_tags(p_tag, [&owner]);
-        assert!(engram_filters_authorized(&[f], &agent));
+        assert!(agent_pair_filters_authorized(&[f], &agent));
     }
 
     #[test]
@@ -3079,7 +3084,7 @@ mod tests {
             .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
             .author(nostr::PublicKey::from_hex(&agent).unwrap())
             .custom_tags(p_tag, [&owner]);
-        assert!(engram_filters_authorized(&[f], &owner));
+        assert!(agent_pair_filters_authorized(&[f], &owner));
     }
 
     #[test]
@@ -3090,7 +3095,7 @@ mod tests {
         let f = Filter::new()
             .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
             .custom_tags(p_tag, [&owner]);
-        assert!(engram_filters_authorized(&[f], &owner));
+        assert!(agent_pair_filters_authorized(&[f], &owner));
     }
 
     #[test]
@@ -3102,7 +3107,7 @@ mod tests {
             .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
             .author(nostr::PublicKey::from_hex(&agent).unwrap())
             .custom_tags(p_tag, [&owner]);
-        assert!(!engram_filters_authorized(&[f], &attacker));
+        assert!(!agent_pair_filters_authorized(&[f], &attacker));
     }
 
     #[test]
@@ -3110,7 +3115,7 @@ mod tests {
         // {kinds:[30174]} with no authors and no #p — open fishing.
         let (agent, _, _) = three_pubkeys();
         let f = Filter::new().kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16));
-        assert!(!engram_filters_authorized(&[f], &agent));
+        assert!(!agent_pair_filters_authorized(&[f], &agent));
     }
 
     #[test]
@@ -3119,7 +3124,7 @@ mod tests {
         // engrams; must still be gated.
         let (agent, _, _) = three_pubkeys();
         let f = Filter::new();
-        assert!(!engram_filters_authorized(&[f], &agent));
+        assert!(!agent_pair_filters_authorized(&[f], &agent));
     }
 
     #[test]
@@ -3127,7 +3132,7 @@ mod tests {
         // Filter not targeting engrams — pass through; this gate is silent.
         let (agent, _, _) = three_pubkeys();
         let f = Filter::new().kind(nostr::Kind::Custom(9));
-        assert!(engram_filters_authorized(&[f], &agent));
+        assert!(agent_pair_filters_authorized(&[f], &agent));
     }
 
     #[test]
@@ -3141,7 +3146,7 @@ mod tests {
         let f = Filter::new()
             .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
             .id(id);
-        assert!(engram_filters_authorized(&[f], &agent));
+        assert!(agent_pair_filters_authorized(&[f], &agent));
     }
 
     #[test]
@@ -3156,7 +3161,7 @@ mod tests {
                 nostr::PublicKey::from_hex(&agent).unwrap(),
                 nostr::PublicKey::from_hex(&other).unwrap(),
             ]);
-        assert!(!engram_filters_authorized(&[f], &agent));
+        assert!(!agent_pair_filters_authorized(&[f], &agent));
     }
 
     // These filters are the shape an authenticated relay member would send
@@ -3170,7 +3175,7 @@ mod tests {
         let f = Filter::new()
             .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
             .search("*");
-        assert!(!engram_filters_authorized(&[f], &agent));
+        assert!(!agent_pair_filters_authorized(&[f], &agent));
     }
 
     #[test]
@@ -3178,7 +3183,7 @@ mod tests {
         // {"search":"foo"} — no `kinds` field at all matches engrams too.
         let (agent, _, _) = three_pubkeys();
         let f = Filter::new().search("foo");
-        assert!(!engram_filters_authorized(&[f], &agent));
+        assert!(!agent_pair_filters_authorized(&[f], &agent));
     }
 
     #[test]
@@ -3189,7 +3194,62 @@ mod tests {
             .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
             .author(nostr::PublicKey::from_hex(&agent).unwrap())
             .search("foo");
-        assert!(engram_filters_authorized(&[f], &agent));
+        assert!(agent_pair_filters_authorized(&[f], &agent));
+    }
+
+    #[test]
+    fn agent_file_edit_gate_allows_owner_reading_own_requests() {
+        let (_, owner, _) = three_pubkeys();
+        let f = Filter::new()
+            .kind(nostr::Kind::Custom(KIND_AGENT_FILE_EDIT_REQUEST as u16))
+            .author(nostr::PublicKey::from_hex(&owner).unwrap());
+        assert!(agent_pair_filters_authorized(&[f], &owner));
+    }
+
+    #[test]
+    fn agent_file_edit_gate_allows_agent_reading_requests_addressed_to_it() {
+        let (agent, _, _) = three_pubkeys();
+        let p_tag = SingleLetterTag::lowercase(Alphabet::P);
+        let f = Filter::new()
+            .kind(nostr::Kind::Custom(KIND_AGENT_FILE_EDIT_REQUEST as u16))
+            .custom_tags(p_tag, [&agent]);
+        assert!(agent_pair_filters_authorized(&[f], &agent));
+    }
+
+    #[test]
+    fn agent_file_edit_gate_rejects_unrelated_reader() {
+        let (agent, owner, attacker) = three_pubkeys();
+        let p_tag = SingleLetterTag::lowercase(Alphabet::P);
+        let f = Filter::new()
+            .kind(nostr::Kind::Custom(KIND_AGENT_FILE_EDIT_REQUEST as u16))
+            .author(nostr::PublicKey::from_hex(&owner).unwrap())
+            .custom_tags(p_tag, [&agent]);
+        assert!(!agent_pair_filters_authorized(&[f], &attacker));
+    }
+
+    #[test]
+    fn agent_file_gate_rejects_bare_kind_filters() {
+        let (agent, _, _) = three_pubkeys();
+        for kind in [
+            KIND_AGENT_FILE,
+            KIND_AGENT_FILE_EDIT_REQUEST,
+            KIND_AGENT_FILE_EDIT_RESULT,
+        ] {
+            let f = Filter::new().kind(nostr::Kind::Custom(kind as u16));
+            assert!(
+                !agent_pair_filters_authorized(&[f], &agent),
+                "kind:{kind} must be gated"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_file_edit_gate_rejects_bare_kind_search_filter() {
+        let (agent, _, _) = three_pubkeys();
+        let f = Filter::new()
+            .kind(nostr::Kind::Custom(KIND_AGENT_FILE_EDIT_REQUEST as u16))
+            .search("*");
+        assert!(!agent_pair_filters_authorized(&[f], &agent));
     }
 
     #[test]

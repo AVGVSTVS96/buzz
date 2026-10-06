@@ -106,6 +106,7 @@ export type ProfileSummaryViewProps = {
   onOpenActivity: (channelId?: string | null) => void;
   onOpenChannel: (channelId: string) => void;
   onOpenDiagnostics: () => void;
+  onOpenFiles: () => void;
   onStickyChromeChange: (state: { active: boolean; height: number }) => void;
   onTabChange: (tab: ProfilePanelTab, options?: { replace?: boolean }) => void;
   presenceStatus: "online" | "away" | "offline" | undefined;
@@ -181,6 +182,7 @@ export function ProfileSummaryView({
   onOpenActivity,
   onOpenChannel,
   onOpenDiagnostics,
+  onOpenFiles,
   onStickyChromeChange,
   onTabChange,
   presenceStatus,
@@ -590,6 +592,7 @@ export function ProfileSummaryView({
             {activeTab === "memories" && pubkey ? (
               <MemoryFocusedView
                 agentPubkey={pubkey}
+                onOpenFiles={onOpenFiles}
                 variant="embedded"
                 viewerIsOwner={isOwner}
               />

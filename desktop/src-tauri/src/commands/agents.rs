@@ -750,6 +750,7 @@ async fn create_managed_agent_in<R: tauri::Runtime>(
                 relay_mesh.clone()
             },
             effort_level: None,
+            shared_paths: Vec::new(),
         };
         if let Some(level) = input.effort_level.clone() {
             super::agent_config::apply_picker_effort_level(&mut record, Some(level));

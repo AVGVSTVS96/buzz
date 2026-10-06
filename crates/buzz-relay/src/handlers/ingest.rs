@@ -12,9 +12,10 @@ use uuid::Uuid;
 use buzz_auth::Scope;
 use buzz_core::kind::{
     event_kind_u32, is_identity_archive_request_kind, is_parameterized_replaceable,
-    is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC,
-    KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET,
-    KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
+    is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_AGENT_FILE, KIND_AGENT_FILE_EDIT_REQUEST,
+    KIND_AGENT_FILE_EDIT_RESULT, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC, KIND_APPROVAL_DENY,
+    KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS,
+    KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
     KIND_EMOJI_LIST, KIND_EMOJI_SET, KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT,
     KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
     KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
@@ -501,12 +502,15 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         KIND_PROFILE => Ok(Scope::UsersWrite),
         KIND_TEXT_NOTE | KIND_LONG_FORM | buzz_core::kind::KIND_ARTIFACT => Ok(Scope::MessagesWrite),
         KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS | KIND_AGENT_ENGRAM
-        | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT
+        | KIND_AGENT_FILE | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT
         | KIND_PRIVATE_MANAGED_AGENT | KIND_TEAM_CATALOG | super::push_lease::KIND_PUSH_LEASE => {
             Ok(Scope::UsersWrite)
         }
         // NIP-AM: agent turn metrics are agent-authored global events (encrypted to owner).
         KIND_AGENT_TURN_METRIC => Ok(Scope::MessagesWrite),
+        // NIP-AF: edit requests (owner → agent) and results (agent → owner) are
+        // encrypted messages between the pair, not user-owned state.
+        KIND_AGENT_FILE_EDIT_REQUEST | KIND_AGENT_FILE_EDIT_RESULT => Ok(Scope::MessagesWrite),
         // NIP-56 reports are ordinary member writes into the mod-only queue.
         // Ingest persists them to `moderation_reports` and suppresses public
         // storage/fanout; reports are signals, never enforcement triggers.
@@ -707,6 +711,11 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | KIND_EMOJI_LIST
             // NIP-AE agent engrams are addressed by (pubkey_a, kind, d_tag); never channel-scoped.
             | KIND_AGENT_ENGRAM
+            // NIP-AF agent files are addressed like engrams; edit requests and
+            // results are pair-private messages. None are channel-scoped.
+            | KIND_AGENT_FILE
+            | KIND_AGENT_FILE_EDIT_REQUEST
+            | KIND_AGENT_FILE_EDIT_RESULT
             // NIP-ER event reminders are addressed by (pubkey, kind, d_tag); never channel-scoped.
             | KIND_EVENT_REMINDER
             // Agent profile (10100): user-owned replaceable, keyed by pubkey.
@@ -1443,8 +1452,9 @@ fn validate_diff_event(event: &Event) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate the public envelope of a NIP-AE `kind:30174` event before it
-/// reaches NIP-33 parameterized replacement.
+/// Validate the public envelope of a NIP-AE `kind:30174` engram or a NIP-AF
+/// `kind:30180` agent file (same envelope) before it reaches NIP-33
+/// parameterized replacement.
 ///
 /// We deliberately do this here (not in the d-tag length check downstream)
 /// because a malformed envelope can otherwise *replace* a valid head in
@@ -1456,6 +1466,11 @@ fn validate_diff_event(event: &Event) -> Result<(), String> {
 ///
 /// Content is opaque NIP-44 ciphertext; we do not parse it.
 fn validate_engram_envelope(event: &Event) -> Result<(), String> {
+    let label = if event_kind_u32(event) == KIND_AGENT_FILE {
+        "agent-file"
+    } else {
+        "agent-engram"
+    };
     let mut d_tags: Vec<&str> = Vec::new();
     let mut p_tags: Vec<&str> = Vec::new();
     for tag in event.tags.iter() {
@@ -1471,13 +1486,13 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
     }
     if d_tags.len() != 1 {
         return Err(format!(
-            "agent-engram event must have exactly one `d` tag (got {})",
+            "{label} event must have exactly one `d` tag (got {})",
             d_tags.len()
         ));
     }
     if p_tags.len() != 1 {
         return Err(format!(
-            "agent-engram event must have exactly one `p` tag (got {})",
+            "{label} event must have exactly one `p` tag (got {})",
             p_tags.len()
         ));
     }
@@ -1487,7 +1502,7 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
     {
-        return Err("agent-engram `d` tag must be 64 lowercase hex chars".to_string());
+        return Err(format!("{label} `d` tag must be 64 lowercase hex chars"));
     }
     let p = p_tags[0];
     // Lowercase-only: readers query `#p` with `owner.to_hex()` (lowercase) and
@@ -1499,14 +1514,86 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
     {
-        return Err("agent-engram `p` tag must be 64 lowercase hex chars (pubkey)".to_string());
+        return Err(format!(
+            "{label} `p` tag must be 64 lowercase hex chars (pubkey)"
+        ));
     }
     // Content must be a syntactically plausible NIP-44 v2 payload. We do not
     // (and cannot) verify the MAC at the relay, but we can reject obvious
     // garbage so a malformed event cannot supersede a valid head via NIP-33
     // replacement and then be silently discarded by readers.
-    validate_engram_nip44_content(&event.content)?;
+    validate_engram_nip44_content(&event.content).map_err(|e| e.replace("agent-engram", label))?;
     Ok(())
+}
+
+/// Validate the public envelope of a NIP-AF `kind:4180` edit request or
+/// `kind:4181` edit result.
+///
+/// Enforces (without touching the encrypted payload):
+/// - Exactly one `p` tag: 64 lowercase hex chars (the agent on a request, the
+///   owner on a result).
+/// - Results only: exactly one `e` tag, 64 lowercase hex chars (the request
+///   being answered).
+/// - Content syntactically resembles NIP-44 v2 ciphertext (delegated to
+///   `validate_engram_nip44_content`).
+///
+/// Readers find these with byte-exact lowercase `#p` / `#e` matches, so a
+/// malformed tag would store an event its counterparty can never see.
+fn validate_agent_file_edit_envelope(event: &Event) -> Result<(), String> {
+    let is_result = event_kind_u32(event) == KIND_AGENT_FILE_EDIT_RESULT;
+    let label = if is_result {
+        "agent-file-edit-result"
+    } else {
+        "agent-file-edit-request"
+    };
+    let mut p_tags: Vec<&str> = Vec::new();
+    let mut e_tags: Vec<&str> = Vec::new();
+    for tag in event.tags.iter() {
+        let parts = tag.as_slice();
+        if parts.len() < 2 {
+            continue;
+        }
+        match parts[0].as_str() {
+            "p" => p_tags.push(&parts[1]),
+            "e" => e_tags.push(&parts[1]),
+            _ => {}
+        }
+    }
+    if p_tags.len() != 1 {
+        return Err(format!(
+            "{label} event must have exactly one `p` tag (got {})",
+            p_tags.len()
+        ));
+    }
+    let p = p_tags[0];
+    if p.len() != 64
+        || !p
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(format!(
+            "{label} `p` tag must be 64 lowercase hex chars (pubkey)"
+        ));
+    }
+    if is_result {
+        if e_tags.len() != 1 {
+            return Err(format!(
+                "{label} event must have exactly one `e` tag (got {})",
+                e_tags.len()
+            ));
+        }
+        let e = e_tags[0];
+        if e.len() != 64
+            || !e
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "{label} `e` tag must be 64 lowercase hex chars (event id)"
+            ));
+        }
+    }
+    validate_engram_nip44_content(&event.content).map_err(|e| e.replace("agent-engram", label))
 }
 
 /// Enforce the `shared`-tag shape shared by every kind in
@@ -2937,8 +3024,13 @@ async fn ingest_event_inner(
         validate_diff_event(&event).map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
     }
 
-    if kind_u32 == KIND_AGENT_ENGRAM {
+    if kind_u32 == KIND_AGENT_ENGRAM || kind_u32 == KIND_AGENT_FILE {
         validate_engram_envelope(&event)
+            .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
+    }
+
+    if kind_u32 == KIND_AGENT_FILE_EDIT_REQUEST || kind_u32 == KIND_AGENT_FILE_EDIT_RESULT {
+        validate_agent_file_edit_envelope(&event)
             .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
     }
 
@@ -4196,6 +4288,9 @@ mod postgres_tests {
             KIND_EMOJI_SET,
             KIND_EMOJI_LIST,
             KIND_AGENT_ENGRAM,
+            KIND_AGENT_FILE,
+            KIND_AGENT_FILE_EDIT_REQUEST,
+            KIND_AGENT_FILE_EDIT_RESULT,
             KIND_AGENT_PROFILE,
             KIND_PERSONA,
             KIND_TEAM,
@@ -4245,6 +4340,27 @@ mod postgres_tests {
             Scope::MessagesWrite,
             "kind:44200 requires MessagesWrite scope"
         );
+    }
+
+    #[test]
+    fn agent_files_are_global_only_and_in_scope_allowlist() {
+        let dummy = make_dummy_event();
+        for (kind, scope) in [
+            (KIND_AGENT_FILE, Scope::UsersWrite),
+            (KIND_AGENT_FILE_EDIT_REQUEST, Scope::MessagesWrite),
+            (KIND_AGENT_FILE_EDIT_RESULT, Scope::MessagesWrite),
+        ] {
+            assert!(is_global_only_kind(kind), "kind:{kind} must be global-only");
+            assert!(
+                !requires_h_channel_scope(kind),
+                "kind:{kind} must not require an h-tag"
+            );
+            assert_eq!(
+                required_scope_for_kind(kind, &dummy),
+                Ok(scope),
+                "kind:{kind} scope"
+            );
+        }
     }
 
     #[test]
@@ -4712,6 +4828,118 @@ mod postgres_tests {
         let ev = make_engram(&[&["d", &d], &["p", &p]], &bad);
         let err = validate_engram_envelope(&ev).unwrap_err();
         assert!(err.contains("base64"), "got: {err}");
+    }
+
+    #[test]
+    fn agent_file_envelope_accepts_canonical() {
+        let d = "a".repeat(64);
+        let p = "b".repeat(64);
+        let ev = make_event_with_tags(KIND_AGENT_FILE, &fake_nip44_v2(), &[&["d", &d], &["p", &p]]);
+        assert!(validate_engram_envelope(&ev).is_ok());
+    }
+
+    #[test]
+    fn agent_file_envelope_rejects_malformed_under_its_own_label() {
+        let d = "a".repeat(64);
+        let p = "b".repeat(64);
+        let upper_p = "B".repeat(64);
+        let nip44 = fake_nip44_v2();
+        let wrong_version = "A".repeat(132);
+        let cases: [(&[&[&str]], &str, &str); 8] = [
+            (&[&["p", &p]], &nip44, "`d` tag"),
+            (&[&["d", &d], &["d", &d], &["p", &p]], &nip44, "`d` tag"),
+            (&[&["d", "abcd"], &["p", &p]], &nip44, "`d` tag"),
+            (&[&["d", &d]], &nip44, "`p` tag"),
+            (&[&["d", &d], &["p", &upper_p]], &nip44, "`p` tag"),
+            (&[&["d", &d], &["p", &p]], "", "content"),
+            (&[&["d", &d], &["p", &p]], "x", "base64"),
+            (&[&["d", &d], &["p", &p]], &wrong_version, "NIP-44 v2"),
+        ];
+        for (tags, content, expected) in cases {
+            let ev = make_event_with_tags(KIND_AGENT_FILE, content, tags);
+            let err = validate_engram_envelope(&ev).unwrap_err();
+            assert!(
+                err.starts_with("agent-file ") && err.contains(expected),
+                "expected {expected}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_file_edit_request_envelope_accepts_canonical() {
+        let agent = "b".repeat(64);
+        let ev = make_event_with_tags(
+            KIND_AGENT_FILE_EDIT_REQUEST,
+            &fake_nip44_v2(),
+            &[&["p", &agent]],
+        );
+        assert!(validate_agent_file_edit_envelope(&ev).is_ok());
+    }
+
+    #[test]
+    fn agent_file_edit_request_envelope_rejects_malformed() {
+        let p = "b".repeat(64);
+        let upper_p = "B".repeat(64);
+        let nip44 = fake_nip44_v2();
+        let wrong_version = "A".repeat(132);
+        let cases: [(&[&[&str]], &str, &str); 7] = [
+            (&[], &nip44, "`p` tag"),
+            (&[&["p", &p], &["p", &p]], &nip44, "`p` tag"),
+            (&[&["p", &upper_p]], &nip44, "`p` tag"),
+            (&[&["p", "abcd"]], &nip44, "`p` tag"),
+            (&[&["p", &p]], "", "content"),
+            (&[&["p", &p]], "x", "base64"),
+            (&[&["p", &p]], &wrong_version, "NIP-44 v2"),
+        ];
+        for (tags, content, expected) in cases {
+            let ev = make_event_with_tags(KIND_AGENT_FILE_EDIT_REQUEST, content, tags);
+            let err = validate_agent_file_edit_envelope(&ev).unwrap_err();
+            assert!(
+                err.starts_with("agent-file-edit-request ") && err.contains(expected),
+                "expected {expected}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_file_edit_result_envelope_accepts_canonical() {
+        let owner = "b".repeat(64);
+        let request = "c".repeat(64);
+        let ev = make_event_with_tags(
+            KIND_AGENT_FILE_EDIT_RESULT,
+            &fake_nip44_v2(),
+            &[&["p", &owner], &["e", &request]],
+        );
+        assert!(validate_agent_file_edit_envelope(&ev).is_ok());
+    }
+
+    #[test]
+    fn agent_file_edit_result_envelope_rejects_malformed() {
+        let p = "b".repeat(64);
+        let e = "c".repeat(64);
+        let upper_p = "B".repeat(64);
+        let upper_e = "C".repeat(64);
+        let nip44 = fake_nip44_v2();
+        let wrong_version = "A".repeat(132);
+        let cases: [(&[&[&str]], &str, &str); 9] = [
+            (&[&["e", &e]], &nip44, "`p` tag"),
+            (&[&["p", &upper_p], &["e", &e]], &nip44, "`p` tag"),
+            (&[&["p", &p]], &nip44, "`e` tag"),
+            (&[&["p", &p], &["e", &e], &["e", &e]], &nip44, "`e` tag"),
+            (&[&["p", &p], &["e", &upper_e]], &nip44, "`e` tag"),
+            (&[&["p", &p], &["e", "abcd"]], &nip44, "`e` tag"),
+            (&[&["p", &p], &["e", &e]], "", "content"),
+            (&[&["p", &p], &["e", &e]], "x", "base64"),
+            (&[&["p", &p], &["e", &e]], &wrong_version, "NIP-44 v2"),
+        ];
+        for (tags, content, expected) in cases {
+            let ev = make_event_with_tags(KIND_AGENT_FILE_EDIT_RESULT, content, tags);
+            let err = validate_agent_file_edit_envelope(&ev).unwrap_err();
+            assert!(
+                err.starts_with("agent-file-edit-result ") && err.contains(expected),
+                "expected {expected}, got: {err}"
+            );
+        }
     }
 
     #[test]

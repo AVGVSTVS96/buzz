@@ -130,6 +130,7 @@ pub(crate) struct SpawnConfigSnapshot {
     pub respond_to_allowlist: Option<Vec<String>>,
     pub idle_timeout_seconds: Option<u64>,
     pub max_turn_duration_seconds: Option<u64>,
+    pub shared_paths: Vec<String>,
     pub parallelism: u32,
     /// The startup effort the harness will actually apply, resolved by
     /// [`effective_effort`]: the single effort key the harness-agnostic
@@ -244,6 +245,7 @@ impl SpawnConfigSnapshot {
             }),
             idle_timeout_seconds: record.idle_timeout_seconds,
             max_turn_duration_seconds: record.max_turn_duration_seconds,
+            shared_paths: record.shared_paths.clone(),
             // Hash the effective parallelism so over-cap edits that don't change
             // the running pool size (e.g. 10 → 8, both clamp to 5 on OpenClaw)
             // do not raise a spurious "restart required" badge. Cap crossings

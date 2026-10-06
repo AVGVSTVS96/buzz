@@ -27,6 +27,7 @@ fn base() -> SpawnConfigSnapshot {
         respond_to_allowlist: Some(vec!["a".repeat(64)]),
         idle_timeout_seconds: Some(600),
         max_turn_duration_seconds: Some(7200),
+        shared_paths: vec!["PLANS".into()],
         parallelism: 1,
         effort_level: Some("high".into()),
         session_policy: "channel".into(),
@@ -71,6 +72,7 @@ fn mutations() -> Vec<Mutation> {
         ("max_turn_duration_seconds", |s| {
             s.max_turn_duration_seconds = None
         }),
+        ("shared_paths", |s| s.shared_paths = Vec::new()),
         ("parallelism", |s| s.parallelism = 8),
         ("effort_level", |s| s.effort_level = None),
         ("session_policy", |s| s.session_policy = "thread".into()),

@@ -5,6 +5,7 @@ import {
   useManagedAgentsQuery,
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
+import { useAgentAvailabilityLookup } from "@/features/agents/lib/useAgentAvailability";
 import {
   useContactListQuery,
   useUsersBatchQuery,
@@ -108,10 +109,7 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
           channels: [],
           channelIds: [],
           capabilities: [],
-          status:
-            agent.status === "running" || agent.status === "deployed"
-              ? "online"
-              : "offline",
+          status: "unknown",
           respondTo: agent.respondTo,
           respondToAllowlist: agent.respondToAllowlist,
         });
@@ -127,13 +125,7 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
     () => new Set(agentPubkeys),
     [agentPubkeys],
   );
-  const agentStatusMap = React.useMemo(() => {
-    const map: Record<string, "online" | "away" | "offline" | "unknown"> = {};
-    for (const a of relayAgents) {
-      map[a.pubkey] = a.status;
-    }
-    return map;
-  }, [relayAgents]);
+  const { getAvailability } = useAgentAvailabilityLookup(agentPubkeys);
 
   const mentionPubkeys = React.useMemo(
     () =>
@@ -280,7 +272,7 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
           renderItem={(group) => (
             <div className="pb-4">
               <AgentActivityCard
-                agentStatus={agentStatusMap[group.pubkey]}
+                agentStatus={getAvailability(group.pubkey)}
                 group={group}
                 profile={profiles[group.pubkey.toLowerCase()] ?? null}
               />

@@ -10,6 +10,7 @@ mod edit_routing;
 mod engram_fetch;
 mod filter;
 mod isolated_execution;
+mod log_tail;
 mod observer;
 mod pool;
 mod pool_lifecycle;
@@ -56,7 +57,7 @@ use pool_lifecycle::PoolLifecycle;
 use queue::{CancelReason, EventQueue, FlushBatch, QueuedEvent, ThreadTags};
 use relay::{HarnessRelay, RelayEventPublisher};
 use tokio::sync::{mpsc, watch};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use uuid::Uuid;
 
 /// Check if argv[1] matches a subcommand name, before any clap parsing.
@@ -1632,6 +1633,7 @@ fn handle_relay_observer_control_event(
     observer: Option<&observer::ObserverHandle>,
     owner_pubkey_hex: &str,
     event_publisher: RelayEventPublisher,
+    log_follows: Option<&log_tail::LogFollows>,
 ) {
     // Defense-in-depth: verify signature even though the relay already checked.
     if let Err(e) = buzz_core::verify_event(&event) {
@@ -1684,6 +1686,16 @@ fn handle_relay_observer_control_event(
                 observer,
                 event_publisher,
             );
+        }
+        Some("log_follow") => {
+            if let Some(log_follows) = log_follows {
+                log_follows.request(
+                    payload
+                        .get("tail")
+                        .and_then(|tail| tail.as_u64())
+                        .unwrap_or(0),
+                );
+            }
         }
         _ => {
             tracing::debug!(payload = %payload, "ignoring unknown observer control frame");
@@ -2569,12 +2581,15 @@ async fn tokio_main() -> Result<()> {
 
     // Stdout is the ACP transport when buzz-acp is launched as an agent command.
     // Keep every harness diagnostic on stderr so logging can never corrupt NDJSON.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("buzz_acp=info")),
+    let log_tail = log_tail::LogTail::default();
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("buzz_acp=info")))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .compact(),
         )
-        .compact()
+        .with(log_tail.layer())
         .init();
 
     let config = Config::from_cli().map_err(|e| anyhow::anyhow!("configuration error: {e}"))?;
@@ -2615,7 +2630,7 @@ async fn tokio_main() -> Result<()> {
         let _ = tx.send(());
     });
     let (ready_tx, mut ready_rx) = tokio::sync::oneshot::channel();
-    let harness = run_harness(config, shutdown_tx, shutdown_rx.clone(), ready_tx);
+    let harness = run_harness(config, log_tail, shutdown_tx, shutdown_rx.clone(), ready_tx);
     tokio::pin!(harness);
     let result = tokio::select! {
         biased;
@@ -2629,6 +2644,7 @@ async fn tokio_main() -> Result<()> {
 
 async fn run_harness(
     config: Config,
+    log_tail: log_tail::LogTail,
     shutdown_tx: watch::Sender<()>,
     mut shutdown_rx: watch::Receiver<()>,
     startup_ready: tokio::sync::oneshot::Sender<()>,
@@ -2755,6 +2771,7 @@ async fn run_harness(
     let mut relay_observer_control_rx = None;
     let mut relay_observer_publisher_task = None;
     let mut relay_observer_publisher = None;
+    let mut log_follows = None;
     if config.relay_observer {
         if let (Some(observer), Some(owner_pubkey_hex)) =
             (observer.clone(), owner_cache.pubkey.clone())
@@ -2815,6 +2832,7 @@ async fn run_harness(
     if let Some((observer, publisher, keys, agent_pubkey, owner_pubkey, owner)) =
         relay_observer_publisher.take()
     {
+        log_follows = Some(log_tail.follow(observer.clone()));
         relay_observer_publisher_task = Some(spawn_relay_observer_publisher(
             observer,
             publisher,
@@ -3215,6 +3233,7 @@ async fn run_harness(
                                     observer.as_ref(),
                                     owner_hex,
                                     relay.event_publisher(),
+                                    log_follows.as_ref(),
                                 );
                             } else {
                                 tracing::warn!("observer control frame received but no owner resolved — dropping");

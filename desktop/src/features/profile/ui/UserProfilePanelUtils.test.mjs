@@ -198,6 +198,7 @@ test("parseProfilePanelView accepts all profile panel subviews", () => {
     "configuration",
     "diagnostics",
     "memories",
+    "files",
     "channels",
     "logs",
   ]) {

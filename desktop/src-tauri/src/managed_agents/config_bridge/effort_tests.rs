@@ -83,6 +83,7 @@ pub(super) fn record() -> ManagedAgentRecord {
         definition_parallelism: None,
         relay_mesh: None,
         effort_level: None,
+        shared_paths: Vec::new(),
         agent_command_override: None,
         persona_source_version: None,
         provider: None,

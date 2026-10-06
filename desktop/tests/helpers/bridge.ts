@@ -129,6 +129,34 @@ export type MockAgentMemoryListing = {
   fetchedAt: number;
 };
 
+export type MockAgentFileEntry = {
+  path: string;
+  sha256: string;
+  size: number;
+  content: string | null;
+  eventId: string;
+  createdAt: number;
+};
+
+export type MockAgentFileEdit = {
+  requestId: string;
+  path: string;
+  baseSha256: string;
+  content: string;
+  createdAt: number;
+  status: "pending" | "applied" | "conflict" | "declined";
+  sha256: string | null;
+  reason: string | null;
+  answeredAt: number | null;
+};
+
+export type MockAgentFilesListing = {
+  files: MockAgentFileEntry[];
+  edits: MockAgentFileEdit[];
+  truncated: boolean;
+  fetchedAt: number;
+};
+
 /** Result returned by the `install_acp_runtime` mock command. */
 type MockInstallRuntimeResult = {
   success: boolean;
@@ -216,6 +244,8 @@ type MockBridgeOptions = {
    * listing for any managed agent, or a pubkey-keyed record for per-agent data.
    */
   agentMemory?: MockAgentMemoryListing | Record<string, MockAgentMemoryListing>;
+  /** Listing returned by the mocked `get_agent_files` command. */
+  agentFiles?: MockAgentFilesListing;
   managedAgentPrereqs?: {
     acp?: MockCommandAvailability;
     mcp?: MockCommandAvailability;

@@ -181,6 +181,7 @@ impl AgentDefinition {
             definition_parallelism: self.parallelism,
             relay_mesh: None,
             effort_level: None,
+            shared_paths: Vec::new(),
         }
     }
 }
@@ -497,6 +498,11 @@ pub struct ManagedAgentRecord {
     /// switches (invalid values skip-as-absent at projection time).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_level: Option<String>,
+    /// Files and folders shared with the owner as NIP-AF agent files
+    /// (`BUZZ_ACP_SHARE`), relative to the harness working directory.
+    /// Machine-local, like `agent_args`: never published or exported.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shared_paths: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -609,6 +615,7 @@ pub struct ManagedAgentSummary {
     pub log_path: String,
     pub respond_to: RespondTo,
     pub respond_to_allowlist: Vec<String>,
+    pub shared_paths: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -369,6 +369,8 @@ export type ManagedAgent = {
    * `"allowlist"`. Preserved across mode toggles.
    */
   respondToAllowlist: string[];
+  /** Files and folders shared with the owner, relative to the agent's working folder. */
+  sharedPaths: string[];
 };
 
 /** Inbound author gate mode. Mirrors buzz-acp's --respond-to CLI flag. */
@@ -705,6 +707,8 @@ export type UpdateManagedAgentInput = {
   respondTo?: RespondToMode;
   /** Absent = keep. Present = replace the allowlist (server-validated). */
   respondToAllowlist?: string[];
+  /** Absent = keep. Present = replace the shared paths (server-validated). */
+  sharedPaths?: string[];
   /** Tri-state: absent = don't touch; `null` = clear; `string` = set. Persisted in the locked update so access-change restarts snapshot the new effort. Send only when `effortTouched`. */
   effortLevel?: string | null;
 };

@@ -1,5 +1,7 @@
-import { ArrowUpRight, CircleAlert, UserPlus } from "lucide-react";
+import { ArrowUpRight, CircleAlert, FolderOpen, UserPlus } from "lucide-react";
 
+import { useAgentFilesQuery } from "@/features/agent-files/hooks";
+import { FilesSection } from "@/features/agent-files/ui/FilesSection";
 import { MemorySection } from "@/features/agent-memory/ui/MemorySection";
 import { ManagedAgentLogPanel } from "@/features/agents/ui/ManagedAgentLogPanel";
 import {
@@ -15,6 +17,60 @@ import { Alert, AlertDescription, AlertTitle } from "@/shared/ui/alert";
 
 export function MemoryFocusedView({
   agentPubkey,
+  onOpenFiles,
+  variant = "focused",
+  viewerIsOwner,
+}: {
+  agentPubkey: string;
+  onOpenFiles?: () => void;
+  variant?: "embedded" | "focused";
+  viewerIsOwner: boolean | undefined;
+}) {
+  if (viewerIsOwner !== true) {
+    return null;
+  }
+
+  return (
+    <div className={cn("space-y-4", variant === "focused" && "pt-4")}>
+      <ProfileSectionGroup testId="user-profile-memories-section">
+        <MemorySection
+          agentPubkey={agentPubkey}
+          variant="grouped"
+          viewerIsOwner={viewerIsOwner}
+        />
+      </ProfileSectionGroup>
+      {onOpenFiles ? (
+        <SharedFilesIngress agentPubkey={agentPubkey} onOpen={onOpenFiles} />
+      ) : null}
+    </div>
+  );
+}
+
+function SharedFilesIngress({
+  agentPubkey,
+  onOpen,
+}: {
+  agentPubkey: string;
+  onOpen: () => void;
+}) {
+  const files = useAgentFilesQuery(agentPubkey).data?.files;
+
+  return (
+    <ProfileSectionGroup testId="user-profile-files-ingress">
+      <ProfileIngressRow
+        grouped
+        icon={FolderOpen}
+        label="Shared files"
+        onClick={onOpen}
+        testId="user-profile-open-files"
+        trailing={files ? String(files.length) : undefined}
+      />
+    </ProfileSectionGroup>
+  );
+}
+
+export function FilesFocusedView({
+  agentPubkey,
   variant = "focused",
   viewerIsOwner,
 }: {
@@ -28,12 +84,8 @@ export function MemoryFocusedView({
 
   return (
     <div className={variant === "focused" ? "pt-4" : undefined}>
-      <ProfileSectionGroup testId="user-profile-memories-section">
-        <MemorySection
-          agentPubkey={agentPubkey}
-          variant="grouped"
-          viewerIsOwner={viewerIsOwner}
-        />
+      <ProfileSectionGroup testId="user-profile-files-section">
+        <FilesSection agentPubkey={agentPubkey} viewerIsOwner={viewerIsOwner} />
       </ProfileSectionGroup>
     </div>
   );

@@ -356,6 +356,7 @@ type E2eConfig = {
     huddle?: MockHuddleSeed;
     agentListDelayMs?: number;
     agentMemory?: RawAgentMemoryListing | Record<string, RawAgentMemoryListing>;
+    agentFiles?: RawAgentFilesListing;
     addChannelMembersDelayMs?: number;
     /** Sequenced add-member failures. A string fails that call; null succeeds. */
     addChannelMembersErrors?: (string | null)[];
@@ -1023,6 +1024,34 @@ type RawEngramEntry = {
 type RawAgentMemoryListing = {
   core: RawEngramEntry | null;
   memories: RawEngramEntry[];
+  truncated: boolean;
+  fetchedAt: number;
+};
+
+type RawAgentFileEntry = {
+  path: string;
+  sha256: string;
+  size: number;
+  content: string | null;
+  eventId: string;
+  createdAt: number;
+};
+
+type RawAgentFileEdit = {
+  requestId: string;
+  path: string;
+  baseSha256: string;
+  content: string;
+  createdAt: number;
+  status: "pending" | "applied" | "conflict" | "declined";
+  sha256: string | null;
+  reason: string | null;
+  answeredAt: number | null;
+};
+
+type RawAgentFilesListing = {
+  files: RawAgentFileEntry[];
+  edits: RawAgentFileEdit[];
   truncated: boolean;
   fetchedAt: number;
 };
@@ -8934,6 +8963,58 @@ async function handleGetAgentMemory(
       };
 }
 
+const mockProposedAgentFileEdits: RawAgentFileEdit[] = [];
+
+function requireMockOwnedAgent(command: string, agentPubkey?: string) {
+  const pubkey = agentPubkey?.toLowerCase();
+  if (!pubkey) {
+    throw new Error(`mock ${command}: missing agent pubkey`);
+  }
+  if (
+    !mockManagedAgents.some((agent) => agent.pubkey.toLowerCase() === pubkey)
+  ) {
+    throw new Error(`mock ${command}: unmanaged agent ${pubkey}`);
+  }
+}
+
+async function handleGetAgentFiles(
+  args: { agentPubkey?: string },
+  config: E2eConfig | undefined,
+): Promise<RawAgentFilesListing> {
+  requireMockOwnedAgent("get_agent_files", args.agentPubkey);
+  const configured = config?.mock?.agentFiles;
+  return {
+    files: (configured?.files ?? []).map((file) => ({ ...file })),
+    edits: [...mockProposedAgentFileEdits, ...(configured?.edits ?? [])].map(
+      (edit) => ({ ...edit }),
+    ),
+    truncated: configured?.truncated ?? false,
+    fetchedAt: Math.floor(Date.now() / 1000),
+  };
+}
+
+async function handleProposeAgentFileEdit(args: {
+  agentPubkey?: string;
+  path: string;
+  baseSha256: string;
+  content: string;
+}): Promise<string> {
+  requireMockOwnedAgent("propose_agent_file_edit", args.agentPubkey);
+  const requestId = crypto.randomUUID().replaceAll("-", "").padEnd(64, "0");
+  mockProposedAgentFileEdits.unshift({
+    requestId,
+    path: args.path,
+    baseSha256: args.baseSha256,
+    content: args.content,
+    createdAt: Math.floor(Date.now() / 1000),
+    status: "pending",
+    sha256: null,
+    reason: null,
+    answeredAt: null,
+  });
+  return requestId;
+}
+
 async function handleListPersonas(): Promise<RawPersona[]> {
   return mockPersonas.map((persona) => ({ ...persona }));
 }
@@ -14081,6 +14162,15 @@ export function maybeInstallE2eTauriMocks() {
         return handleGetAgentMemory(
           (payload as Parameters<typeof handleGetAgentMemory>[0]) ?? {},
           activeConfig,
+        );
+      case "get_agent_files":
+        return handleGetAgentFiles(
+          (payload as Parameters<typeof handleGetAgentFiles>[0]) ?? {},
+          activeConfig,
+        );
+      case "propose_agent_file_edit":
+        return handleProposeAgentFileEdit(
+          payload as Parameters<typeof handleProposeAgentFileEdit>[0],
         );
       case "create_managed_agent":
         return handleCreateManagedAgent(

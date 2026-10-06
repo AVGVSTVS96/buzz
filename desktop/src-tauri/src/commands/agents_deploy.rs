@@ -111,6 +111,7 @@ fn build_launch_block_for_policy(
     if let Some(value) = record.max_turn_duration_seconds {
         policy_env.insert("BUZZ_ACP_MAX_TURN_DURATION".into(), value.to_string());
     }
+    crate::managed_agents::insert_shared_paths_env(&mut policy_env, &record.shared_paths);
     if let Some(value) = resolve_session_title(record.display_name.as_deref(), &record.name) {
         policy_env.insert(SESSION_TITLE_ENV_VAR.into(), value.clone());
         policy_env.insert(DISPLAY_NAME_ENV_VAR.into(), value);
@@ -363,6 +364,26 @@ mod tests {
         assert_eq!(launch["policy_env"]["BUZZ_ACP_AGENTS"], "4");
         assert_eq!(launch["policy_env"]["BUZZ_ACP_SESSION_POLICY"], "channel");
         assert_eq!(launch["owner_pubkey"], "owner-hex");
+    }
+
+    #[test]
+    fn launch_block_shares_paths_only_when_the_agent_has_some() {
+        let mut record = record();
+        let descriptor = EffectiveHarnessDescriptor {
+            command: "goose".into(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+
+        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex");
+        assert!(launch["policy_env"]["BUZZ_ACP_SHARE"].is_null());
+
+        record.shared_paths = vec!["PLANS".into(), "notes/today.md".into()];
+        let launch = build_launch_block(&record, &descriptor, &[], None, None, "owner-hex");
+        assert_eq!(
+            launch["policy_env"]["BUZZ_ACP_SHARE"],
+            "PLANS,notes/today.md"
+        );
     }
 
     #[test]

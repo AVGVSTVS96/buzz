@@ -255,6 +255,10 @@ pub struct UpdateManagedAgentRequest {
     pub harness_override: bool,
     #[serde(default)]
     pub agent_args: Option<Vec<String>>,
+    /// Absent = don't touch. Present = replace the shared paths (validated &
+    /// normalized server-side).
+    #[serde(default)]
+    pub shared_paths: Option<Vec<String>>,
     /// Accepted for wire compatibility; not applied to the stored record.
     /// The effective MCP command is always catalog-derived at spawn time.
     ///

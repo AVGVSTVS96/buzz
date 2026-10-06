@@ -371,6 +371,7 @@ pub fn build_managed_agent_summary<R: tauri::Runtime>(
         log_path,
         respond_to: record.respond_to,
         respond_to_allowlist: record.respond_to_allowlist.clone(),
+        shared_paths: record.shared_paths.clone(),
     })
 }
 
@@ -651,6 +652,7 @@ pub fn spawn_agent_child<R: tauri::Runtime>(
     if let Some(max_dur) = record.max_turn_duration_seconds {
         command.env("BUZZ_ACP_MAX_TURN_DURATION", max_dur.to_string());
     }
+    super::apply_shared_paths_env(&mut command, &record.shared_paths);
     let acp_n = super::acp_agents_value(effective_command, record.parallelism);
     command.env("BUZZ_ACP_AGENTS", acp_n);
     command.env("BUZZ_ACP_MULTIPLE_EVENT_HANDLING", "steer");

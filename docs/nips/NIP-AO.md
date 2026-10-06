@@ -110,6 +110,7 @@ Unknown `kind` values MUST be ignored.
 | `acp_write`        | Outbound ACP protocol frame (harness → model)            |
 | `turn_started`     | A new agent turn has begun                               |
 | `session_resolved` | Session completed or terminated                          |
+| `log`              | Harness log lines, sent only on owner request (§Logs)    |
 
 ### Control (`frame=control`)
 
@@ -122,8 +123,53 @@ The `content` field decrypts to:
 }
 ```
 
-The only defined control type is `cancel_turn`. Implementations MUST ignore
-events with unrecognized `type` values.
+Defined control types are `cancel_turn` and `log_follow` (§Logs).
+Implementations MUST ignore events with unrecognized `type` values.
+
+### Logs
+
+An owner reads a running agent's harness log over this channel; there is no
+other route to a remote agent's log. Nothing is sent unless the owner asks.
+
+The owner sends a control frame:
+
+```json
+{
+  "type":      "log_follow",
+  "requestId": "<uuid>",
+  "tail":      200
+}
+```
+
+`tail` (0–1000) is how many recent lines to send first. The agent MUST answer
+every `log_follow` from its owner with one `log` event carrying up to `tail`
+of its most recent lines, oldest first, dropping the oldest until the frame
+fits; it answers with `"lines": []` when it has none, so the owner can tell
+the agent supports logs. It then streams new lines as `log` events, at most
+one per second, until 60 seconds pass without another `log_follow`. Owners
+renew with `"tail": 0` (about every 30 seconds) for as long as they watch.
+
+```json
+{
+  "seq":       43,
+  "timestamp": "2026-10-06T12:00:41.500Z",
+  "kind":      "log",
+  "agentIndex": null,
+  "channelId": null,
+  "sessionId": null,
+  "turnId":    null,
+  "payload": {
+    "lines":   ["2026-10-06T12:00:41.200Z  INFO buzz_acp: connected to relay"],
+    "dropped": 0
+  }
+}
+```
+
+`lines` is REQUIRED: plain-text log records without trailing newlines, each
+at most 4096 bytes. `dropped` is OPTIONAL: lines skipped since the previous
+`log` event, so the owner can mark the gap. A `log` event MAY arrive inside a
+`batch` envelope. Lines MUST NOT contain decrypted observer payloads, keys, or
+tokens. Clients SHOULD keep `log` events out of session transcripts.
 
 ## Ephemerality Contract
 

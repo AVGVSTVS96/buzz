@@ -1287,7 +1287,7 @@ struct ObserverChunkKey {
     agent_index: Option<usize>,
 }
 
-/// Flush coalesced chunks before they exceed the NIP-44 plaintext limit (65,535 bytes).
+/// Flush coalesced chunks before they exceed the NIP-44 plaintext limit (65,408 bytes).
 /// Leave headroom for the JSON envelope wrapping the text. This is a SOFT pre-flush
 /// of raw text below the hard cap; `fit_observer_event_to_budget` (the final ceiling,
 /// keyed to `OBSERVER_MAX_PLAINTEXT_LEN` in buzz-core/observer.rs:25) is what actually
@@ -12806,5 +12806,82 @@ mod observer_payload_trim_tests {
         assert!(leaf.starts_with('…'));
         assert!(leaf.ends_with('…'));
         assert!(leaf.contains("[elided"));
+    }
+
+    const NIP_AO_MAX_PLAINTEXT_LEN: usize = 65_535;
+
+    async fn publish_through_relay_observer(
+        snapshot: Vec<observer::ObserverEvent>,
+    ) -> Vec<serde_json::Value> {
+        let agent = nostr::Keys::generate();
+        let owner = nostr::Keys::generate();
+        let (publisher, mut published) = RelayEventPublisher::test_pair();
+        let (_, closed) = tokio::sync::broadcast::channel(1);
+
+        run_relay_observer_publisher(
+            snapshot,
+            closed,
+            publisher,
+            agent.clone(),
+            agent.public_key().to_hex(),
+            owner.public_key().to_hex(),
+            owner.public_key(),
+        )
+        .await;
+
+        let mut frames = Vec::new();
+        while let Some(event) = published.recv().await {
+            frames.push(decrypt_observer_payload(&owner, &event).expect("decrypt published frame"));
+        }
+        frames
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_frame_at_spec_plaintext_max_is_trimmed_and_published() {
+        let mut event = event_with_payload("acp_read", serde_json::json!({ "body": "" }));
+        event.payload["body"] = "x"
+            .repeat(NIP_AO_MAX_PLAINTEXT_LEN - serialized(&event).len())
+            .into();
+        assert_eq!(serialized(&event).len(), NIP_AO_MAX_PLAINTEXT_LEN);
+
+        let frames = publish_through_relay_observer(vec![event]).await;
+
+        assert_eq!(frames.len(), 1, "the frame must be published, not dropped");
+        assert_eq!(frames[0]["kind"], "acp_read");
+        assert!(frames[0]["payload"]["body"]
+            .as_str()
+            .expect("body retained")
+            .contains("…[elided"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_batch_at_spec_plaintext_max_publishes_every_event() {
+        let first = event_with_payload(
+            "acp_read",
+            serde_json::json!({ "body": "a".repeat(30_000) }),
+        );
+        let mut second = event_with_payload("acp_read", serde_json::json!({ "body": "" }));
+        second.seq = 2;
+        let envelope_len = serialized_len(&batch_envelope(&[first.clone(), second.clone()]));
+        second.payload["body"] = "b".repeat(NIP_AO_MAX_PLAINTEXT_LEN - envelope_len).into();
+        assert_eq!(
+            serialized_len(&batch_envelope(&[first.clone(), second.clone()])),
+            NIP_AO_MAX_PLAINTEXT_LEN
+        );
+
+        let frames = publish_through_relay_observer(vec![first, second]).await;
+
+        let seqs: Vec<u64> = frames
+            .iter()
+            .flat_map(|frame| match frame["payload"]["events"].as_array() {
+                Some(inner) => inner.iter().map(|e| e["seq"].as_u64().unwrap()).collect(),
+                None => vec![frame["seq"].as_u64().unwrap()],
+            })
+            .collect();
+        assert_eq!(
+            seqs,
+            [1, 2],
+            "no event may be lost to an unencryptable batch"
+        );
     }
 }

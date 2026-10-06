@@ -57,14 +57,17 @@ function relayStatusToManagedStatus(
 
 export function buildChannelAgentSessionCandidates({
   channelMembers,
+  currentPubkey,
   managedAgents,
   relayAgents,
 }: {
   channelMembers?: ChannelMember[];
+  currentPubkey?: string;
   managedAgents: ManagedAgent[];
   relayAgents: RelayAgent[];
 }): ChannelAgentSessionAgent[] {
   const byPubkey = new Map<string, ChannelAgentSessionAgent>();
+  const viewer = currentPubkey ? normalizePubkey(currentPubkey) : null;
 
   for (const agent of relayAgents) {
     byPubkey.set(normalizePubkey(agent.pubkey), {
@@ -72,7 +75,10 @@ export function buildChannelAgentSessionCandidates({
       name: agent.name,
       status: relayStatusToManagedStatus(agent.status),
       agentSource: "relay",
-      canInterruptTurn: false,
+      canInterruptTurn:
+        viewer !== null &&
+        agent.ownerPubkey !== null &&
+        normalizePubkey(agent.ownerPubkey) === viewer,
       channelIds: agent.channelIds,
       channels: agent.channels,
     });

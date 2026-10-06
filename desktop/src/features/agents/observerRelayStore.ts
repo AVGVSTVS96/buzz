@@ -16,6 +16,7 @@ import {
   type ProjectChannelRequest,
 } from "@/features/projects/projectChannelRequest";
 import { normalizePubkey } from "@/shared/lib/pubkey";
+import { appendRemoteAgentLog, isAgentLogEvent } from "./remoteAgentLog";
 import { useQueryClient } from "@tanstack/react-query";
 import { agentConfigSurfaceQueryKey } from "@/features/agents/hooks";
 import type {
@@ -469,8 +470,18 @@ function unwrapObserverBatch(parsed: ObserverEvent): ObserverEvent[] {
 // plain frame, many for a batch envelope).
 function processLiveObserverEvents(
   agentPubkey: string,
-  events: readonly ObserverEvent[],
+  envelope: readonly ObserverEvent[],
 ) {
+  // Log lines feed the Logs view only; keeping them out of the journal stops a
+  // followed log from evicting Activity history.
+  for (const logEvent of envelope.filter(isAgentLogEvent)) {
+    appendRemoteAgentLog(agentPubkey, logEvent.payload);
+  }
+  const events = envelope.filter((event) => !isAgentLogEvent(event));
+  if (events.length === 0) {
+    return;
+  }
+
   // Commit the full envelope before dispatching synchronous specialized
   // callbacks. Those callbacks historically observed their triggering frame
   // in the raw/transcript stores; batching must preserve that visibility while
@@ -866,6 +877,9 @@ export async function ingestArchivedObserverEvents(
     try {
       const parsed = (await _decryptFn(event)) as ObserverEvent;
       for (const inner of unwrapObserverBatch(parsed)) {
+        if (isAgentLogEvent(inner)) {
+          continue;
+        }
         // Route archived events to the channel-scoped archive window (no cap)
         // rather than the per-agent live-relay store (MAX_OBSERVER_EVENTS cap).
         // Events without a channelId fall through to the live store so they

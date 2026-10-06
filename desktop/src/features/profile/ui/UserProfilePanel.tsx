@@ -12,7 +12,7 @@ import {
   useCreatePersonaMutation,
   useDeleteManagedAgentMutation,
   useDeletePersonaMutation,
-  useManagedAgentLogQuery,
+  useManagedAgentLog,
   useRelayAgentsQuery,
   useManagedAgentsQuery,
   usePersonasQuery,
@@ -30,7 +30,7 @@ import {
   buildInstanceInputForDefinition,
   resolveStartRuntimeForDefinition,
 } from "@/features/agents/lib/instanceInputForDefinition";
-import { describeLogFile } from "@/features/agents/ui/agentUi";
+import { describeAgentLog } from "@/features/agents/ui/agentUi";
 import { useAgentLifecycleActions } from "@/features/profile/ui/useAgentLifecycleActions";
 import {
   duplicatePersonaDialogState,
@@ -278,11 +278,8 @@ export function UserProfilePanel({
   const relayAgent = relayAgentsQuery.data?.find(
     (agent) => agent.pubkey.toLowerCase() === pubkeyLower,
   );
-  const managedAgentLogQuery = useManagedAgentLogQuery(
-    (view === "diagnostics" || view === "logs") &&
-      managedAgent?.backend.type === "local"
-      ? managedAgent.pubkey
-      : null,
+  const managedAgentLog = useManagedAgentLog(
+    view === "diagnostics" || view === "logs" ? managedAgent : null,
   );
   const isAgentByOaOwner = Boolean(
     usersBatchQuery.data?.profiles[pubkeyLower]?.isAgent,
@@ -326,8 +323,7 @@ export function UserProfilePanel({
     viewerIsOwner &&
     Boolean(effectivePubkey) &&
     canOpenAgentActivity(effectivePubkey);
-  const canOpenAgentLogs =
-    isOwner === true && managedAgent?.backend.type === "local";
+  const canOpenAgentLogs = isOwner === true && managedAgent !== undefined;
   const canInstantiateAgent =
     !pubkey &&
     isOwner === true &&
@@ -753,17 +749,16 @@ export function UserProfilePanel({
       relayAgent,
     });
   const isDiagnosticsLikeView = view === "diagnostics" || view === "logs";
-  const managedAgentLogContent = managedAgentLogQuery.data?.content ?? null;
   const logHeaderSubtitle =
     isDiagnosticsLikeView && managedAgent
-      ? `${managedAgent.name} · ${describeLogFile(managedAgent.logPath)}`
+      ? `${managedAgent.name} · ${describeAgentLog(managedAgent)}`
       : null;
   const { headerActions, headerLeftContent } = getUserProfilePanelHeaderContent(
     {
       agentSettingsMenu,
       effectivePubkey,
       ownerPubkey: profile?.ownerPubkey,
-      logCopyValue: isDiagnosticsLikeView ? managedAgentLogContent : null,
+      logCopyValue: isDiagnosticsLikeView ? managedAgentLog.content : null,
       logSubtitle: logHeaderSubtitle,
       onBack: () => setView("summary"),
       onEditAgent: canEditAgent ? handleEditAgent : undefined,
@@ -869,13 +864,9 @@ export function UserProfilePanel({
         <DiagnosticsFocusedView
           canOpenAgentLogs={canOpenAgentLogs}
           fields={diagnosticsFields}
-          logContent={managedAgentLogContent}
-          logError={
-            managedAgentLogQuery.error instanceof Error
-              ? managedAgentLogQuery.error
-              : null
-          }
-          logLoading={managedAgentLogQuery.isLoading}
+          logContent={managedAgentLog.content}
+          logError={managedAgentLog.error}
+          logLoading={managedAgentLog.isLoading}
           managedAgent={managedAgent}
         />
       ) : null}
@@ -893,13 +884,9 @@ export function UserProfilePanel({
         <DiagnosticsFocusedView
           canOpenAgentLogs={canOpenAgentLogs}
           fields={[]}
-          logContent={managedAgentLogContent}
-          logError={
-            managedAgentLogQuery.error instanceof Error
-              ? managedAgentLogQuery.error
-              : null
-          }
-          logLoading={managedAgentLogQuery.isLoading}
+          logContent={managedAgentLog.content}
+          logError={managedAgentLog.error}
+          logLoading={managedAgentLog.isLoading}
           managedAgent={managedAgent}
         />
       ) : null}

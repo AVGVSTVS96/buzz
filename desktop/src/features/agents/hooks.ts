@@ -70,6 +70,7 @@ import {
   updatePersona,
 } from "@/shared/api/tauriPersonas";
 import { teamsQueryKey } from "@/features/agents/teamHooks";
+import { useRemoteAgentLog } from "@/features/agents/remoteAgentLog";
 import type {
   AcpRuntime,
   AgentPersona,
@@ -905,6 +906,33 @@ export function useManagedAgentLogQuery(
     refetchInterval,
     ...managedAgentLogFocusRefetchPolicy,
   });
+}
+
+/**
+ * The harness log of a managed agent: read from disk for local agents and
+ * followed over the relay for remote ones.
+ */
+export function useManagedAgentLog(
+  agent: ManagedAgent | null | undefined,
+  lineCount = 120,
+) {
+  const isLocal = agent?.backend.type === "local";
+  const localLog = useManagedAgentLogQuery(
+    agent && isLocal ? agent.pubkey : null,
+    lineCount,
+  );
+  const remoteLog = useRemoteAgentLog(
+    agent && !isLocal ? agent.pubkey : null,
+    lineCount,
+  );
+  if (!isLocal) {
+    return remoteLog;
+  }
+  return {
+    content: localLog.data?.content ?? null,
+    error: localLog.error instanceof Error ? localLog.error : null,
+    isLoading: localLog.isLoading,
+  };
 }
 
 export const agentConfigSurfaceQueryKey = (pubkey: string) =>

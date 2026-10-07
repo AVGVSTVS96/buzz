@@ -2,7 +2,7 @@
 format: patch-md/v0.1
 id: redeploy-after-shutdown
 summary: Owners can deploy a remote agent again after shutting it down.
-baseline: 46dcc01873aae7ef926c2c9be7c5d360f296ac94
+baseline: c96d707f6efd359e6cfdc34bd93c8b5fb36f1d5d
 patch_file: redeploy-after-shutdown.patch
 patch_sha256: c927413a300e686ea17c2052e3babed24ea47f0432c12ae6142e40a1a8385c15
 ---

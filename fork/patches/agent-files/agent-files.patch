@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 7f28640f86a144b6dcaa42c5e138c8ed5e220316..6222d05bab6ecba5dcf6b51ac0e400a18ce9e154 100644
+index 15b190f8aed10479e46af312c8a473be962be3e8..f62d88b9ae7f78f1bd314a85262876591d7f8b86 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -962,6 +962,7 @@ dependencies = [
@@ -924,7 +924,7 @@ index 0000000000000000000000000000000000000000..9f5588917cf5359f5d9f66e7b7f8f2c9
 +    }
 +}
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index fc6401836b802486ba97c6840084d7873769def6..72a9294b94b214b50d1834ea69ba33f875873233 100644
+index d9927164fac825a68897615b6a90ddf836a94b5a..61841a7a4a606cd16123f892fff9eee839083532 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -8,6 +8,7 @@ mod acp;
@@ -935,7 +935,7 @@ index fc6401836b802486ba97c6840084d7873769def6..72a9294b94b214b50d1834ea69ba33f8
  mod filter;
  mod isolated_execution;
  mod log_tail;
-@@ -2843,6 +2844,34 @@ async fn run_harness(
+@@ -3051,6 +3052,34 @@ async fn run_harness(
          ));
      }
  
@@ -970,7 +970,7 @@ index fc6401836b802486ba97c6840084d7873769def6..72a9294b94b214b50d1834ea69ba33f8
      let runtime_start_nonce = std::env::var("BUZZ_MANAGED_AGENT_START_NONCE").unwrap_or_default();
      let dedup_mode = config.dedup_mode;
      let mut queue =
-@@ -4205,6 +4234,10 @@ async fn run_harness(
+@@ -4413,6 +4442,10 @@ async fn run_harness(
          handle.abort();
      }
  
@@ -981,7 +981,7 @@ index fc6401836b802486ba97c6840084d7873769def6..72a9294b94b214b50d1834ea69ba33f8
      // Graceful relay shutdown — sends WebSocket close frame and waits up to 5s
      // for the background task to finish, rather than aborting immediately (#40).
      relay.shutdown().await;
-@@ -9570,6 +9603,7 @@ mod build_mcp_servers_tests {
+@@ -10156,6 +10189,7 @@ mod build_mcp_servers_tests {
              agent_owner: None,
              no_base_prompt: false,
              base_prompt_content: None,
@@ -989,7 +989,7 @@ index fc6401836b802486ba97c6840084d7873769def6..72a9294b94b214b50d1834ea69ba33f8
          }
      }
  
-@@ -10667,6 +10701,7 @@ mod error_outcome_emission_tests {
+@@ -11253,6 +11287,7 @@ mod error_outcome_emission_tests {
              agent_owner: None,
              no_base_prompt: false,
              base_prompt_content: None,
@@ -2314,7 +2314,7 @@ index e7669c874b0e022d8817ff08f60bcf945bda9a8c..ae49523c91baad69809908c260d55f0c
  pub mod agent_turn_metric;
  /// Channel and membership enums shared across crates.
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index d22835db2d83ec144aa5d71c008c59bbb1de9c11..b1e75968758efd656f06ccd25f67b6a3c939af86 100644
+index 5cb515a5b23ff282970af7d0ef239f8c8591a688..445df1ea27503bd892c99fd447ab3259abd38f65 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
 @@ -1361,10 +1361,10 @@ async fn query_events_authed(

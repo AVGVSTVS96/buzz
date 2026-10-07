@@ -1,5 +1,5 @@
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index 834a5636698a3fd010df8b20cd23fba8ff67d537..fc6401836b802486ba97c6840084d7873769def6 100644
+index d1a04dfde4c4dccdeca72524e1c7946a9697d6a0..d9927164fac825a68897615b6a90ddf836a94b5a 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -10,6 +10,7 @@ mod edit_routing;
@@ -19,7 +19,7 @@ index 834a5636698a3fd010df8b20cd23fba8ff67d537..fc6401836b802486ba97c6840084d787
  use uuid::Uuid;
  
  /// Check if argv[1] matches a subcommand name, before any clap parsing.
-@@ -1632,6 +1633,7 @@ fn handle_relay_observer_control_event(
+@@ -1840,6 +1841,7 @@ fn handle_relay_observer_control_event(
      observer: Option<&observer::ObserverHandle>,
      owner_pubkey_hex: &str,
      event_publisher: RelayEventPublisher,
@@ -27,7 +27,7 @@ index 834a5636698a3fd010df8b20cd23fba8ff67d537..fc6401836b802486ba97c6840084d787
  ) {
      // Defense-in-depth: verify signature even though the relay already checked.
      if let Err(e) = buzz_core::verify_event(&event) {
-@@ -1685,6 +1687,16 @@ fn handle_relay_observer_control_event(
+@@ -1893,6 +1895,16 @@ fn handle_relay_observer_control_event(
                  event_publisher,
              );
          }
@@ -44,7 +44,7 @@ index 834a5636698a3fd010df8b20cd23fba8ff67d537..fc6401836b802486ba97c6840084d787
          _ => {
              tracing::debug!(payload = %payload, "ignoring unknown observer control frame");
          }
-@@ -2569,12 +2581,15 @@ async fn tokio_main() -> Result<()> {
+@@ -2777,12 +2789,15 @@ async fn tokio_main() -> Result<()> {
  
      // Stdout is the ACP transport when buzz-acp is launched as an agent command.
      // Keep every harness diagnostic on stderr so logging can never corrupt NDJSON.
@@ -65,7 +65,7 @@ index 834a5636698a3fd010df8b20cd23fba8ff67d537..fc6401836b802486ba97c6840084d787
          .init();
  
      let config = Config::from_cli().map_err(|e| anyhow::anyhow!("configuration error: {e}"))?;
-@@ -2615,7 +2630,7 @@ async fn tokio_main() -> Result<()> {
+@@ -2823,7 +2838,7 @@ async fn tokio_main() -> Result<()> {
          let _ = tx.send(());
      });
      let (ready_tx, mut ready_rx) = tokio::sync::oneshot::channel();
@@ -74,7 +74,7 @@ index 834a5636698a3fd010df8b20cd23fba8ff67d537..fc6401836b802486ba97c6840084d787
      tokio::pin!(harness);
      let result = tokio::select! {
          biased;
-@@ -2629,6 +2644,7 @@ async fn tokio_main() -> Result<()> {
+@@ -2837,6 +2852,7 @@ async fn tokio_main() -> Result<()> {
  
  async fn run_harness(
      config: Config,
@@ -82,7 +82,7 @@ index 834a5636698a3fd010df8b20cd23fba8ff67d537..fc6401836b802486ba97c6840084d787
      shutdown_tx: watch::Sender<()>,
      mut shutdown_rx: watch::Receiver<()>,
      startup_ready: tokio::sync::oneshot::Sender<()>,
-@@ -2755,6 +2771,7 @@ async fn run_harness(
+@@ -2963,6 +2979,7 @@ async fn run_harness(
      let mut relay_observer_control_rx = None;
      let mut relay_observer_publisher_task = None;
      let mut relay_observer_publisher = None;
@@ -90,7 +90,7 @@ index 834a5636698a3fd010df8b20cd23fba8ff67d537..fc6401836b802486ba97c6840084d787
      if config.relay_observer {
          if let (Some(observer), Some(owner_pubkey_hex)) =
              (observer.clone(), owner_cache.pubkey.clone())
-@@ -2815,6 +2832,7 @@ async fn run_harness(
+@@ -3023,6 +3040,7 @@ async fn run_harness(
      if let Some((observer, publisher, keys, agent_pubkey, owner_pubkey, owner)) =
          relay_observer_publisher.take()
      {
@@ -98,7 +98,7 @@ index 834a5636698a3fd010df8b20cd23fba8ff67d537..fc6401836b802486ba97c6840084d787
          relay_observer_publisher_task = Some(spawn_relay_observer_publisher(
              observer,
              publisher,
-@@ -3215,6 +3233,7 @@ async fn run_harness(
+@@ -3423,6 +3441,7 @@ async fn run_harness(
                                      observer.as_ref(),
                                      owner_hex,
                                      relay.event_publisher(),

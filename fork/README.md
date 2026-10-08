@@ -64,8 +64,9 @@ the fewest others.
   Beyond the tooling's own tests, it only checks the crates and desktop code
   the packages touch. CI provides the Postgres the relay's database-backed
   unit tests expect.
-- `.github/workflows/sync-upstream.yml` runs daily. It merges the latest
-  upstream commit and applies the series one package at a time, falling back
+- `.github/workflows/sync-upstream.yml` runs nightly. It merges the newest
+  upstream `main` commit whose CI passed (upstream has no nightlies, and its
+  `main` is often red right after a merge) and applies the series one package at a time, falling back
   to a 3-way merge when only a package's context moved. When a package still
   doesn't apply, Claude heals that package alone, against the tree with the
   earlier ones applied, and the result is snapshotted before the next one, so

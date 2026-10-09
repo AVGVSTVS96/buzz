@@ -503,7 +503,7 @@ index 01b1ddc8828638d2cb5e1531cb50336c9067e406..e141975a79ddff8009846722e06cac29
  pub use agent_logs::*;
  pub use agent_metric_archive::*;
 diff --git a/desktop/src-tauri/src/egress_guard_tests.rs b/desktop/src-tauri/src/egress_guard_tests.rs
-index 5511aa8d72d994599650e54b1a6a9372fd020cea..8fd906320a493796b3b6985eb8a191e094d2fcab 100644
+index c2d63b3cfffbb2735b323ca81450f097c7610456..2843e5305202ce31b2f71ac295e86b954eaa071c 100644
 --- a/desktop/src-tauri/src/egress_guard_tests.rs
 +++ b/desktop/src-tauri/src/egress_guard_tests.rs
 @@ -295,6 +295,9 @@ const EVENTS_INVENTORY: &[(&str, usize, usize)] = &[
@@ -513,11 +513,11 @@ index 5511aa8d72d994599650e54b1a6a9372fd020cea..8fd906320a493796b3b6985eb8a191e0
 +    // Recording stub relay in the connect-agent tests; production publish
 +    // goes through the guarded boundary-1 funnel via the flush loop.
 +    ("src/commands/agent_connect_tests.rs", 1, 0),
-     // Admin API mutations: every JSON body passes the guard in
-     // `helpers::send_admin_mutation` (injection tests in admin `direct_action_tests.rs`).
-     // The `/events/{id}/delete` route + its path test and the native delete
+     // Admin API: every JSON body passes the guard in
+     // `helpers::send_admin_mutation` (injection tests in admin `direct_action_tests.rs`),
+     // and every admin API request URL passes it before signing or sending:
 diff --git a/desktop/src-tauri/src/lib.rs b/desktop/src-tauri/src/lib.rs
-index e9c96a2fe314e96d38bd28714ecfaee5fde2ecfc..9208898ecd77cc3941102b6266d8c1d3f97f61a1 100644
+index 4497eb78e563b33601290174b8d176f48ca2b099..330724e8ccd36a8eb3f70d739583652606e19cc3 100644
 --- a/desktop/src-tauri/src/lib.rs
 +++ b/desktop/src-tauri/src/lib.rs
 @@ -712,6 +712,8 @@ pub fn run() {

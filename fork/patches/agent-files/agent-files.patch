@@ -3684,7 +3684,7 @@ index 4cf1bf49e4c66458538109774360eb0b6eacba49..675b6bd40294c547985ccd460030e70d
          name_pool: vec![],
      };
 diff --git a/desktop/src-tauri/src/lib.rs b/desktop/src-tauri/src/lib.rs
-index 9208898ecd77cc3941102b6266d8c1d3f97f61a1..d37ba5a6bbc108d50115da5ebb32d068675e8754 100644
+index 330724e8ccd36a8eb3f70d739583652606e19cc3..0ed607770310a253513440b794e779ef45b5e191 100644
 --- a/desktop/src-tauri/src/lib.rs
 +++ b/desktop/src-tauri/src/lib.rs
 @@ -853,6 +853,8 @@ pub fn run() {
@@ -5568,10 +5568,10 @@ index 3460494a44bc463b9eeefe7c21682761f24af7b1..008323677c1f77303ef8878563f391a4
    effortLevel?: string | null;
  };
 diff --git a/desktop/src/testing/e2eBridge.ts b/desktop/src/testing/e2eBridge.ts
-index 4e3b0f6d2b98f090d89e47288197b72e34636c38..a58ed87b415ce21b6e0f0a5c51783cf1855c0c7a 100644
+index e03c85d40d4d8b203afff1a2bbc7877b3d4dd453..92642effd2731a9f245e127aceb9f73e67719a75 100644
 --- a/desktop/src/testing/e2eBridge.ts
 +++ b/desktop/src/testing/e2eBridge.ts
-@@ -356,6 +356,7 @@ type E2eConfig = {
+@@ -361,6 +361,7 @@ type E2eConfig = {
      huddle?: MockHuddleSeed;
      agentListDelayMs?: number;
      agentMemory?: RawAgentMemoryListing | Record<string, RawAgentMemoryListing>;
@@ -5579,7 +5579,7 @@ index 4e3b0f6d2b98f090d89e47288197b72e34636c38..a58ed87b415ce21b6e0f0a5c51783cf1
      addChannelMembersDelayMs?: number;
      /** Sequenced add-member failures. A string fails that call; null succeeds. */
      addChannelMembersErrors?: (string | null)[];
-@@ -1027,6 +1028,34 @@ type RawAgentMemoryListing = {
+@@ -1032,6 +1033,34 @@ type RawAgentMemoryListing = {
    fetchedAt: number;
  };
  
@@ -5614,7 +5614,7 @@ index 4e3b0f6d2b98f090d89e47288197b72e34636c38..a58ed87b415ce21b6e0f0a5c51783cf1
  type RawCommandAvailability = {
    command: string;
    resolved_path: string | null;
-@@ -8934,6 +8963,58 @@ async function handleGetAgentMemory(
+@@ -8939,6 +8968,58 @@ async function handleGetAgentMemory(
        };
  }
  
@@ -5673,7 +5673,7 @@ index 4e3b0f6d2b98f090d89e47288197b72e34636c38..a58ed87b415ce21b6e0f0a5c51783cf1
  async function handleListPersonas(): Promise<RawPersona[]> {
    return mockPersonas.map((persona) => ({ ...persona }));
  }
-@@ -14082,6 +14163,15 @@ export function maybeInstallE2eTauriMocks() {
+@@ -14088,6 +14169,15 @@ export function maybeInstallE2eTauriMocks() {
            (payload as Parameters<typeof handleGetAgentMemory>[0]) ?? {},
            activeConfig,
          );
@@ -5838,7 +5838,7 @@ index 0000000000000000000000000000000000000000..15194dd9248da1109399f33b3a071fbd
 +  await capture(page, "06-edit-conflict");
 +});
 diff --git a/desktop/tests/helpers/bridge.ts b/desktop/tests/helpers/bridge.ts
-index 69bdb6bb0dadd68e0c74c07ff29d43d5a10942eb..b2edd93d87371ee4579d2b13f986975cbd8a7db6 100644
+index c074cc419f841cfa278cc3ab77c9bfb68d70b241..b206d300930b401ba69f1c4065273d50b55bd4e0 100644
 --- a/desktop/tests/helpers/bridge.ts
 +++ b/desktop/tests/helpers/bridge.ts
 @@ -129,6 +129,34 @@ export type MockAgentMemoryListing = {
@@ -5876,7 +5876,7 @@ index 69bdb6bb0dadd68e0c74c07ff29d43d5a10942eb..b2edd93d87371ee4579d2b13f986975c
  /** Result returned by the `install_acp_runtime` mock command. */
  type MockInstallRuntimeResult = {
    success: boolean;
-@@ -216,6 +244,8 @@ type MockBridgeOptions = {
+@@ -221,6 +249,8 @@ type MockBridgeOptions = {
     * listing for any managed agent, or a pubkey-keyed record for per-agent data.
     */
    agentMemory?: MockAgentMemoryListing | Record<string, MockAgentMemoryListing>;

@@ -459,7 +459,9 @@ pub enum IngestError {
 /// `restricted:` wire text the ephemeral path uses. A lookup outage is a
 /// server fault and fails closed as `error:`/500 — a Postgres blip can
 /// neither admit a write past the fence nor read as a client mistake.
-fn map_serving_fence_state(active: Result<bool, buzz_db::DbError>) -> Result<(), IngestError> {
+pub(crate) fn map_serving_fence_state(
+    active: Result<bool, buzz_db::DbError>,
+) -> Result<(), IngestError> {
     match active {
         Ok(true) => Ok(()),
         Ok(false) => Err(IngestError::Rejected(
@@ -2409,6 +2411,8 @@ async fn ingest_event_inner(
         ));
     }
 
+    // Typing indicators (kind:20002) never reach this gate: the HTTP bridge
+    // routes them to `publish_http_typing` before ingest.
     if auth.is_http() && (kind_u32 == KIND_GIFT_WRAP || kind_u32 == KIND_PRESENCE_UPDATE) {
         return Err(IngestError::Rejected(format!(
             "invalid: kind {kind_u32} is only accepted via WebSocket"

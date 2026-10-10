@@ -1,5 +1,5 @@
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index ac387817f6aba36ca2ed15c712b468e269c2ec1a..d1a04dfde4c4dccdeca72524e1c7946a9697d6a0 100644
+index 07dc4cce5596e56e1ff0cac9c4942cd2cc68b0db..73856220958bf894b57d86b24c000fa5ecc2e7a9 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -1495,7 +1495,7 @@ struct ObserverChunkKey {

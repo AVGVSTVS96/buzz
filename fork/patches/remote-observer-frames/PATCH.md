@@ -2,9 +2,9 @@
 format: patch-md/v0.1
 id: remote-observer-frames
 summary: Observer frames near the NIP-AO size limit reach the owner instead of failing NIP-44 encryption and vanishing from Activity.
-baseline: 16eb0b6685a9ea5cd06275aed172903dac69f225
+baseline: 326e2301cb4b1edcb8a72d01ac4b19a83545365f
 patch_file: remote-observer-frames.patch
-patch_sha256: e01b4898fc4467888cc9d3849546d470b22c6155d346ca381e0e5650347105a3
+patch_sha256: 14de5e74ef6c244559acb8547fb44c2f79aefd1661e8d9dafae285e7e073855a
 ---
 
 ## Intent

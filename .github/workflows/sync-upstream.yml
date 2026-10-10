@@ -38,6 +38,8 @@ jobs:
       - name: Resolve one upstream source commit
         id: resolve
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git remote add upstream "https://github.com/${UPSTREAM}.git"
@@ -46,7 +48,10 @@ jobs:
             source_sha="$(git rev-parse "${SOURCE_OVERRIDE}^{commit}")"
             git merge-base --is-ancestor "$source_sha" refs/remotes/upstream/main
           else
-            source_sha="$(git rev-parse 'refs/remotes/upstream/main^{commit}')"
+            # Upstream has no nightlies and its main is often red after a
+            # merge, so the nightly takes the newest main commit its CI passed.
+            source_sha="$(gh run list -R "$UPSTREAM" -w ci.yml -b main -e push -s success -L 1 --json headSha -q '.[0].headSha')"
+            git merge-base --is-ancestor "$source_sha" refs/remotes/upstream/main
           fi
 
           # Sync commits merge the source as a second parent, so ancestry is

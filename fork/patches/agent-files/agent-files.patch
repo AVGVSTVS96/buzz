@@ -25,10 +25,10 @@ index 244bae144ed215aaefff252660cc28bfd61f84be..2e827007d0193d5402e4efb46d417bbf
  # has a #[cfg(not(unix))] fallback in acp.rs.
  [target.'cfg(unix)'.dependencies]
 diff --git a/crates/buzz-acp/src/config.rs b/crates/buzz-acp/src/config.rs
-index 24d59c2c93338822a27243ee06c67206600342a4..af200fffc4d71b60c20b597f35ad3942cf5afe4a 100644
+index da930dda454ac3a5a32c39bc7b5e6738acd2c780..d4558218b349f317d6cd653c42c801d337378d27 100644
 --- a/crates/buzz-acp/src/config.rs
 +++ b/crates/buzz-acp/src/config.rs
-@@ -530,6 +530,13 @@ pub struct CliArgs {
+@@ -532,6 +532,13 @@ pub struct CliArgs {
      /// ignored (the watermark stays at startup time).
      #[arg(long, env = "BUZZ_ACP_REPLAY_FLOOR")]
      pub replay_floor: Option<u64>,
@@ -42,7 +42,7 @@ index 24d59c2c93338822a27243ee06c67206600342a4..af200fffc4d71b60c20b597f35ad3942
  }
  
  /// Merged NIP-01 subscription filter for a single channel.
-@@ -634,6 +641,10 @@ pub struct Config {
+@@ -636,6 +643,10 @@ pub struct Config {
      /// `from_cli()`. `None` when using the compiled-in default or when
      /// `--no-base-prompt` is set.
      pub base_prompt_content: Option<String>,
@@ -53,7 +53,7 @@ index 24d59c2c93338822a27243ee06c67206600342a4..af200fffc4d71b60c20b597f35ad3942
  }
  
  /// Maximum length, in characters, of a session title sent to the adapter.
-@@ -1155,6 +1166,14 @@ impl Config {
+@@ -1157,6 +1168,14 @@ impl Config {
  
          validate_multiple_event_handling(args.multiple_event_handling, args.dedup)?;
  
@@ -68,7 +68,7 @@ index 24d59c2c93338822a27243ee06c67206600342a4..af200fffc4d71b60c20b597f35ad3942
          let config = Config {
              keys,
              relay_url: args.relay_url,
-@@ -1209,6 +1228,7 @@ impl Config {
+@@ -1211,6 +1230,7 @@ impl Config {
              agent_owner: args.agent_owner.map(|s| s.trim().to_ascii_lowercase()),
              no_base_prompt: args.no_base_prompt,
              base_prompt_content,
@@ -76,7 +76,7 @@ index 24d59c2c93338822a27243ee06c67206600342a4..af200fffc4d71b60c20b597f35ad3942
          };
  
          Ok(config)
-@@ -1587,6 +1607,7 @@ mod tests {
+@@ -1589,6 +1609,7 @@ mod tests {
              agent_owner: None,
              no_base_prompt: false,
              base_prompt_content: None,
@@ -84,7 +84,7 @@ index 24d59c2c93338822a27243ee06c67206600342a4..af200fffc4d71b60c20b597f35ad3942
          }
      }
  
-@@ -2972,6 +2993,45 @@ channels = "ALL"
+@@ -2974,6 +2995,45 @@ channels = "ALL"
      const TEST_PRIVATE_KEY: &str =
          "0000000000000000000000000000000000000000000000000000000000000001";
  
@@ -924,7 +924,7 @@ index 0000000000000000000000000000000000000000..9f5588917cf5359f5d9f66e7b7f8f2c9
 +    }
 +}
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index e6dc657b8bfe8f968c5103018978b38b62a300e2..7383a685fc5dc7e413b01d4860046fe4149cddca 100644
+index 3e51ad937a364fa179c1d246f046e644997f6b9c..73854fa69f1b7d54532d21230246b732d7796347 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -8,6 +8,7 @@ mod acp;
@@ -970,7 +970,7 @@ index e6dc657b8bfe8f968c5103018978b38b62a300e2..7383a685fc5dc7e413b01d4860046fe4
      let runtime_start_nonce = std::env::var("BUZZ_MANAGED_AGENT_START_NONCE").unwrap_or_default();
      let dedup_mode = config.dedup_mode;
      let mut queue =
-@@ -4413,6 +4442,10 @@ async fn run_harness(
+@@ -4414,6 +4443,10 @@ async fn run_harness(
          handle.abort();
      }
  
@@ -981,7 +981,7 @@ index e6dc657b8bfe8f968c5103018978b38b62a300e2..7383a685fc5dc7e413b01d4860046fe4
      // Graceful relay shutdown — sends WebSocket close frame and waits up to 5s
      // for the background task to finish, rather than aborting immediately (#40).
      relay.shutdown().await;
-@@ -10156,6 +10189,7 @@ mod build_mcp_servers_tests {
+@@ -10164,6 +10197,7 @@ mod build_mcp_servers_tests {
              agent_owner: None,
              no_base_prompt: false,
              base_prompt_content: None,
@@ -989,7 +989,7 @@ index e6dc657b8bfe8f968c5103018978b38b62a300e2..7383a685fc5dc7e413b01d4860046fe4
          }
      }
  
-@@ -11253,6 +11287,7 @@ mod error_outcome_emission_tests {
+@@ -11261,6 +11295,7 @@ mod error_outcome_emission_tests {
              agent_owner: None,
              no_base_prompt: false,
              base_prompt_content: None,
@@ -2225,7 +2225,7 @@ index 7f38347f80804128dcb43845bed0821ab7bfd85c..9f81c0fb65a4b44907ea40e1199f43bd
  }
  
 diff --git a/crates/buzz-core/src/kind.rs b/crates/buzz-core/src/kind.rs
-index 32d8959fb6917573b8399d913bad195a3d21c08a..60a51cb25dd0c9f07997b2e9e2166dd6bd8264bb 100644
+index 332e97d958996686ec079ceed9d096f8baaa8a37..9c18719529aca52da0a7ff656057179598be82fb 100644
 --- a/crates/buzz-core/src/kind.rs
 +++ b/crates/buzz-core/src/kind.rs
 @@ -93,6 +93,40 @@ pub const KIND_AGENT_PROFILE: u32 = 10100;
@@ -2269,7 +2269,7 @@ index 32d8959fb6917573b8399d913bad195a3d21c08a..60a51cb25dd0c9f07997b2e9e2166dd6
  /// NIP-ER: Event Reminder (parameterized replaceable, author-only).
  ///
  /// Encrypted, author-only reminder addressed by `(pubkey, kind, d_tag)`. The
-@@ -659,6 +693,9 @@ pub const ALL_KINDS: &[u32] = &[
+@@ -662,6 +696,9 @@ pub const ALL_KINDS: &[u32] = &[
      KIND_FILE_METADATA,
      KIND_AGENT_PROFILE,
      KIND_AGENT_ENGRAM,
@@ -2279,7 +2279,7 @@ index 32d8959fb6917573b8399d913bad195a3d21c08a..60a51cb25dd0c9f07997b2e9e2166dd6
      KIND_EVENT_REMINDER,
      KIND_PERSONA,
      KIND_TEAM,
-@@ -872,6 +909,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 300
+@@ -876,6 +913,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 300
  const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 30177 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_TEAM_CATALOG)); // 30178 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_PRIVATE_MANAGED_AGENT)); // 30179 ∈ 30000–39999
@@ -2287,7 +2287,7 @@ index 32d8959fb6917573b8399d913bad195a3d21c08a..60a51cb25dd0c9f07997b2e9e2166dd6
  const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999
-@@ -899,6 +937,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
+@@ -903,6 +941,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(!is_replaceable(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(!is_parameterized_replaceable(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(KIND_AGENT_TURN_METRIC <= u16::MAX as u32);
@@ -2361,7 +2361,7 @@ index 4dca0beb7f62540502dc0116a8d5d90c97bf2043..8c98f447467a4051e89f7f8c7fddbee8
          return;
      }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index 49b906ee3d8b7009c7af5143ee84d6b22bc98038..288611a427b8897455140ffc9c6736a5658befa6 100644
+index 564ad3d00dd4c82cf5aa2558f5f8cb6553c6a090..172fd2ad1edde9cfaff91618f952eb824463eb0f 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2547,7 +2547,7 @@ index 49b906ee3d8b7009c7af5143ee84d6b22bc98038..288611a427b8897455140ffc9c6736a5
  /// Enforce the `shared`-tag shape shared by every kind in
  /// [`buzz_core::kind::SHARED_GATED_KINDS`]: at most one `shared` tag, and if
  /// present it must be exactly `["shared", "true"]`.
-@@ -2962,11 +3049,16 @@ async fn ingest_event_inner(
+@@ -2966,11 +3053,16 @@ async fn ingest_event_inner(
          validate_diff_event(&event).map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
      }
  
@@ -2565,7 +2565,7 @@ index 49b906ee3d8b7009c7af5143ee84d6b22bc98038..288611a427b8897455140ffc9c6736a5
      if kind_u32 == KIND_AGENT_TURN_METRIC {
          validate_agent_turn_metric_envelope(&event)
              .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-@@ -4221,6 +4313,9 @@ mod postgres_tests {
+@@ -4225,6 +4317,9 @@ mod postgres_tests {
              KIND_EMOJI_SET,
              KIND_EMOJI_LIST,
              KIND_AGENT_ENGRAM,
@@ -2575,7 +2575,7 @@ index 49b906ee3d8b7009c7af5143ee84d6b22bc98038..288611a427b8897455140ffc9c6736a5
              KIND_AGENT_PROFILE,
              KIND_PERSONA,
              KIND_TEAM,
-@@ -4272,6 +4367,27 @@ mod postgres_tests {
+@@ -4276,6 +4371,27 @@ mod postgres_tests {
          );
      }
  
@@ -2603,7 +2603,7 @@ index 49b906ee3d8b7009c7af5143ee84d6b22bc98038..288611a427b8897455140ffc9c6736a5
      #[test]
      fn nip51_and_nip65_lists_are_global_only() {
          for kind in [
-@@ -4739,6 +4855,118 @@ mod postgres_tests {
+@@ -4743,6 +4859,118 @@ mod postgres_tests {
          assert!(err.contains("base64"), "got: {err}");
      }
  

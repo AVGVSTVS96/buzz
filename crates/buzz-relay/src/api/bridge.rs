@@ -686,6 +686,7 @@ async fn handle_channel_window_filter(
     raw: &Value,
     filter: &nostr::Filter,
     accessible_channels: &[uuid::Uuid],
+    reader_pubkey_bytes: &[u8],
     events: &mut Vec<Value>,
 ) -> Result<(), (StatusCode, Json<Value>)> {
     use buzz_core::kind::{KIND_THREAD_SUMMARY, KIND_WINDOW_BOUNDS};
@@ -790,7 +791,12 @@ async fn handle_channel_window_filter(
                 }
                 // Deletions can be stored channel-less; access-check instead
                 // of channel-constraining so they aren't silently dropped.
-                if !event_in_accessible_channel(&se, accessible_channels) {
+                if !event_in_accessible_channel(&se, accessible_channels)
+                    || !crate::handlers::req::event_visible_to_reader(
+                        &se.event,
+                        reader_pubkey_bytes,
+                    )
+                {
                     continue;
                 }
                 hop_ids.push(se.event.id.to_hex());
@@ -1501,6 +1507,7 @@ async fn query_events_authed(
             raw,
             filter,
             &accessible_channels,
+            &pubkey_bytes,
             &mut events,
         )
         .await?;
@@ -8396,7 +8403,9 @@ pub(crate) mod postgres_tests {
                 "CREATE SCHEMA {schema}; \
                  CREATE TABLE {schema}.users (LIKE public.users INCLUDING ALL); \
                  CREATE TABLE {schema}.community_bans (LIKE public.community_bans INCLUDING ALL); \
-                 CREATE TABLE {schema}.relay_members (LIKE public.relay_members INCLUDING ALL);"
+                 CREATE TABLE {schema}.relay_members (LIKE public.relay_members INCLUDING ALL); \
+                 CREATE TABLE {schema}.join_policy_acceptances \
+                     (LIKE public.join_policy_acceptances INCLUDING ALL);"
             )))
             .execute(state.db.pool())
             .await

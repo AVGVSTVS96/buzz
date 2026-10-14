@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index b4986b67b40117f6568a23669aef5acb414b7a0b..456ca80de89198e23b64b68ccab93465c79c006e 100644
+index 0a924f4e36f9d1c2ebc93692f11d74c961f2e428..dea628bd4759c37f9b3a67d1a685141167a18b23 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -962,6 +962,7 @@ dependencies = [
@@ -2225,7 +2225,7 @@ index 7f38347f80804128dcb43845bed0821ab7bfd85c..9f81c0fb65a4b44907ea40e1199f43bd
  }
  
 diff --git a/crates/buzz-core/src/kind.rs b/crates/buzz-core/src/kind.rs
-index 332e97d958996686ec079ceed9d096f8baaa8a37..9c18719529aca52da0a7ff656057179598be82fb 100644
+index db05ea922f135be69a3d9224c7348e59013022c7..7f6d02c0d26faaa602d0cf8f423f2a12ba0866cb 100644
 --- a/crates/buzz-core/src/kind.rs
 +++ b/crates/buzz-core/src/kind.rs
 @@ -93,6 +93,40 @@ pub const KIND_AGENT_PROFILE: u32 = 10100;
@@ -2269,7 +2269,7 @@ index 332e97d958996686ec079ceed9d096f8baaa8a37..9c18719529aca52da0a7ff6560571795
  /// NIP-ER: Event Reminder (parameterized replaceable, author-only).
  ///
  /// Encrypted, author-only reminder addressed by `(pubkey, kind, d_tag)`. The
-@@ -662,6 +696,9 @@ pub const ALL_KINDS: &[u32] = &[
+@@ -691,6 +725,9 @@ pub const ALL_KINDS: &[u32] = &[
      KIND_FILE_METADATA,
      KIND_AGENT_PROFILE,
      KIND_AGENT_ENGRAM,
@@ -2279,7 +2279,7 @@ index 332e97d958996686ec079ceed9d096f8baaa8a37..9c18719529aca52da0a7ff6560571795
      KIND_EVENT_REMINDER,
      KIND_PERSONA,
      KIND_TEAM,
-@@ -876,6 +913,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 300
+@@ -905,6 +942,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 300
  const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 30177 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_TEAM_CATALOG)); // 30178 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_PRIVATE_MANAGED_AGENT)); // 30179 ∈ 30000–39999
@@ -2287,7 +2287,7 @@ index 332e97d958996686ec079ceed9d096f8baaa8a37..9c18719529aca52da0a7ff6560571795
  const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999
-@@ -903,6 +941,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
+@@ -932,6 +970,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(!is_replaceable(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(!is_parameterized_replaceable(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(KIND_AGENT_TURN_METRIC <= u16::MAX as u32);
@@ -2314,10 +2314,10 @@ index e7669c874b0e022d8817ff08f60bcf945bda9a8c..ae49523c91baad69809908c260d55f0c
  pub mod agent_turn_metric;
  /// Channel and membership enums shared across crates.
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index d631df7500326e0ebe72c35138442b91c2999b69..bbcbb48681fc30c52ba25fd4c9ac853714d8bc9b 100644
+index b762af391d18e59b76b4fc2c1eff8c6d3a2a99b0..de0386f130c0edc75c7bc7494bd873156b776f2f 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
-@@ -1390,10 +1390,10 @@ async fn query_events_authed(
+@@ -1396,10 +1396,10 @@ async fn query_events_authed(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2330,7 +2330,7 @@ index d631df7500326e0ebe72c35138442b91c2999b69..bbcbb48681fc30c52ba25fd4c9ac8537
          ));
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
-@@ -2010,10 +2010,10 @@ async fn count_events_authed(
+@@ -2017,10 +2017,10 @@ async fn count_events_authed(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2361,7 +2361,7 @@ index 4dca0beb7f62540502dc0116a8d5d90c97bf2043..8c98f447467a4051e89f7f8c7fddbee8
          return;
      }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index 564ad3d00dd4c82cf5aa2558f5f8cb6553c6a090..172fd2ad1edde9cfaff91618f952eb824463eb0f 100644
+index 5aad9689aa8682da5bd6337b42d477a415239678..7c769bb16989ee33eff66a712a97ad62ad5e1067 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2547,7 +2547,7 @@ index 564ad3d00dd4c82cf5aa2558f5f8cb6553c6a090..172fd2ad1edde9cfaff91618f952eb82
  /// Enforce the `shared`-tag shape shared by every kind in
  /// [`buzz_core::kind::SHARED_GATED_KINDS`]: at most one `shared` tag, and if
  /// present it must be exactly `["shared", "true"]`.
-@@ -2966,11 +3053,16 @@ async fn ingest_event_inner(
+@@ -2983,11 +3070,16 @@ async fn ingest_event_inner(
          validate_diff_event(&event).map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
      }
  
@@ -2565,7 +2565,7 @@ index 564ad3d00dd4c82cf5aa2558f5f8cb6553c6a090..172fd2ad1edde9cfaff91618f952eb82
      if kind_u32 == KIND_AGENT_TURN_METRIC {
          validate_agent_turn_metric_envelope(&event)
              .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-@@ -4225,6 +4317,9 @@ mod postgres_tests {
+@@ -4242,6 +4334,9 @@ mod postgres_tests {
              KIND_EMOJI_SET,
              KIND_EMOJI_LIST,
              KIND_AGENT_ENGRAM,
@@ -2575,7 +2575,7 @@ index 564ad3d00dd4c82cf5aa2558f5f8cb6553c6a090..172fd2ad1edde9cfaff91618f952eb82
              KIND_AGENT_PROFILE,
              KIND_PERSONA,
              KIND_TEAM,
-@@ -4276,6 +4371,27 @@ mod postgres_tests {
+@@ -4293,6 +4388,27 @@ mod postgres_tests {
          );
      }
  
@@ -2603,7 +2603,7 @@ index 564ad3d00dd4c82cf5aa2558f5f8cb6553c6a090..172fd2ad1edde9cfaff91618f952eb82
      #[test]
      fn nip51_and_nip65_lists_are_global_only() {
          for kind in [
-@@ -4743,6 +4859,118 @@ mod postgres_tests {
+@@ -4760,6 +4876,118 @@ mod postgres_tests {
          assert!(err.contains("base64"), "got: {err}");
      }
  
@@ -2723,7 +2723,7 @@ index 564ad3d00dd4c82cf5aa2558f5f8cb6553c6a090..172fd2ad1edde9cfaff91618f952eb82
      fn not_before_accepts_zero() {
          assert_eq!(validate_not_before("0"), Ok(0));
 diff --git a/crates/buzz-relay/src/handlers/req.rs b/crates/buzz-relay/src/handlers/req.rs
-index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c7325027c2e0 100644
+index 7572774b3ac9c583dfcad3932ffa888b1c859afc..ce35959e2b76fa6a73b792c0dab53d4447e829d7 100644
 --- a/crates/buzz-relay/src/handlers/req.rs
 +++ b/crates/buzz-relay/src/handlers/req.rs
 @@ -7,7 +7,7 @@ use tracing::{debug, warn};
@@ -2732,7 +2732,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
  use buzz_core::kind::{
 -    is_unshared_gated_event, AUTHOR_ONLY_KINDS, KIND_AGENT_ENGRAM, KIND_AGENT_TURN_METRIC,
 +    is_unshared_gated_event, AGENT_PAIR_KINDS, AUTHOR_ONLY_KINDS, KIND_AGENT_TURN_METRIC,
-     KIND_DM_VISIBILITY, KIND_HUDDLE_LIVENESS, P_GATED_KINDS, RESULT_GATED_KINDS,
+     KIND_DELETION, KIND_DM_VISIBILITY, KIND_HUDDLE_LIVENESS, P_GATED_KINDS, RESULT_GATED_KINDS,
      SHARED_GATED_KINDS,
  };
 @@ -262,10 +262,10 @@ pub async fn handle_req(
@@ -2807,7 +2807,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
              return true;
          }
  
-@@ -1747,6 +1748,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
+@@ -1751,6 +1752,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -2818,7 +2818,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      use nostr::{Alphabet, Filter, SingleLetterTag};
  
      fn lifecycle_conn() -> (
-@@ -3067,7 +3072,7 @@ mod tests {
+@@ -3085,7 +3090,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2827,7 +2827,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      #[test]
-@@ -3079,7 +3084,7 @@ mod tests {
+@@ -3097,7 +3102,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2836,7 +2836,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      #[test]
-@@ -3090,7 +3095,7 @@ mod tests {
+@@ -3108,7 +3113,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .custom_tags(p_tag, [&owner]);
@@ -2845,7 +2845,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      #[test]
-@@ -3102,7 +3107,7 @@ mod tests {
+@@ -3120,7 +3125,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2854,7 +2854,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      #[test]
-@@ -3110,7 +3115,7 @@ mod tests {
+@@ -3128,7 +3133,7 @@ mod tests {
          // {kinds:[30174]} with no authors and no #p — open fishing.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16));
@@ -2863,7 +2863,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      #[test]
-@@ -3119,7 +3124,7 @@ mod tests {
+@@ -3137,7 +3142,7 @@ mod tests {
          // engrams; must still be gated.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new();
@@ -2872,7 +2872,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      #[test]
-@@ -3127,7 +3132,7 @@ mod tests {
+@@ -3145,7 +3150,7 @@ mod tests {
          // Filter not targeting engrams — pass through; this gate is silent.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(9));
@@ -2881,7 +2881,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      #[test]
-@@ -3141,7 +3146,7 @@ mod tests {
+@@ -3159,7 +3164,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .id(id);
@@ -2890,7 +2890,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      #[test]
-@@ -3156,7 +3161,7 @@ mod tests {
+@@ -3174,7 +3179,7 @@ mod tests {
                  nostr::PublicKey::from_hex(&agent).unwrap(),
                  nostr::PublicKey::from_hex(&other).unwrap(),
              ]);
@@ -2899,7 +2899,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      // These filters are the shape an authenticated relay member would send
-@@ -3170,7 +3175,7 @@ mod tests {
+@@ -3188,7 +3193,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .search("*");
@@ -2908,7 +2908,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      #[test]
-@@ -3178,7 +3183,7 @@ mod tests {
+@@ -3196,7 +3201,7 @@ mod tests {
          // {"search":"foo"} — no `kinds` field at all matches engrams too.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().search("foo");
@@ -2917,7 +2917,7 @@ index c2296ee717d6b429ee79454ed28cbf496fb322a3..84a6007b77205e822517c4865169c732
      }
  
      #[test]
-@@ -3189,7 +3194,62 @@ mod tests {
+@@ -3207,7 +3212,62 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .search("foo");

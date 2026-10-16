@@ -2314,10 +2314,10 @@ index e7669c874b0e022d8817ff08f60bcf945bda9a8c..ae49523c91baad69809908c260d55f0c
  pub mod agent_turn_metric;
  /// Channel and membership enums shared across crates.
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index 685d275c428b0c4c8b14b3dee294fe75befdd5e1..6119f231b82a7b5cdcf652a2a6e8fd5e8ad57597 100644
+index 9bc2940a81ed9db78ee05e5b173512c3f33b9c24..9231499c5da79a74d0d9d736fe76f2ffec0cd4b8 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
-@@ -1396,10 +1396,10 @@ async fn query_events_authed(
+@@ -1464,10 +1464,10 @@ async fn query_events_authed(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2330,7 +2330,7 @@ index 685d275c428b0c4c8b14b3dee294fe75befdd5e1..6119f231b82a7b5cdcf652a2a6e8fd5e
          ));
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
-@@ -2067,10 +2067,10 @@ async fn count_events_authed(
+@@ -2129,10 +2129,10 @@ async fn count_events_authed(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2344,10 +2344,10 @@ index 685d275c428b0c4c8b14b3dee294fe75befdd5e1..6119f231b82a7b5cdcf652a2a6e8fd5e
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
 diff --git a/crates/buzz-relay/src/handlers/count.rs b/crates/buzz-relay/src/handlers/count.rs
-index 5d2ba44e95dfa4bf841d4294ae399ecb9020ebf5..f83c2926c68076c6183dbc657d3d6deeaf23f929 100644
+index 733449d925930e91a241d53de14054f0f53bfa24..576983c479cb9e39414c5eed1f2e9cd0621a827a 100644
 --- a/crates/buzz-relay/src/handlers/count.rs
 +++ b/crates/buzz-relay/src/handlers/count.rs
-@@ -47,10 +47,10 @@ pub async fn handle_count(
+@@ -48,10 +48,10 @@ pub async fn handle_count(
          ));
          return;
      }
@@ -2723,7 +2723,7 @@ index de4a19217d223d68cc0c92253c5e058565ce3a5e..78c490714a9be93fc379b77c97e52c8c
      fn not_before_accepts_zero() {
          assert_eq!(validate_not_before("0"), Ok(0));
 diff --git a/crates/buzz-relay/src/handlers/req.rs b/crates/buzz-relay/src/handlers/req.rs
-index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef14136e0dac6 100644
+index 3180f227e3c26c539adb3424f06aae2917657e12..7f8cf69ef9c65939d1c706e3b265efbed90c3d06 100644
 --- a/crates/buzz-relay/src/handlers/req.rs
 +++ b/crates/buzz-relay/src/handlers/req.rs
 @@ -7,7 +7,7 @@ use tracing::{debug, warn};
@@ -2735,7 +2735,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      KIND_DELETION, KIND_DM_VISIBILITY, KIND_HUDDLE_LIVENESS, P_GATED_KINDS, RESULT_GATED_KINDS,
      SHARED_GATED_KINDS,
  };
-@@ -302,10 +302,10 @@ pub async fn handle_req(
+@@ -289,10 +289,10 @@ pub async fn handle_req(
              ));
              return;
          }
@@ -2748,7 +2748,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
              ));
              return;
          }
-@@ -1643,28 +1643,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex:
+@@ -1674,28 +1674,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex:
      })
  }
  
@@ -2790,7 +2790,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      let p_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::P);
      filters.iter().all(|filter| {
          // Specific-event lookups don't fish.
-@@ -1672,11 +1673,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
+@@ -1703,11 +1704,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
              return true;
          }
  
@@ -2807,7 +2807,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
              return true;
          }
  
-@@ -1848,6 +1849,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
+@@ -1879,6 +1880,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -2818,7 +2818,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      use nostr::{Alphabet, Filter, SingleLetterTag};
  
      fn lifecycle_conn() -> (
-@@ -3224,7 +3229,7 @@ mod tests {
+@@ -3230,7 +3235,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2827,7 +2827,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      #[test]
-@@ -3236,7 +3241,7 @@ mod tests {
+@@ -3242,7 +3247,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2836,7 +2836,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      #[test]
-@@ -3247,7 +3252,7 @@ mod tests {
+@@ -3253,7 +3258,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .custom_tags(p_tag, [&owner]);
@@ -2845,7 +2845,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      #[test]
-@@ -3259,7 +3264,7 @@ mod tests {
+@@ -3265,7 +3270,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2854,7 +2854,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      #[test]
-@@ -3267,7 +3272,7 @@ mod tests {
+@@ -3273,7 +3278,7 @@ mod tests {
          // {kinds:[30174]} with no authors and no #p — open fishing.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16));
@@ -2863,7 +2863,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      #[test]
-@@ -3276,7 +3281,7 @@ mod tests {
+@@ -3282,7 +3287,7 @@ mod tests {
          // engrams; must still be gated.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new();
@@ -2872,7 +2872,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      #[test]
-@@ -3284,7 +3289,7 @@ mod tests {
+@@ -3290,7 +3295,7 @@ mod tests {
          // Filter not targeting engrams — pass through; this gate is silent.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(9));
@@ -2881,7 +2881,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      #[test]
-@@ -3298,7 +3303,7 @@ mod tests {
+@@ -3304,7 +3309,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .id(id);
@@ -2890,7 +2890,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      #[test]
-@@ -3313,7 +3318,7 @@ mod tests {
+@@ -3319,7 +3324,7 @@ mod tests {
                  nostr::PublicKey::from_hex(&agent).unwrap(),
                  nostr::PublicKey::from_hex(&other).unwrap(),
              ]);
@@ -2899,7 +2899,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      // These filters are the shape an authenticated relay member would send
-@@ -3327,7 +3332,7 @@ mod tests {
+@@ -3333,7 +3338,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .search("*");
@@ -2908,7 +2908,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      #[test]
-@@ -3335,7 +3340,7 @@ mod tests {
+@@ -3341,7 +3346,7 @@ mod tests {
          // {"search":"foo"} — no `kinds` field at all matches engrams too.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().search("foo");
@@ -2917,7 +2917,7 @@ index 19c61738046682a3ce000a037cec986726c57f6e..92569abba6a4072dbf0980718abef141
      }
  
      #[test]
-@@ -3346,7 +3351,62 @@ mod tests {
+@@ -3352,7 +3357,62 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .search("foo");

@@ -611,37 +611,44 @@ async fn run_relay_main(boot: BootTracker) -> anyhow::Result<()> {
     // seeding an empty-host community that no request can ever resolve to.
     let mut step = StepTimer::start(StartupStep::MembershipBootstrap);
     let deployment_community = {
+        use buzz_relay::handlers::community_provisioning::{
+            ensure_deployment_community, verify_reserved_hosts_unbound,
+        };
+        if let Some(policy) = config.nip_fi_provision_binding.as_ref() {
+            verify_reserved_hosts_unbound(&db, policy).await?;
+        }
         let host = buzz_relay::tenant::relay_url_authority(&config.relay_url);
-        if host.is_empty() {
-            if config.require_relay_membership {
-                return Err(anyhow::anyhow!(
-                    "Cannot derive a community host from BUZZ_RELAY_URL ({:?}); a resolvable host is required when BUZZ_REQUIRE_RELAY_MEMBERSHIP=true",
-                    config.relay_url
-                ));
+        if host.is_empty() && config.require_relay_membership {
+            return Err(anyhow::anyhow!(
+                "Cannot derive a community host from BUZZ_RELAY_URL ({:?}); a resolvable host is required when BUZZ_REQUIRE_RELAY_MEMBERSHIP=true",
+                config.relay_url
+            ));
+        }
+        match ensure_deployment_community(&db, config.nip_fi_provision_binding.as_ref(), &host)
+            .await
+        {
+            Ok(Some(record)) => {
+                info!(host = %record.host, community = %record.id, "Deployment community ensured");
+                Some(record.id)
             }
-            step.degrade();
-            error!(
-                relay_url = %config.relay_url,
-                "Could not derive a community host from relay_url; skipping membership backfill/bootstrap (non-fatal, membership not required)"
-            );
-            None
-        } else {
-            match db.ensure_configured_community_for_bootstrap(&host).await {
-                Ok(record) => {
-                    info!(host = %record.host, community = %record.id, "Deployment community ensured");
-                    Some(record.id)
+            Ok(None) => {
+                step.degrade();
+                error!(
+                    relay_url = %config.relay_url,
+                    "Could not derive a community host from relay_url; skipping membership backfill/bootstrap (non-fatal, membership not required)"
+                );
+                None
+            }
+            Err(e) => {
+                if config.require_relay_membership {
+                    error!("Fatal: failed to ensure deployment community with membership enforcement enabled: {e}");
+                    return Err(anyhow::anyhow!(
+                        "Failed to ensure deployment community (required when BUZZ_REQUIRE_RELAY_MEMBERSHIP=true): {e}"
+                    ));
                 }
-                Err(e) => {
-                    if config.require_relay_membership {
-                        error!("Fatal: failed to ensure deployment community with membership enforcement enabled: {e}");
-                        return Err(anyhow::anyhow!(
-                            "Failed to ensure deployment community (required when BUZZ_REQUIRE_RELAY_MEMBERSHIP=true): {e}"
-                        ));
-                    }
-                    step.degrade();
-                    error!("Failed to ensure deployment community (non-fatal, membership not required): {e}");
-                    None
-                }
+                step.degrade();
+                error!("Failed to ensure deployment community (non-fatal, membership not required): {e}");
+                None
             }
         }
     };
@@ -849,6 +856,36 @@ async fn run_relay_main(boot: BootTracker) -> anyhow::Result<()> {
             ));
         }
     }
+    // NIP-FI database community source. The startup load runs before any
+    // listener binds, so the pod can never report ready without a snapshot;
+    // a failed load fails startup and the orchestrator retries.
+    if config.nip_fi.builds_resolver() {
+        let step = StepTimer::start(StartupStep::NipFiSnapshotLoad);
+        // `Config::from_env` refuses the database source without it.
+        let policy = config
+            .nip_fi_provision_binding
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("NIP-FI: no provisioning binding policy"))?;
+        let registry = config
+            .nip_fi
+            .registry
+            .all_policies()
+            .map(|p| p.issuer().to_owned())
+            .collect();
+        let resolver = Arc::new(buzz_relay::nip_fi_resolver::DatabaseResolver::new(
+            Arc::new(app_state.db.clone()),
+            policy,
+            registry,
+            config.nip_fi_resolver_bounds.clone(),
+        ));
+        resolver
+            .refresh()
+            .await
+            .map_err(|e| anyhow::anyhow!("NIP-FI: startup binding snapshot load failed: {e:?}"))?;
+        step.finish();
+        info!("NIP-FI: binding snapshot loaded");
+        app_state.nip_fi_resolver = Some(resolver);
+    }
     let state = Arc::new(app_state);
     let has_startup_partition_audit = startup_partition_audit.is_some();
     if let Some(audit) = startup_partition_audit {
@@ -905,6 +942,10 @@ async fn run_relay_main(boot: BootTracker) -> anyhow::Result<()> {
     // The refresh task is owned: a `CancellationToken` + `JoinHandle` let the
     // process cancel it cleanly on shutdown instead of leaking the task.
     let jwks_refresh_cancel = CancellationToken::new();
+    // The binding refresh loop stops with the JWKS loop on shutdown.
+    if let Some(resolver) = state.nip_fi_resolver.clone() {
+        tokio::spawn(resolver.run_refresh_loop(jwks_refresh_cancel.child_token()));
+    }
     let jwks_refresh_handle = if let Some(jwks_source) = state.nip_fi_jwks_source.clone() {
         let jwks_configs = state.config.nip_fi.jwks_configs.clone();
         info!(

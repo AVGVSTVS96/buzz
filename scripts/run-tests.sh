@@ -144,6 +144,9 @@ run_unit_tests() {
   run_test_step "buzz-admin partition audit outcome contract test" \
     cargo test -p buzz-admin tests::partition_audit_outcomes_keep_their_json_names_and_exit_codes -- --exact --nocapture
 
+  run_test_step "buzz-admin NIP-FI binding command tests" \
+    cargo test -p buzz-admin nip_fi::tests -- --nocapture
+
   # Multi-tenant conformance gate: independent replay checker + golden
   # fixtures (buzz-conformance). Pure in-process trace replay, no infra.
   run_test_step "buzz-conformance tests" \
@@ -244,6 +247,9 @@ run_unit_tests() {
   # each exact name. Keep this list in step with that stanza's `test(=...)`s.
   run_test_step "buzz-relay NIP-FI config tests" \
     cargo test -p buzz-relay --lib nip_fi_config:: -- --nocapture
+
+  run_test_step "buzz-relay NIP-FI resolver tests" \
+    cargo test -p buzz-relay --lib nip_fi_resolver:: -- --nocapture
 
   # Infra-free REQ subscription-lifecycle tests, by exact name: the rest of
   # handlers::req needs a database.

@@ -1059,8 +1059,12 @@ pub fn emit_live_thread_summary(
 
 /// Emit a relay-signed membership notification event stored globally (channel_id = None).
 ///
-/// kind:44100 = member added, kind:44101 = member removed. System channels
-/// emit none.
+/// kind:44100 = member added, kind:44101 = member removed. Every notice
+/// carries its channel's type as `["t", <channel_type>]` (NIP-CL). This is
+/// the only place that reads the channel type for notices. Every read and live
+/// path shows a notice only to a filter that knows its type
+/// (`buzz_core::filter::notice_visible`), so a client never sees a notice
+/// about a type it does not know, such as a system channel.
 /// The p tag addresses the target pubkey; the h tag carries the channel UUID as metadata.
 /// Stored with channel_id = None so global subscribers receive it via slow-path fan-out.
 pub async fn emit_membership_notification(
@@ -1071,16 +1075,16 @@ pub async fn emit_membership_notification(
     actor_pubkey: &[u8],
     notification_kind: u32,
 ) -> anyhow::Result<()> {
-    // A system channel is left out of clients' channel lists, so it sends no
-    // membership notifications: a client that receives one would show it.
-    if !state
+    // No channel row means no type to tag. Send nothing rather than an
+    // untagged notice, which every client would treat as a legacy type.
+    let Some(channel_type) = state
         .db
-        .system_channel_ids_among(tenant.community(), &[channel_id])
+        .channel_type_of(tenant.community(), channel_id)
         .await?
-        .is_empty()
-    {
+    else {
+        warn!(%channel_id, "membership notice skipped: channel not found");
         return Ok(());
-    }
+    };
     let target_hex = hex::encode(target_pubkey);
     let actor_hex = hex::encode(actor_pubkey);
     let channel_id_str = channel_id.to_string();
@@ -1107,8 +1111,10 @@ pub async fn emit_membership_notification(
     })
     .to_string();
 
+    let type_tag = Tag::parse([buzz_core::filter::NOTICE_CHANNEL_TYPE_TAG, &channel_type])
+        .map_err(|e| anyhow::anyhow!("failed to build channel type tag: {e}"))?;
     let event = EventBuilder::new(Kind::Custom(notification_kind as u16), content)
-        .tags([p_tag, h_tag])
+        .tags([p_tag, h_tag, type_tag])
         .sign_with_keys(&state.relay_keypair)
         .map_err(|e| anyhow::anyhow!("failed to sign membership notification: {e}"))?;
 
@@ -3344,21 +3350,6 @@ async fn emit_initial_ref_state(
     Ok(())
 }
 
-/// Reconcile every community's event-backed NIP-43 membership view.
-///
-/// `relay_members` is canonical. A snapshot is rebuilt only when it is absent
-/// or its member/role set differs from the canonical rows. This makes the sweep
-/// safe to run at startup and periodically without producing an event stream
-/// when nothing changed. A failure in one community is logged and counted but
-/// does not prevent the remaining communities from being repaired.
-#[derive(Clone, Copy)]
-pub enum Nip43ReconciliationPurpose {
-    /// Before listener admission opens.
-    Bootstrap,
-    /// Periodic background repair after startup.
-    Maintenance,
-}
-
 /// Per-item counts from one snapshot reconciliation sweep.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReconcileSummary {
@@ -3368,65 +3359,29 @@ pub struct ReconcileSummary {
     pub failed: usize,
 }
 
-/// Preserve the original maintenance reconciliation API for downstream callers.
-#[deprecated(note = "use reconcile_nip43_membership_snapshots_with_purpose")]
+/// Reconcile every active community's event-backed NIP-43 membership view.
+///
+/// `relay_members` is canonical. A snapshot is rebuilt only when it is absent
+/// or its member/role set differs from the canonical rows. This makes the
+/// periodic background sweep safe to repeat without producing an event stream
+/// when nothing changed. A failure in one community is logged and counted but
+/// does not prevent the remaining communities from being repaired. Returns the
+/// number of snapshots republished.
 pub async fn reconcile_nip43_membership_snapshots(state: &Arc<AppState>) -> anyhow::Result<usize> {
-    reconcile_nip43_membership_snapshots_with_purpose(
-        state,
-        Nip43ReconciliationPurpose::Maintenance,
-    )
-    .await
-    .map(|summary| summary.repaired)
-}
-
-/// Reconcile NIP-43 snapshots with explicit startup or maintenance attribution.
-pub async fn reconcile_nip43_membership_snapshots_with_purpose(
-    state: &Arc<AppState>,
-    purpose: Nip43ReconciliationPurpose,
-) -> anyhow::Result<ReconcileSummary> {
-    let communities = match purpose {
-        Nip43ReconciliationPurpose::Bootstrap => state.db.bootstrap_community_hosts().await?,
-        Nip43ReconciliationPurpose::Maintenance => state.db.active_community_hosts().await?,
-    };
+    let communities = state.db.active_community_hosts().await?;
     let mut reconciled = 0usize;
-    let mut failed = 0usize;
-    let total = communities.len();
-    let started = std::time::Instant::now();
 
-    for (index, community) in communities.into_iter().enumerate() {
-        if nip43_progress_due(purpose, index, total) {
-            info!(
-                done = index,
-                total,
-                republished = reconciled,
-                failed,
-                elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                "NIP-43 startup reconciliation progress"
-            );
-        }
+    for community in communities {
         let community_id = buzz_core::CommunityId::from_uuid(community.id);
         let host = community.host;
         let result = async {
-            let needs_reconciliation = match purpose {
-                Nip43ReconciliationPurpose::Bootstrap => {
-                    state
-                        .db
-                        .nip43_membership_snapshot_needs_reconciliation_for_bootstrap(
-                            community_id,
-                            &state.relay_keypair.public_key(),
-                        )
-                        .await?
-                }
-                Nip43ReconciliationPurpose::Maintenance => {
-                    state
-                        .db
-                        .nip43_membership_snapshot_needs_reconciliation_for_maintenance(
-                            community_id,
-                            &state.relay_keypair.public_key(),
-                        )
-                        .await?
-                }
-            };
+            let needs_reconciliation = state
+                .db
+                .nip43_membership_snapshot_needs_reconciliation_for_maintenance(
+                    community_id,
+                    &state.relay_keypair.public_key(),
+                )
+                .await?;
             if !needs_reconciliation {
                 return Ok::<bool, anyhow::Error>(false);
             }
@@ -3441,7 +3396,6 @@ pub async fn reconcile_nip43_membership_snapshots_with_purpose(
             Ok(true) => reconciled += 1,
             Ok(false) => {}
             Err(error) => {
-                failed += 1;
                 metrics::counter!("buzz_nip43_membership_reconciliation_failures_total")
                     .increment(1);
                 warn!(%community_id, %host, %error, "NIP-43 membership reconciliation failed");
@@ -3450,24 +3404,77 @@ pub async fn reconcile_nip43_membership_snapshots_with_purpose(
     }
 
     metrics::counter!("buzz_nip43_membership_reconciliations_total").increment(reconciled as u64);
-    Ok(ReconcileSummary {
-        repaired: reconciled,
-        failed,
-    })
+    Ok(reconciled)
 }
 
-/// Communities between startup NIP-43 reconciliation progress logs.
-const NIP43_BOOTSTRAP_PROGRESS_INTERVAL: usize = 5_000;
+/// Deployment-wide leader lock for the NIP-43 snapshot reconciler.
+pub const NIP43_RECONCILE_LOCK_KEY: i64 = 0x4255_5A5A_4E34_3352;
 
-/// Whether a sweep logs progress before processing community `done` of
-/// `total`. Only the startup sweep logs (the 60 s maintenance sweep stays
-/// quiet): every [`NIP43_BOOTSTRAP_PROGRESS_INTERVAL`] communities, never at
-/// the start (nothing done yet) and never past the end.
-fn nip43_progress_due(purpose: Nip43ReconciliationPurpose, done: usize, total: usize) -> bool {
-    matches!(purpose, Nip43ReconciliationPurpose::Bootstrap)
-        && done > 0
-        && done < total
-        && done.is_multiple_of(NIP43_BOOTSTRAP_PROGRESS_INTERVAL)
+/// How often a standby retries the NIP-43 reconciler leader lock.
+pub const NIP43_STANDBY_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Spawn the background NIP-43 snapshot reconciler.
+///
+/// In steady state only the replica holding the `lock_key` session advisory
+/// lock sweeps. The leader starts each sweep `every` after the previous one
+/// finished; a standby retries the lock every `standby_retry` (capped at
+/// `every`), so it takes over within `standby_retry` of the leader's session
+/// ending and sweeps at once. Postgres ends that session when the leader's
+/// process exits; a leader lost with its host or network holds the lock until
+/// the server's TCP keepalive drops the session, and nobody sweeps meanwhile.
+/// The lease is checked only between sweeps, so a leader that loses its
+/// session mid-sweep finishes that sweep while the new leader starts one; the
+/// per-community publication lock keeps the overlap safe. The first lock
+/// attempt runs as soon as the task does. Startup never waits on it: the
+/// snapshots live in the shared database, so a new replica has nothing of its
+/// own to repair before it serves. Trade-off: a missing or stale kind:13534
+/// snapshot is served until the leader's sweep reaches that community.
+pub fn spawn_nip43_membership_reconciler(
+    state: Arc<AppState>,
+    lock_key: i64,
+    every: std::time::Duration,
+    standby_retry: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut leader: Option<buzz_db::SessionLeader> = None;
+        loop {
+            if let Some(guard) = leader.as_mut() {
+                if !guard.is_live().await {
+                    warn!("NIP-43 reconciler leader lock connection lost; demoting");
+                    leader = None;
+                }
+            }
+            if leader.is_none() {
+                match state.db.try_lock_session_leader(lock_key).await {
+                    Ok(Some(guard)) => {
+                        info!("Acquired NIP-43 reconciler leader lock");
+                        leader = Some(guard);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        warn!(%error, "NIP-43 reconciler leader lock attempt failed")
+                    }
+                }
+            }
+            if leader.is_some() {
+                match reconcile_nip43_membership_snapshots(&state).await {
+                    Ok(repaired) if repaired > 0 => {
+                        info!(count = repaired, "NIP-43 membership snapshots repaired")
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(%error, "periodic NIP-43 membership snapshot reconciliation failed")
+                    }
+                }
+            }
+            let pause = if leader.is_some() {
+                every
+            } else {
+                standby_retry.min(every)
+            };
+            tokio::time::sleep(pause).await;
+        }
+    })
 }
 
 /// Publish a kind:13534 relay membership list event (NIP-43).
@@ -4143,37 +4150,6 @@ mod tests {
     }
 
     #[test]
-    fn nip43_progress_logs_every_interval_inside_the_startup_sweep_only() {
-        use Nip43ReconciliationPurpose::{Bootstrap, Maintenance};
-        const STEP: usize = NIP43_BOOTSTRAP_PROGRESS_INTERVAL;
-        let total = 79_942;
-        let due: Vec<usize> = (0..total)
-            .filter(|&done| nip43_progress_due(Bootstrap, done, total))
-            .collect();
-        assert_eq!(due.first(), Some(&STEP));
-        assert_eq!(due.len(), total / STEP);
-        assert!(due.iter().all(|done| done.is_multiple_of(STEP)));
-
-        // (purpose, done, total, expected)
-        for (purpose, done, total, expected) in [
-            (Bootstrap, STEP, total, true),
-            (Maintenance, STEP, total, false),
-            (Bootstrap, 0, total, false),
-            (Bootstrap, STEP - 1, total, false),
-            (Bootstrap, STEP, STEP, false),
-            (Bootstrap, STEP, STEP + 1, true),
-        ] {
-            assert_eq!(
-                nip43_progress_due(purpose, done, total),
-                expected,
-                "done={done} total={total} bootstrap={}",
-                matches!(purpose, Bootstrap)
-            );
-        }
-        assert!(!(0..total).any(|done| nip43_progress_due(Maintenance, done, total)));
-    }
-
-    #[test]
     fn workflow_deletion_retry_matches_authorized_dispatch() {
         let keys = nostr::Keys::generate();
         let workflow = format!("30620:{}:workflow", keys.public_key());
@@ -4218,16 +4194,6 @@ mod tests {
                 .expect("sign");
             assert_eq!(is_workflow_deletion(&event), expected, "{:?}", event.tags);
         }
-    }
-
-    #[test]
-    fn nip43_reconciliation_compatibility_alias_is_preserved() {
-        #[allow(deprecated)]
-        async fn call(state: &Arc<AppState>) -> anyhow::Result<usize> {
-            reconcile_nip43_membership_snapshots(state).await
-        }
-
-        let _ = call;
     }
 
     #[test]
@@ -4410,6 +4376,149 @@ mod tests {
                 .sum()
         }
 
+        /// A freshly migrated private database, so no other test's sweep can
+        /// publish the snapshot a reconciler test is waiting for.
+        struct ScratchDb {
+            admin: sqlx::PgPool,
+            name: String,
+            pool: sqlx::PgPool,
+        }
+
+        impl ScratchDb {
+            async fn create(prefix: &str) -> Self {
+                let admin_url = crate::test_support::database_url();
+                let admin = sqlx::PgPool::connect(&admin_url)
+                    .await
+                    .expect("connect admin to create scratch db");
+                let name = format!("{prefix}_{}", Uuid::new_v4().simple());
+                sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {name}")))
+                    .execute(&admin)
+                    .await
+                    .expect("create scratch db");
+                let slash = admin_url
+                    .rfind('/')
+                    .expect("URL must have a path component");
+                let pool = sqlx::PgPool::connect(&format!("{}/{name}", &admin_url[..slash]))
+                    .await
+                    .expect("connect scratch db");
+                buzz_db::migration::run_migrations(&pool)
+                    .await
+                    .expect("migrate scratch db");
+                Self { admin, name, pool }
+            }
+
+            async fn drop_db(self) {
+                self.pool.close().await;
+                let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP DATABASE IF EXISTS {} WITH (FORCE)",
+                    self.name
+                )))
+                .execute(&self.admin)
+                .await;
+            }
+        }
+
+        /// A per-test leader key, so concurrent tests and any relay sharing
+        /// the test database never contend for the production lock.
+        fn scratch_lock_key() -> i64 {
+            Uuid::new_v4().as_u64_pair().0 as i64
+        }
+
+        /// Polls until `community` has a membership snapshot, up to `budget`.
+        async fn snapshot_within(
+            pool: &sqlx::PgPool,
+            community: Uuid,
+            budget: std::time::Duration,
+        ) -> bool {
+            tokio::time::timeout(budget, async {
+                while membership_snapshots(pool, community).await == 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+
+        const DAY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+        /// The background reconciler's first sweep runs right away rather
+        /// than one interval after startup; with the pre-bind sweep gone this
+        /// is the only thing that repairs a missing snapshot on boot.
+        #[tokio::test]
+        #[ignore = "requires Postgres"]
+        async fn background_reconciler_sweeps_immediately() {
+            let db = ScratchDb::create("nip43_first_sweep").await;
+            let state = crate::state::tests::test_state_with_database_pool(db.pool.clone()).await;
+            let community = insert_community(&db.pool).await;
+            assert_eq!(membership_snapshots(&db.pool, community).await, 0);
+
+            // Interval and standby retry both far longer than the test: only
+            // the immediate first sweep can publish the snapshot.
+            let reconciler =
+                spawn_nip43_membership_reconciler(Arc::clone(&state), scratch_lock_key(), DAY, DAY);
+            let published =
+                snapshot_within(&db.pool, community, std::time::Duration::from_secs(60)).await;
+            reconciler.abort();
+            let snapshots = membership_snapshots(&db.pool, community).await;
+            drop(state);
+            db.drop_db().await;
+
+            assert!(
+                published,
+                "the first background sweep must publish the missing snapshot without waiting an interval"
+            );
+            assert_eq!(snapshots, 1);
+        }
+
+        /// Only the leader-lock holder sweeps. A replica that can't take the
+        /// lock never publishes, and it takes over on its short standby retry
+        /// once the holder lets go, not after a full sweep interval.
+        #[tokio::test]
+        #[ignore = "requires Postgres"]
+        async fn background_reconciler_standby_takes_over_on_short_retry() {
+            let db = ScratchDb::create("nip43_leader").await;
+            let state = crate::state::tests::test_state_with_database_pool(db.pool.clone()).await;
+            let community = insert_community(&db.pool).await;
+
+            // Another "replica" holds the leader lock.
+            let key = scratch_lock_key();
+            let mut holder = db.pool.acquire().await.expect("acquire lock holder");
+            sqlx::query("SELECT pg_advisory_lock($1)")
+                .bind(key)
+                .execute(&mut *holder)
+                .await
+                .expect("take leader lock");
+
+            // A sweep interval far longer than the test, so only the standby
+            // retry can explain a takeover.
+            let retry = std::time::Duration::from_millis(100);
+            let reconciler = spawn_nip43_membership_reconciler(Arc::clone(&state), key, DAY, retry);
+            // Many standby retries' worth of time: none may sweep.
+            tokio::time::sleep(retry * 20).await;
+            let standby_snapshots = membership_snapshots(&db.pool, community).await;
+
+            sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(key)
+                .execute(&mut *holder)
+                .await
+                .expect("release leader lock");
+            let published =
+                snapshot_within(&db.pool, community, std::time::Duration::from_secs(10)).await;
+            reconciler.abort();
+            drop(holder);
+            drop(state);
+            db.drop_db().await;
+
+            assert_eq!(
+                standby_snapshots, 0,
+                "a replica without the leader lock must not sweep"
+            );
+            assert!(
+                published,
+                "the standby must take the lock on its short retry and sweep, not wait a full interval"
+            );
+        }
+
         /// Regression for #7558 on the worker path: repeated NIP-43
         /// maintenance sweeps reconcile the active community once and never
         /// hand archived, quiescing, fenced, or tombstoned communities to the
@@ -4439,12 +4548,9 @@ mod tests {
             let recorder = DebuggingRecorder::new();
             let _guard = metrics::set_default_local_recorder(&recorder);
             for sweep in 0..3 {
-                reconcile_nip43_membership_snapshots_with_purpose(
-                    &state,
-                    Nip43ReconciliationPurpose::Maintenance,
-                )
-                .await
-                .unwrap_or_else(|e| panic!("maintenance sweep {sweep}: {e}"));
+                reconcile_nip43_membership_snapshots(&state)
+                    .await
+                    .unwrap_or_else(|e| panic!("maintenance sweep {sweep}: {e}"));
             }
 
             assert_eq!(

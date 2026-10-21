@@ -11,7 +11,14 @@ use nostr::Filter;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn};
 
-use crate::{handlers::push_lease::Subscription, nip98::nip98_header, state::AppState};
+use crate::{
+    handlers::{
+        push_lease::Subscription,
+        system_channels::{filter_channel_scope, NamedOnlyChannels},
+    },
+    nip98::nip98_header,
+    state::AppState,
+};
 
 // Dropping a SQLx transaction rolls it back; committed claims remain leased
 // until expiry. Dropping HTTP cannot recall requests already accepted by the
@@ -116,11 +123,13 @@ async fn matcher_loop(state: &AppState) {
     }
 }
 
-/// Per-batch state shared by every job: the community's active leases and
-/// the exact (channel, lease author) membership pairs the jobs can consult.
+/// Per-batch state shared by every job: the community's active leases, the
+/// exact (channel, lease author) membership pairs the jobs can consult, and
+/// the batch's named-only channels (system channels and any type added later).
 struct MatchContext {
     leases: Vec<buzz_db::push::MatchLease>,
     memberships: std::collections::HashSet<(uuid::Uuid, Vec<u8>)>,
+    named_only: NamedOnlyChannels,
 }
 
 async fn load_match_context(
@@ -138,22 +147,22 @@ async fn load_match_context(
     let mut authors: Vec<Vec<u8>> = leases.iter().map(|lease| lease.author.clone()).collect();
     authors.sort_unstable();
     authors.dedup();
-    // System channels never push: drop their membership pairs, so a channel
-    // event there matches no lease (channel events require membership).
-    let system = state
-        .db
-        .system_channel_ids_among(batch.community, &channels)
-        .await?;
     let memberships = state
         .db
         .membership_pairs(batch.community, &channels, &authors)
         .await?
         .into_iter()
-        .filter(|(channel, _)| !system.contains(channel))
         .collect();
+    let named_only = NamedOnlyChannels::from_typed(
+        state
+            .db
+            .named_only_channels_among(batch.community, &channels)
+            .await?,
+    );
     Ok(MatchContext {
         leases,
         memberships,
+        named_only,
     })
 }
 
@@ -301,6 +310,7 @@ fn match_job(
             let filter: Filter =
                 serde_json::from_value(serde_json::Value::Object(sub.filter.clone()))?;
             if !push_filter_authorized_for_event(&filter, &job.event.event, &author_hex)
+                || !push_filter_reads_channel(&filter, job.event.channel_id, &context.named_only)
                 || !filters_match(std::slice::from_ref(&filter), &job.event)
             {
                 continue;
@@ -344,6 +354,25 @@ fn match_job(
         });
     }
     Ok(wakes)
+}
+
+/// Whether a lease filter may push an event in `channel`, by the same rule as
+/// REQ: a legacy-type channel is in every filter's scope (membership is
+/// checked separately), and a named-only channel is in scope only when the
+/// filter names it (see [`crate::handlers::system_channels`]). Lease filters
+/// cannot carry `#t` or `#P`, so for push "names it" means `#h`.
+fn push_filter_reads_channel(
+    filter: &Filter,
+    channel: Option<uuid::Uuid>,
+    named_only: &NamedOnlyChannels,
+) -> bool {
+    let Some(channel) = channel else {
+        return true;
+    };
+    if !named_only.ids().contains(&channel) {
+        return true;
+    }
+    filter_channel_scope(filter, &[], named_only).contains(&channel)
 }
 
 /// Match-time counterpart of REQ's filter-level `#p` authorization gate.
@@ -762,6 +791,95 @@ mod tests {
             &event,
             &recipient_hex
         ));
+    }
+
+    #[test]
+    fn named_only_channel_pushes_only_to_a_filter_that_names_it() {
+        let member = nostr::Keys::generate();
+        let outsider = nostr::Keys::generate();
+        let sender = nostr::Keys::generate();
+        let legacy = uuid::Uuid::new_v4();
+        let system = uuid::Uuid::new_v4();
+        let future = uuid::Uuid::new_v4();
+        let author = |keys: &nostr::Keys| keys.public_key().to_bytes().to_vec();
+        let context = |keys: &nostr::Keys, filter: Value| MatchContext {
+            leases: vec![buzz_db::push::MatchLease {
+                author: author(keys),
+                installation_id: "phone".into(),
+                generation: 1,
+                subscriptions: serde_json::json!([{"filter": filter, "class": "default"}]),
+                expires_at: Utc::now().timestamp() + 3600,
+            }],
+            memberships: [legacy, system, future]
+                .into_iter()
+                .map(|channel| (channel, author(&member)))
+                .collect(),
+            named_only: NamedOnlyChannels::from_typed([
+                (system, "system".to_owned()),
+                (future, "later-type".to_owned()),
+            ]),
+        };
+        let job = |channel: Option<uuid::Uuid>| {
+            let mut event = EventBuilder::new(Kind::Custom(9), "hi");
+            if let Some(channel) = channel {
+                event = event.tag(Tag::parse(["h", &channel.to_string()]).unwrap());
+            }
+            buzz_db::push::BatchedMatch {
+                event: buzz_core::StoredEvent::new(event.sign_with_keys(&sender).unwrap(), channel),
+                attempt: 1,
+            }
+        };
+        let wakes = |keys: &nostr::Keys, filter: Value, channel| {
+            match_job(&job(channel), &context(keys, filter))
+                .unwrap()
+                .len()
+        };
+        let names =
+            |channel: uuid::Uuid| serde_json::json!({"kinds": [9], "#h": [channel.to_string()]});
+        let broad = serde_json::json!({"kinds": [9]});
+
+        // A filter that names no channel reads legacy-type channels and
+        // channel-less events, but no named-only channel.
+        assert_eq!(wakes(&member, broad.clone(), Some(legacy)), 1, "legacy");
+        assert_eq!(wakes(&member, broad.clone(), None), 1, "no channel");
+        assert_eq!(
+            wakes(&member, broad.clone(), Some(system)),
+            0,
+            "unnamed system"
+        );
+        assert_eq!(wakes(&member, broad, Some(future)), 0, "unnamed later type");
+
+        // Naming a named-only channel by #h reads it, as in REQ: a system
+        // channel and a later-type channel alike.
+        assert_eq!(
+            wakes(&member, names(future), Some(future)),
+            1,
+            "named later type"
+        );
+        assert_eq!(
+            wakes(&member, names(system), Some(system)),
+            1,
+            "named system"
+        );
+        assert_eq!(
+            wakes(&outsider, names(system), Some(system)),
+            0,
+            "non-member system"
+        );
+        // Naming one channel does not widen the filter to another.
+        let other = uuid::Uuid::new_v4();
+        assert_eq!(wakes(&member, names(other), Some(future)), 0, "other #h");
+        // Membership is still required.
+        assert_eq!(
+            wakes(&outsider, names(future), Some(future)),
+            0,
+            "non-member"
+        );
+        assert_eq!(
+            wakes(&outsider, names(legacy), Some(legacy)),
+            0,
+            "non-member legacy"
+        );
     }
 
     async fn capture(

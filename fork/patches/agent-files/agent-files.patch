@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 38ad23b30bc6cd3b95284c020408548c95941901..c5e671a7accb8fd8f11bd31da3d8d2f683bea08c 100644
+index 337edad30fedec43b012500aa4166dd026511129..8e78074e688335ecabe57da6750714d873ba6043 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [
@@ -25,7 +25,7 @@ index 244bae144ed215aaefff252660cc28bfd61f84be..2e827007d0193d5402e4efb46d417bbf
  # has a #[cfg(not(unix))] fallback in acp.rs.
  [target.'cfg(unix)'.dependencies]
 diff --git a/crates/buzz-acp/src/config.rs b/crates/buzz-acp/src/config.rs
-index da930dda454ac3a5a32c39bc7b5e6738acd2c780..d4558218b349f317d6cd653c42c801d337378d27 100644
+index 80d527673fd7a35377f2b8733e7dd86893868c12..4ccd718e0f65fbfec83a602001cbefe8909d07e5 100644
 --- a/crates/buzz-acp/src/config.rs
 +++ b/crates/buzz-acp/src/config.rs
 @@ -532,6 +532,13 @@ pub struct CliArgs {
@@ -53,7 +53,7 @@ index da930dda454ac3a5a32c39bc7b5e6738acd2c780..d4558218b349f317d6cd653c42c801d3
  }
  
  /// Maximum length, in characters, of a session title sent to the adapter.
-@@ -1157,6 +1168,14 @@ impl Config {
+@@ -1183,6 +1194,14 @@ impl Config {
  
          validate_multiple_event_handling(args.multiple_event_handling, args.dedup)?;
  
@@ -68,7 +68,7 @@ index da930dda454ac3a5a32c39bc7b5e6738acd2c780..d4558218b349f317d6cd653c42c801d3
          let config = Config {
              keys,
              relay_url: args.relay_url,
-@@ -1211,6 +1230,7 @@ impl Config {
+@@ -1237,6 +1256,7 @@ impl Config {
              agent_owner: args.agent_owner.map(|s| s.trim().to_ascii_lowercase()),
              no_base_prompt: args.no_base_prompt,
              base_prompt_content,
@@ -76,7 +76,7 @@ index da930dda454ac3a5a32c39bc7b5e6738acd2c780..d4558218b349f317d6cd653c42c801d3
          };
  
          Ok(config)
-@@ -1589,6 +1609,7 @@ mod tests {
+@@ -1615,6 +1635,7 @@ mod tests {
              agent_owner: None,
              no_base_prompt: false,
              base_prompt_content: None,
@@ -84,7 +84,7 @@ index da930dda454ac3a5a32c39bc7b5e6738acd2c780..d4558218b349f317d6cd653c42c801d3
          }
      }
  
-@@ -2974,6 +2995,45 @@ channels = "ALL"
+@@ -3004,6 +3025,45 @@ channels = "ALL"
      const TEST_PRIVATE_KEY: &str =
          "0000000000000000000000000000000000000000000000000000000000000001";
  
@@ -924,7 +924,7 @@ index 0000000000000000000000000000000000000000..9f5588917cf5359f5d9f66e7b7f8f2c9
 +    }
 +}
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index 3e51ad937a364fa179c1d246f046e644997f6b9c..73854fa69f1b7d54532d21230246b732d7796347 100644
+index 375f399a23d4e5002d7712257ca1bc5dbef697b8..86b83db4ed18580c599716cf45fb8209bec58b79 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -8,6 +8,7 @@ mod acp;
@@ -981,7 +981,7 @@ index 3e51ad937a364fa179c1d246f046e644997f6b9c..73854fa69f1b7d54532d21230246b732
      // Graceful relay shutdown — sends WebSocket close frame and waits up to 5s
      // for the background task to finish, rather than aborting immediately (#40).
      relay.shutdown().await;
-@@ -10164,6 +10197,7 @@ mod build_mcp_servers_tests {
+@@ -10168,6 +10201,7 @@ mod build_mcp_servers_tests {
              agent_owner: None,
              no_base_prompt: false,
              base_prompt_content: None,
@@ -989,7 +989,7 @@ index 3e51ad937a364fa179c1d246f046e644997f6b9c..73854fa69f1b7d54532d21230246b732
          }
      }
  
-@@ -11261,6 +11295,7 @@ mod error_outcome_emission_tests {
+@@ -11305,6 +11339,7 @@ mod error_outcome_emission_tests {
              agent_owner: None,
              no_base_prompt: false,
              base_prompt_content: None,
@@ -2314,7 +2314,7 @@ index e7669c874b0e022d8817ff08f60bcf945bda9a8c..ae49523c91baad69809908c260d55f0c
  pub mod agent_turn_metric;
  /// Channel and membership enums shared across crates.
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index de54b8232cb962279dfa9b61af7b142292cebaab..a8107146a328cef706114f2335fefd72e59da1cc 100644
+index a110f90e3d1752f0a624e7fa9b60ef33f81c4105..ed8b536b37252b893f1a5f6b76b061a98c84bc6f 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
 @@ -1469,10 +1469,10 @@ async fn query_events_authed(
@@ -2330,7 +2330,7 @@ index de54b8232cb962279dfa9b61af7b142292cebaab..a8107146a328cef706114f2335fefd72
          ));
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
-@@ -2136,10 +2136,10 @@ async fn count_events_authed(
+@@ -2137,10 +2137,10 @@ async fn count_events_authed(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2344,7 +2344,7 @@ index de54b8232cb962279dfa9b61af7b142292cebaab..a8107146a328cef706114f2335fefd72
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
 diff --git a/crates/buzz-relay/src/handlers/count.rs b/crates/buzz-relay/src/handlers/count.rs
-index 6f97271cf46c8246dab657cbf47dc035e65bfd17..3802ecaba76f963cae25ac4515e2310ffb4a89a9 100644
+index 5c2794a164567bafa38069fe16f0554f874ce92f..494a8bf3983ecc8101a80c5198c9cb19ec53472c 100644
 --- a/crates/buzz-relay/src/handlers/count.rs
 +++ b/crates/buzz-relay/src/handlers/count.rs
 @@ -48,10 +48,10 @@ pub async fn handle_count(
@@ -2361,7 +2361,7 @@ index 6f97271cf46c8246dab657cbf47dc035e65bfd17..3802ecaba76f963cae25ac4515e2310f
          return;
      }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index 0b2e8d8f096ecfe40afb8fcbfd1093b5e2fba557..4e292738837c75f821b7ffa8bbe8c7c3efe1d652 100644
+index 5cdd6679ff8b4317958ddde819ce01d58b6b7332..bedb2068e74a42d329137b45aaedfee58cb304e8 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2547,7 +2547,7 @@ index 0b2e8d8f096ecfe40afb8fcbfd1093b5e2fba557..4e292738837c75f821b7ffa8bbe8c7c3
  /// Enforce the `shared`-tag shape shared by every kind in
  /// [`buzz_core::kind::SHARED_GATED_KINDS`]: at most one `shared` tag, and if
  /// present it must be exactly `["shared", "true"]`.
-@@ -3000,11 +3087,16 @@ async fn ingest_event_inner(
+@@ -2997,11 +3084,16 @@ async fn ingest_event_inner(
          validate_diff_event(&event).map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
      }
  
@@ -2565,7 +2565,7 @@ index 0b2e8d8f096ecfe40afb8fcbfd1093b5e2fba557..4e292738837c75f821b7ffa8bbe8c7c3
      if kind_u32 == KIND_AGENT_TURN_METRIC {
          validate_agent_turn_metric_envelope(&event)
              .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-@@ -4267,6 +4359,9 @@ mod postgres_tests {
+@@ -4264,6 +4356,9 @@ mod postgres_tests {
              KIND_EMOJI_SET,
              KIND_EMOJI_LIST,
              KIND_AGENT_ENGRAM,
@@ -2575,7 +2575,7 @@ index 0b2e8d8f096ecfe40afb8fcbfd1093b5e2fba557..4e292738837c75f821b7ffa8bbe8c7c3
              KIND_AGENT_PROFILE,
              KIND_PERSONA,
              KIND_TEAM,
-@@ -4318,6 +4413,27 @@ mod postgres_tests {
+@@ -4315,6 +4410,27 @@ mod postgres_tests {
          );
      }
  
@@ -2603,7 +2603,7 @@ index 0b2e8d8f096ecfe40afb8fcbfd1093b5e2fba557..4e292738837c75f821b7ffa8bbe8c7c3
      #[test]
      fn nip51_and_nip65_lists_are_global_only() {
          for kind in [
-@@ -4785,6 +4901,118 @@ mod postgres_tests {
+@@ -4782,6 +4898,118 @@ mod postgres_tests {
          assert!(err.contains("base64"), "got: {err}");
      }
  
@@ -2723,7 +2723,7 @@ index 0b2e8d8f096ecfe40afb8fcbfd1093b5e2fba557..4e292738837c75f821b7ffa8bbe8c7c3
      fn not_before_accepts_zero() {
          assert_eq!(validate_not_before("0"), Ok(0));
 diff --git a/crates/buzz-relay/src/handlers/req.rs b/crates/buzz-relay/src/handlers/req.rs
-index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b2d8972b0 100644
+index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed533c00401f 100644
 --- a/crates/buzz-relay/src/handlers/req.rs
 +++ b/crates/buzz-relay/src/handlers/req.rs
 @@ -7,7 +7,7 @@ use tracing::{debug, warn};
@@ -2735,7 +2735,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      KIND_HUDDLE_LIVENESS, P_GATED_KINDS, RESULT_GATED_KINDS, SHARED_GATED_KINDS,
  };
  use buzz_core::tenant::TenantContext;
-@@ -288,10 +288,10 @@ pub async fn handle_req(
+@@ -289,10 +289,10 @@ pub async fn handle_req(
              ));
              return;
          }
@@ -2748,7 +2748,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
              ));
              return;
          }
-@@ -1678,28 +1678,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex:
+@@ -1676,28 +1676,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex:
      })
  }
  
@@ -2790,7 +2790,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      let p_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::P);
      filters.iter().all(|filter| {
          // Specific-event lookups don't fish.
-@@ -1707,11 +1708,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
+@@ -1705,11 +1706,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
              return true;
          }
  
@@ -2807,7 +2807,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
              return true;
          }
  
-@@ -1882,6 +1883,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
+@@ -1880,6 +1881,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -2818,7 +2818,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      use nostr::{Alphabet, Filter, SingleLetterTag};
  
      fn lifecycle_conn() -> (
-@@ -3242,7 +3247,7 @@ mod tests {
+@@ -3240,7 +3245,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2827,7 +2827,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      #[test]
-@@ -3254,7 +3259,7 @@ mod tests {
+@@ -3252,7 +3257,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2836,7 +2836,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      #[test]
-@@ -3265,7 +3270,7 @@ mod tests {
+@@ -3263,7 +3268,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .custom_tags(p_tag, [&owner]);
@@ -2845,7 +2845,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      #[test]
-@@ -3277,7 +3282,7 @@ mod tests {
+@@ -3275,7 +3280,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2854,7 +2854,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      #[test]
-@@ -3285,7 +3290,7 @@ mod tests {
+@@ -3283,7 +3288,7 @@ mod tests {
          // {kinds:[30174]} with no authors and no #p — open fishing.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16));
@@ -2863,7 +2863,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      #[test]
-@@ -3294,7 +3299,7 @@ mod tests {
+@@ -3292,7 +3297,7 @@ mod tests {
          // engrams; must still be gated.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new();
@@ -2872,7 +2872,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      #[test]
-@@ -3302,7 +3307,7 @@ mod tests {
+@@ -3300,7 +3305,7 @@ mod tests {
          // Filter not targeting engrams — pass through; this gate is silent.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(9));
@@ -2881,7 +2881,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      #[test]
-@@ -3316,7 +3321,7 @@ mod tests {
+@@ -3314,7 +3319,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .id(id);
@@ -2890,7 +2890,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      #[test]
-@@ -3331,7 +3336,7 @@ mod tests {
+@@ -3329,7 +3334,7 @@ mod tests {
                  nostr::PublicKey::from_hex(&agent).unwrap(),
                  nostr::PublicKey::from_hex(&other).unwrap(),
              ]);
@@ -2899,7 +2899,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      // These filters are the shape an authenticated relay member would send
-@@ -3345,7 +3350,7 @@ mod tests {
+@@ -3343,7 +3348,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .search("*");
@@ -2908,7 +2908,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      #[test]
-@@ -3353,7 +3358,7 @@ mod tests {
+@@ -3351,7 +3356,7 @@ mod tests {
          // {"search":"foo"} — no `kinds` field at all matches engrams too.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().search("foo");
@@ -2917,7 +2917,7 @@ index 9c6b5d70a6e77213bb49e46c2c84de4239fa0819..8be2f9acc72c4a21d6d86ffe7d4be09b
      }
  
      #[test]
-@@ -3364,7 +3369,62 @@ mod tests {
+@@ -3362,7 +3367,62 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .search("foo");

@@ -1,5 +1,5 @@
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index 0249f5be4db29ef11561aa315546746d14271f04..55818f658c123d618bcbe97c47ce3b62d0bfe129 100644
+index e9f2eb7dbc994df5f3ad533062b1250dff6e2d96..edd2e0993dc4409b2e1ebb701c2a432e4c5c9e7f 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -1495,7 +1495,7 @@ struct ObserverChunkKey {
@@ -11,7 +11,7 @@ index 0249f5be4db29ef11561aa315546746d14271f04..55818f658c123d618bcbe97c47ce3b62
  /// Leave headroom for the JSON envelope wrapping the text. This is a SOFT pre-flush
  /// of raw text below the hard cap; `fit_observer_event_to_budget` (the final ceiling,
  /// keyed to `OBSERVER_MAX_PLAINTEXT_LEN` in buzz-core/observer.rs:25) is what actually
-@@ -13605,4 +13605,81 @@ mod observer_payload_trim_tests {
+@@ -13649,4 +13649,81 @@ mod observer_payload_trim_tests {
          assert!(leaf.ends_with('…'));
          assert!(leaf.contains("[elided"));
      }

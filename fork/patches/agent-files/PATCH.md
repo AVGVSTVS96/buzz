@@ -2,9 +2,9 @@
 format: patch-md/v0.1
 id: agent-files
 summary: Agents share chosen files with their owner, who browses them in Desktop and proposes edits the agent applies or refuses.
-baseline: e8781caa6f3bb00e0602c4ed9ffe885f7999d317
+baseline: 9e8c9fc04daf20259cd259dcaec89109587cc7f5
 patch_file: agent-files.patch
-patch_sha256: e64ced2fb578f27baa41a2d64c263a0573271a938d48de9af4d18670dda695c0
+patch_sha256: 78f4519e3ef41a3268aced3ff54c6aec428d71d5f9113ca1f5887c2e93f37364
 ---
 
 ## Intent

@@ -2,7 +2,7 @@
 format: patch-md/v0.1
 id: connect-remote-agent
 summary: Owners connect an agent that runs elsewhere by its public key, see it under Running elsewhere, and can stop its turns.
-baseline: e8781caa6f3bb00e0602c4ed9ffe885f7999d317
+baseline: 9e8c9fc04daf20259cd259dcaec89109587cc7f5
 patch_file: connect-remote-agent.patch
 patch_sha256: 351a18e9faf2f629b9582cd02bbe354936fbe89ce132e57832d330d552b595e2
 ---

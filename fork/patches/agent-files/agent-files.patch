@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 337edad30fedec43b012500aa4166dd026511129..8e78074e688335ecabe57da6750714d873ba6043 100644
+index 467774efcdb62e4134220103b704131790e7ac43..3431da39bfc6520db89ddd3433b7387b87d9052c 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [
@@ -2361,7 +2361,7 @@ index 5c2794a164567bafa38069fe16f0554f874ce92f..494a8bf3983ecc8101a80c5198c9cb19
          return;
      }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index ce0c10a7bf5e6be675db3ac2ef22138ac2265cee..ebbb64361bcf908228ad68bce1c6913aa1d39b51 100644
+index 1b162cc3293f93bb9ca5c2f73b3ed943bf6c8c71..fe57fd006a4159a24555dd1286895b6a32902825 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2547,7 +2547,7 @@ index ce0c10a7bf5e6be675db3ac2ef22138ac2265cee..ebbb64361bcf908228ad68bce1c6913a
  /// Enforce the `shared`-tag shape shared by every kind in
  /// [`buzz_core::kind::SHARED_GATED_KINDS`]: at most one `shared` tag, and if
  /// present it must be exactly `["shared", "true"]`.
-@@ -3087,11 +3174,16 @@ async fn ingest_event_inner(
+@@ -3085,11 +3172,16 @@ async fn ingest_event_inner(
          validate_diff_event(&event).map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
      }
  
@@ -2565,7 +2565,7 @@ index ce0c10a7bf5e6be675db3ac2ef22138ac2265cee..ebbb64361bcf908228ad68bce1c6913a
      if kind_u32 == KIND_AGENT_TURN_METRIC {
          validate_agent_turn_metric_envelope(&event)
              .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-@@ -4348,6 +4440,9 @@ mod postgres_tests {
+@@ -4362,6 +4454,9 @@ mod postgres_tests {
              KIND_EMOJI_SET,
              KIND_EMOJI_LIST,
              KIND_AGENT_ENGRAM,
@@ -2575,7 +2575,7 @@ index ce0c10a7bf5e6be675db3ac2ef22138ac2265cee..ebbb64361bcf908228ad68bce1c6913a
              KIND_AGENT_PROFILE,
              KIND_PERSONA,
              KIND_TEAM,
-@@ -4399,6 +4494,27 @@ mod postgres_tests {
+@@ -4413,6 +4508,27 @@ mod postgres_tests {
          );
      }
  
@@ -2603,7 +2603,7 @@ index ce0c10a7bf5e6be675db3ac2ef22138ac2265cee..ebbb64361bcf908228ad68bce1c6913a
      #[test]
      fn nip51_and_nip65_lists_are_global_only() {
          for kind in [
-@@ -4866,6 +4982,118 @@ mod postgres_tests {
+@@ -4880,6 +4996,118 @@ mod postgres_tests {
          assert!(err.contains("base64"), "got: {err}");
      }
  

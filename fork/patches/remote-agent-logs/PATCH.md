@@ -2,7 +2,7 @@
 format: patch-md/v0.1
 id: remote-agent-logs
 summary: Desktop's Logs view shows a remote agent's harness log, streamed by the agent over NIP-AO on request.
-baseline: 9e8c9fc04daf20259cd259dcaec89109587cc7f5
+baseline: d676c7b8db30ccc15611b9ef51ed9c6f2e8a954a
 patch_file: remote-agent-logs.patch
 patch_sha256: 2d02f5bdd705b99fd6d4b5ac166773b5fdd5de49f5eb491004365cc62b3e8d7d
 ---

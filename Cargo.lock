@@ -1506,6 +1506,8 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "iroh",
+ "metrics",
+ "metrics-util",
  "nostr 0.44.7",
  "postcard",
  "proptest",

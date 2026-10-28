@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 1cb97df5cdf563e319de8dbc108ed8ab5803e3bf..04966c8b67d126273979de881063041aa2e2027a 100644
+index 16ae7187395225cb240e09053d04ef9b9a8a766b..74dfa559a5d08c2a4b334de9b8cfae74511b37bd 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [
@@ -2361,7 +2361,7 @@ index 5c2794a164567bafa38069fe16f0554f874ce92f..494a8bf3983ecc8101a80c5198c9cb19
          return;
      }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index f886b900b085cfa2390501272a7fade753e0e038..7e23012ac5032cf81088441446dc7800887f8f9b 100644
+index c2ab9c3ba537998fe6f734ee5d5afe62af0ad59a..8b81e7b445e603e26233ce282e93258c86863bef 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2565,7 +2565,7 @@ index f886b900b085cfa2390501272a7fade753e0e038..7e23012ac5032cf81088441446dc7800
      if kind_u32 == KIND_AGENT_TURN_METRIC {
          validate_agent_turn_metric_envelope(&event)
              .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-@@ -4449,6 +4541,9 @@ mod postgres_tests {
+@@ -4470,6 +4562,9 @@ mod postgres_tests {
              KIND_EMOJI_SET,
              KIND_EMOJI_LIST,
              KIND_AGENT_ENGRAM,
@@ -2575,7 +2575,7 @@ index f886b900b085cfa2390501272a7fade753e0e038..7e23012ac5032cf81088441446dc7800
              KIND_AGENT_PROFILE,
              KIND_PERSONA,
              KIND_TEAM,
-@@ -4500,6 +4595,27 @@ mod postgres_tests {
+@@ -4521,6 +4616,27 @@ mod postgres_tests {
          );
      }
  
@@ -2603,7 +2603,7 @@ index f886b900b085cfa2390501272a7fade753e0e038..7e23012ac5032cf81088441446dc7800
      #[test]
      fn nip51_and_nip65_lists_are_global_only() {
          for kind in [
-@@ -4967,6 +5083,118 @@ mod postgres_tests {
+@@ -4988,6 +5104,118 @@ mod postgres_tests {
          assert!(err.contains("base64"), "got: {err}");
      }
  

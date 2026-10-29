@@ -2314,7 +2314,7 @@ index e7669c874b0e022d8817ff08f60bcf945bda9a8c..ae49523c91baad69809908c260d55f0c
  pub mod agent_turn_metric;
  /// Channel and membership enums shared across crates.
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index d5420096efd2460e37bc37f7f9d794aa477974f1..cf4b0a288479c40f4cadb12d874be53a47fdb304 100644
+index 2b655d79ad920ee8918a9b904a191eb95eba8186..d6128fd1dab1ebbb7d131ade2f2fa76e93fa98d7 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
 @@ -1525,10 +1525,10 @@ async fn query_member_events(
@@ -2361,7 +2361,7 @@ index 5c2794a164567bafa38069fe16f0554f874ce92f..494a8bf3983ecc8101a80c5198c9cb19
          return;
      }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index c2ab9c3ba537998fe6f734ee5d5afe62af0ad59a..8b81e7b445e603e26233ce282e93258c86863bef 100644
+index 9c6d6f206e7be32dcf87e22133cd6bc36dde0b81..1fd0d4fb24fbd4dcda198c03c832e2394caf515a 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2982,7 +2982,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
  
      #[test]
 diff --git a/desktop/playwright.config.ts b/desktop/playwright.config.ts
-index bb26f558802d94be66d56ca06180d2f89c1075e1..a23717abfee23cfaf53b9a63f828f1177a1958af 100644
+index 61f77de46cb10c6e76f3c6e12626f769b2d8f74c..c5faf642b5bb781433f8d31350ef466d0bcd4d27 100644
 --- a/desktop/playwright.config.ts
 +++ b/desktop/playwright.config.ts
 @@ -58,6 +58,7 @@ export default defineConfig({

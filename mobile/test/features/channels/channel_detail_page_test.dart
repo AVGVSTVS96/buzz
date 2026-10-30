@@ -246,6 +246,7 @@ Widget _buildTestable({
   List<TypingEntry> typing = const [],
   Map<String, UserProfile> users = const {},
   Set<String>? knownAgentPubkeys,
+  Set<String> inventoryAgents = const {},
   Future<Set<String>> Function()? loadChannelBotPubkeys,
   bool watchChannelMembershipUpdates = false,
   Future<List<AgentDirectoryEntry>> Function()? loadAgentDirectory,
@@ -403,6 +404,9 @@ Widget _buildTestable({
       ),
       if (knownAgentPubkeys != null)
         knownAgentPubkeysProvider.overrideWithValue(knownAgentPubkeys),
+      meAgentInventoryReadProvider.overrideWithValue(
+        () async => {...inventoryAgents},
+      ),
       if (directoryUsers != null)
         relayDirectoryUsersProvider.overrideWith((ref) async => directoryUsers),
       if (createChannelActions != null)
@@ -11185,6 +11189,219 @@ void main() {
         );
       });
     }
+
+    testWidgets('an agent working in a thread shows on its root message', (
+      tester,
+    ) async {
+      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final prompt = _textMsg(
+        id: threadIdRoot,
+        pubkey: 'self',
+        content: 'morty say hi',
+        createdAt: now - 3,
+      );
+      final typing = _FakeTypingNotifier(const []);
+      final inventory = {'morty', 'summer', 'jerry'};
+      await tester.pumpWidget(
+        _buildTestable(
+          messages: [prompt],
+          typingNotifier: typing,
+          disableAnimations: true,
+          huddleCurrentPubkey: 'self',
+          knownAgentPubkeys: const {'rick'},
+          inventoryAgents: inventory,
+          users: const {
+            'morty': UserProfile(pubkey: 'morty', displayName: 'Morty'),
+            'summer': UserProfile(pubkey: 'summer', displayName: 'Summer'),
+            'jerry': UserProfile(pubkey: 'jerry', displayName: 'Jerry'),
+            // An owner attestation alone is not desktop's inventory.
+            'rick': UserProfile(
+              pubkey: 'rick',
+              displayName: 'Rick',
+              ownerPubkey: 'self',
+            ),
+            'alice': UserProfile(pubkey: 'alice', displayName: 'Alice'),
+          },
+        ),
+      );
+      await tester.pumpAndSettle();
+      final row = find.byKey(ValueKey('thread-summary-$threadIdRoot'));
+      List<String> rowAvatars() => [
+        for (final avatar in tester.widgetList<SmallAvatar>(
+          find.descendant(of: row, matching: find.byType(SmallAvatar)),
+        ))
+          avatar.pubkey,
+      ];
+      final connector = find.descendant(
+        of: row,
+        matching: find.byWidgetPredicate(
+          (widget) =>
+              widget is CustomPaint &&
+              widget.painter.runtimeType.toString() == '_ReplyConnector',
+        ),
+      );
+      // The channel's typing row, by its line of the spoken status. The
+      // newest timeline item merges its day label into the same node.
+      Finder typingRow(String label) => find.bySemanticsLabel(
+        RegExp('^${RegExp.escape(label)}\$', multiLine: true),
+      );
+      expect(row, findsNothing);
+
+      // As on desktop, people and agents outside the user's inventory typing
+      // in the thread stay inside the thread view.
+      typing.setEntries([
+        for (final pubkey in ['alice', 'rick'])
+          TypingEntry(
+            pubkey: pubkey,
+            threadHeadId: threadIdRoot,
+            expiresAtMs: (now + 8) * 1000,
+          ),
+      ]);
+      await tester.pumpAndSettle();
+      expect(row, findsNothing);
+      expect(find.byKey(const ValueKey('agent-typing-bubble')), findsNothing);
+
+      // As on desktop, at most two working avatars show, then a count.
+      typing.setEntries([
+        for (final pubkey in ['morty', 'summer', 'jerry', 'rick'])
+          TypingEntry(
+            pubkey: pubkey,
+            threadHeadId: threadIdRoot,
+            expiresAtMs: (now + 8) * 1000,
+          ),
+      ]);
+      await tester.pumpAndSettle();
+      expect(
+        find.bySemanticsLabel('View thread: 3 agents are working'),
+        findsOneWidget,
+      );
+      // As on desktop, the channel's typing row shows them too.
+      expect(typingRow('Morty and 2 others are typing'), findsOneWidget);
+      expect(rowAvatars(), ['morty', 'summer']);
+      // Working avatars use the agent shape, though no profile names an owner.
+      for (final avatar
+          in find
+              .descendant(of: row, matching: find.byType(SmallAvatar))
+              .evaluate()) {
+        final frame = tester.widget<Container>(
+          find
+              .descendant(
+                of: find.byWidget(avatar.widget),
+                matching: find.byType(Container),
+              )
+              .first,
+        );
+        expect((frame.decoration! as BoxDecoration).shape, BoxShape.rectangle);
+      }
+      // As on desktop, the reply branch waits for a reply.
+      expect(connector, findsNothing);
+      expect(
+        find.descendant(of: row, matching: find.text('+1')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: row, matching: find.text('View thread')),
+        findsOneWidget,
+      );
+
+      typing.setEntries([
+        TypingEntry(
+          pubkey: 'morty',
+          threadHeadId: threadIdRoot,
+          expiresAtMs: (now + 8) * 1000,
+        ),
+      ]);
+      await tester.pumpAndSettle();
+      expect(row, findsOneWidget);
+      expect(
+        find.descendant(
+          of: row,
+          matching: find.byKey(const ValueKey('thread-working-dots')),
+        ),
+        findsOneWidget,
+      );
+      expect(typingRow('Morty is typing'), findsOneWidget);
+      expect(
+        tester
+            .widget<AvatarImage>(
+              find.byKey(const ValueKey('inline-agent-typing-morty')),
+            )
+            .isAgent,
+        isTrue,
+      );
+      expect(
+        find.bySemanticsLabel('View thread: Morty is working'),
+        findsOneWidget,
+      );
+
+      // The row opens the thread before its first reply.
+      await tester.tap(row);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<ThreadDetailPage>(find.byType(ThreadDetailPage))
+            .threadHead
+            .id,
+        threadIdRoot,
+      );
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(ChannelDetailPage)),
+      );
+      final messages =
+          container.read(channelMessagesProvider(_channelId).notifier)
+              as _FakeMessagesNotifier;
+      messages.setMessages([
+        prompt,
+        _textMsg(
+          id: 'reply',
+          pubkey: 'morty',
+          content: 'hi',
+          createdAt: now,
+          extraTags: [
+            ['e', threadIdRoot, '', 'reply'],
+          ],
+        ),
+      ]);
+      await tester.pumpAndSettle();
+      expect(
+        find.bySemanticsLabel('View thread: 1 reply. Morty working'),
+        findsOneWidget,
+      );
+      // The reply ends Morty's pending bubble in the channel.
+      expect(typingRow('Morty is typing'), findsNothing);
+      // Morty shows once, in the working group, not also as a participant.
+      expect(rowAvatars(), ['morty']);
+      expect(connector, findsOneWidget);
+
+      typing.setEntries(const []);
+      await tester.pumpAndSettle();
+      expect(row, findsOneWidget);
+      expect(find.byKey(const ValueKey('thread-working-dots')), findsNothing);
+      expect(find.bySemanticsLabel('View thread: 1 reply'), findsOneWidget);
+
+      // While Summer keeps typing, the inventory is still read again, so
+      // Morty stops counting once removed from it.
+      inventory.remove('morty');
+      typing.setEntries([
+        for (final pubkey in ['summer', 'morty'])
+          TypingEntry(
+            pubkey: pubkey,
+            threadHeadId: threadIdRoot,
+            expiresAtMs: (now + 60) * 1000,
+          ),
+      ]);
+      await tester.pumpAndSettle();
+      await tester.pump(meAgentInventoryMaxAge);
+      await tester.pumpAndSettle();
+      expect(
+        find.bySemanticsLabel('View thread: 1 reply. Summer working'),
+        findsOneWidget,
+      );
+      expect(typingRow('Summer is typing'), findsOneWidget);
+    });
 
     testWidgets('shows single typer', (tester) async {
       await tester.pumpWidget(

@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 16ae7187395225cb240e09053d04ef9b9a8a766b..74dfa559a5d08c2a4b334de9b8cfae74511b37bd 100644
+index 3a5345b5bdc3aefd951ea5320daf2e9c25d70469..24119a4c5e37003b9e8f89aabd9131c5a3dc1dd0 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [
@@ -2314,10 +2314,10 @@ index e7669c874b0e022d8817ff08f60bcf945bda9a8c..ae49523c91baad69809908c260d55f0c
  pub mod agent_turn_metric;
  /// Channel and membership enums shared across crates.
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index 2b655d79ad920ee8918a9b904a191eb95eba8186..d6128fd1dab1ebbb7d131ade2f2fa76e93fa98d7 100644
+index 10c88e3697c759bc4c0ade560ce818a504c67e67..3dd5a488db1ea76d736f402214882a81d9dcc20d 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
-@@ -1525,10 +1525,10 @@ async fn query_member_events(
+@@ -1529,10 +1529,10 @@ async fn query_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2330,7 +2330,7 @@ index 2b655d79ad920ee8918a9b904a191eb95eba8186..d6128fd1dab1ebbb7d131ade2f2fa76e
          ));
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
-@@ -2209,10 +2209,10 @@ async fn count_member_events(
+@@ -2213,10 +2213,10 @@ async fn count_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2344,10 +2344,10 @@ index 2b655d79ad920ee8918a9b904a191eb95eba8186..d6128fd1dab1ebbb7d131ade2f2fa76e
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
 diff --git a/crates/buzz-relay/src/handlers/count.rs b/crates/buzz-relay/src/handlers/count.rs
-index 5c2794a164567bafa38069fe16f0554f874ce92f..494a8bf3983ecc8101a80c5198c9cb19ec53472c 100644
+index 08ff84a017db906f29d44baa48117c86d76288bc..b8ec8b440a7fbe5966725182a49a2fda78800694 100644
 --- a/crates/buzz-relay/src/handlers/count.rs
 +++ b/crates/buzz-relay/src/handlers/count.rs
-@@ -48,10 +48,10 @@ pub async fn handle_count(
+@@ -49,10 +49,10 @@ pub async fn handle_count(
          ));
          return;
      }
@@ -2361,7 +2361,7 @@ index 5c2794a164567bafa38069fe16f0554f874ce92f..494a8bf3983ecc8101a80c5198c9cb19
          return;
      }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index 9c6d6f206e7be32dcf87e22133cd6bc36dde0b81..1fd0d4fb24fbd4dcda198c03c832e2394caf515a 100644
+index 0e44eb8c1e5a68b724ff11eb91dcd28656c2788e..ca6623e22d0b8d1611f981ec50aec9df70d0d07b 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2565,7 +2565,7 @@ index 9c6d6f206e7be32dcf87e22133cd6bc36dde0b81..1fd0d4fb24fbd4dcda198c03c832e239
      if kind_u32 == KIND_AGENT_TURN_METRIC {
          validate_agent_turn_metric_envelope(&event)
              .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-@@ -4470,6 +4562,9 @@ mod postgres_tests {
+@@ -4471,6 +4563,9 @@ mod postgres_tests {
              KIND_EMOJI_SET,
              KIND_EMOJI_LIST,
              KIND_AGENT_ENGRAM,
@@ -2575,7 +2575,7 @@ index 9c6d6f206e7be32dcf87e22133cd6bc36dde0b81..1fd0d4fb24fbd4dcda198c03c832e239
              KIND_AGENT_PROFILE,
              KIND_PERSONA,
              KIND_TEAM,
-@@ -4521,6 +4616,27 @@ mod postgres_tests {
+@@ -4522,6 +4617,27 @@ mod postgres_tests {
          );
      }
  
@@ -2603,7 +2603,7 @@ index 9c6d6f206e7be32dcf87e22133cd6bc36dde0b81..1fd0d4fb24fbd4dcda198c03c832e239
      #[test]
      fn nip51_and_nip65_lists_are_global_only() {
          for kind in [
-@@ -4988,6 +5104,118 @@ mod postgres_tests {
+@@ -4989,6 +5105,118 @@ mod postgres_tests {
          assert!(err.contains("base64"), "got: {err}");
      }
  
@@ -2723,7 +2723,7 @@ index 9c6d6f206e7be32dcf87e22133cd6bc36dde0b81..1fd0d4fb24fbd4dcda198c03c832e239
      fn not_before_accepts_zero() {
          assert_eq!(validate_not_before("0"), Ok(0));
 diff --git a/crates/buzz-relay/src/handlers/req.rs b/crates/buzz-relay/src/handlers/req.rs
-index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed533c00401f 100644
+index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85cacdca93 100644
 --- a/crates/buzz-relay/src/handlers/req.rs
 +++ b/crates/buzz-relay/src/handlers/req.rs
 @@ -7,7 +7,7 @@ use tracing::{debug, warn};
@@ -2748,7 +2748,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
              ));
              return;
          }
-@@ -1676,28 +1676,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex:
+@@ -1705,28 +1705,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex:
      })
  }
  
@@ -2790,7 +2790,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      let p_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::P);
      filters.iter().all(|filter| {
          // Specific-event lookups don't fish.
-@@ -1705,11 +1706,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
+@@ -1734,11 +1735,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
              return true;
          }
  
@@ -2807,7 +2807,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
              return true;
          }
  
-@@ -1880,6 +1881,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
+@@ -1909,6 +1910,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -2818,7 +2818,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      use nostr::{Alphabet, Filter, SingleLetterTag};
  
      fn lifecycle_conn() -> (
-@@ -3240,7 +3245,7 @@ mod tests {
+@@ -3326,7 +3331,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2827,7 +2827,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      #[test]
-@@ -3252,7 +3257,7 @@ mod tests {
+@@ -3338,7 +3343,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2836,7 +2836,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      #[test]
-@@ -3263,7 +3268,7 @@ mod tests {
+@@ -3349,7 +3354,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .custom_tags(p_tag, [&owner]);
@@ -2845,7 +2845,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      #[test]
-@@ -3275,7 +3280,7 @@ mod tests {
+@@ -3361,7 +3366,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2854,7 +2854,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      #[test]
-@@ -3283,7 +3288,7 @@ mod tests {
+@@ -3369,7 +3374,7 @@ mod tests {
          // {kinds:[30174]} with no authors and no #p — open fishing.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16));
@@ -2863,7 +2863,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      #[test]
-@@ -3292,7 +3297,7 @@ mod tests {
+@@ -3378,7 +3383,7 @@ mod tests {
          // engrams; must still be gated.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new();
@@ -2872,7 +2872,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      #[test]
-@@ -3300,7 +3305,7 @@ mod tests {
+@@ -3386,7 +3391,7 @@ mod tests {
          // Filter not targeting engrams — pass through; this gate is silent.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(9));
@@ -2881,7 +2881,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      #[test]
-@@ -3314,7 +3319,7 @@ mod tests {
+@@ -3400,7 +3405,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .id(id);
@@ -2890,7 +2890,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      #[test]
-@@ -3329,7 +3334,7 @@ mod tests {
+@@ -3415,7 +3420,7 @@ mod tests {
                  nostr::PublicKey::from_hex(&agent).unwrap(),
                  nostr::PublicKey::from_hex(&other).unwrap(),
              ]);
@@ -2899,7 +2899,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      // These filters are the shape an authenticated relay member would send
-@@ -3343,7 +3348,7 @@ mod tests {
+@@ -3429,7 +3434,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .search("*");
@@ -2908,7 +2908,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      #[test]
-@@ -3351,7 +3356,7 @@ mod tests {
+@@ -3437,7 +3442,7 @@ mod tests {
          // {"search":"foo"} — no `kinds` field at all matches engrams too.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().search("foo");
@@ -2917,7 +2917,7 @@ index 646cfe375b0712ce71136c32610cee0d69c171b9..f188008f6804a2eba8d0a36bb08eed53
      }
  
      #[test]
-@@ -3362,7 +3367,62 @@ mod tests {
+@@ -3448,7 +3453,62 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .search("foo");
@@ -5568,7 +5568,7 @@ index 3460494a44bc463b9eeefe7c21682761f24af7b1..008323677c1f77303ef8878563f391a4
    effortLevel?: string | null;
  };
 diff --git a/desktop/src/testing/e2eBridge.ts b/desktop/src/testing/e2eBridge.ts
-index e03c85d40d4d8b203afff1a2bbc7877b3d4dd453..92642effd2731a9f245e127aceb9f73e67719a75 100644
+index 9fa7b42b2a227ff1cc319fd5ce884e018d7d4d11..6ae14b5ae33f8326ddf4b4fe82c0c829a378f7ba 100644
 --- a/desktop/src/testing/e2eBridge.ts
 +++ b/desktop/src/testing/e2eBridge.ts
 @@ -361,6 +361,7 @@ type E2eConfig = {
@@ -5579,7 +5579,7 @@ index e03c85d40d4d8b203afff1a2bbc7877b3d4dd453..92642effd2731a9f245e127aceb9f73e
      addChannelMembersDelayMs?: number;
      /** Sequenced add-member failures. A string fails that call; null succeeds. */
      addChannelMembersErrors?: (string | null)[];
-@@ -1032,6 +1033,34 @@ type RawAgentMemoryListing = {
+@@ -1037,6 +1038,34 @@ type RawAgentMemoryListing = {
    fetchedAt: number;
  };
  
@@ -5614,7 +5614,7 @@ index e03c85d40d4d8b203afff1a2bbc7877b3d4dd453..92642effd2731a9f245e127aceb9f73e
  type RawCommandAvailability = {
    command: string;
    resolved_path: string | null;
-@@ -8939,6 +8968,58 @@ async function handleGetAgentMemory(
+@@ -8963,6 +8992,58 @@ async function handleGetAgentMemory(
        };
  }
  
@@ -5673,7 +5673,7 @@ index e03c85d40d4d8b203afff1a2bbc7877b3d4dd453..92642effd2731a9f245e127aceb9f73e
  async function handleListPersonas(): Promise<RawPersona[]> {
    return mockPersonas.map((persona) => ({ ...persona }));
  }
-@@ -14088,6 +14169,15 @@ export function maybeInstallE2eTauriMocks() {
+@@ -14120,6 +14201,15 @@ export function maybeInstallE2eTauriMocks() {
            (payload as Parameters<typeof handleGetAgentMemory>[0]) ?? {},
            activeConfig,
          );
@@ -5838,7 +5838,7 @@ index 0000000000000000000000000000000000000000..15194dd9248da1109399f33b3a071fbd
 +  await capture(page, "06-edit-conflict");
 +});
 diff --git a/desktop/tests/helpers/bridge.ts b/desktop/tests/helpers/bridge.ts
-index c074cc419f841cfa278cc3ab77c9bfb68d70b241..b206d300930b401ba69f1c4065273d50b55bd4e0 100644
+index 3eaf58a5e4b677743721740d3242c10226ccba0d..83aabeac18212647807334ad027a35ab72b9c942 100644
 --- a/desktop/tests/helpers/bridge.ts
 +++ b/desktop/tests/helpers/bridge.ts
 @@ -129,6 +129,34 @@ export type MockAgentMemoryListing = {

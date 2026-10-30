@@ -47,10 +47,10 @@ index 01cd20d6225324444637b3043f37434cdf5a1569..26028bb522416c109b27644b144f49fc
                  profile={profiles[group.pubkey.toLowerCase()] ?? null}
                />
 diff --git a/desktop/tests/e2e/agent-availability.spec.ts b/desktop/tests/e2e/agent-availability.spec.ts
-index 3a1658d312d6f375ebded533c053c84c0db346a0..e701055df2101fc6e5ec32eb3fca7ccf122230fb 100644
+index 9ed961bdb884968ab3f50f9dc4ba418139caea67..503bb65b1a815eccd8c485966d6dd98a9252d0b3 100644
 --- a/desktop/tests/e2e/agent-availability.spec.ts
 +++ b/desktop/tests/e2e/agent-availability.spec.ts
-@@ -826,3 +826,72 @@ test("owned remote deployment can be deployed again under the same identity", as
+@@ -837,3 +837,72 @@ test("owned remote deployment can be deployed again under the same identity", as
      ),
    ).toEqual([]);
  });

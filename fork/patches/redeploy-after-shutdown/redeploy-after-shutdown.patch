@@ -65,10 +65,10 @@ index 41d4cc420f122fd841d40cd97c970a3841318b0c..d6cd0d4338e83dc42a60cbba66d8166a
        if (isRelayRemovedError(error)) return;
        toast.error(
 diff --git a/desktop/tests/e2e/agent-availability.spec.ts b/desktop/tests/e2e/agent-availability.spec.ts
-index ad59e96e2a01a4ef118cadc359d4e3d13d198827..3a1658d312d6f375ebded533c053c84c0db346a0 100644
+index 947b6300fbff72104d4871b4b3e29392e989be67..9ed961bdb884968ab3f50f9dc4ba418139caea67 100644
 --- a/desktop/tests/e2e/agent-availability.spec.ts
 +++ b/desktop/tests/e2e/agent-availability.spec.ts
-@@ -742,3 +742,87 @@ for (const scenario of [
+@@ -753,3 +753,87 @@ for (const scenario of [
      }
    });
  }

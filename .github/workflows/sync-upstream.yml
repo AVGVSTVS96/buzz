@@ -11,6 +11,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: write
 
 env:
@@ -28,6 +29,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
+      # Each Rust cache is 2-3 GB and the repo holds 10 GB, so superseded
+      # ones would evict the desktop build's cache.
+      - name: Keep only the newest Rust cache of each kind
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list -R "$GITHUB_REPOSITORY" --key v0-rust- -L 100 --json id,key,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | group_by(.key | split("-")[:-2]) | map(.[1:][].id)[]' |
+            xargs -r -n1 gh cache delete -R "$GITHUB_REPOSITORY"
+
       - name: Checkout fork main
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:

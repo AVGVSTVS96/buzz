@@ -13,6 +13,7 @@ runs:
         workspaces: |
           .
           desktop/src-tauri
+        shared-key: sync
         save-if: ${{ github.ref == 'refs/heads/main' }}
 
     - name: Install Tauri dependencies (Linux)

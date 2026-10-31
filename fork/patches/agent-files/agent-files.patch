@@ -2300,7 +2300,7 @@ index e9e2dfa5e741ed27a190050e85dbf19b04691055..8bd66caefda79bfcaebb792352078598
  // 1984 is a regular event (persisted to the queue, never fanned out);
  // 9040–9044 are direct commands (executed, never stored).
 diff --git a/crates/buzz-core/src/lib.rs b/crates/buzz-core/src/lib.rs
-index e7669c874b0e022d8817ff08f60bcf945bda9a8c..ae49523c91baad69809908c260d55f0c06976961 100644
+index 99b4aa68032064273c9cf989ff77ec674faafac0..aa80f27d9291b984e49102326a2bc864555bf270 100644
 --- a/crates/buzz-core/src/lib.rs
 +++ b/crates/buzz-core/src/lib.rs
 @@ -5,6 +5,9 @@
@@ -2723,7 +2723,7 @@ index 0e44eb8c1e5a68b724ff11eb91dcd28656c2788e..ca6623e22d0b8d1611f981ec50aec9df
      fn not_before_accepts_zero() {
          assert_eq!(validate_not_before("0"), Ok(0));
 diff --git a/crates/buzz-relay/src/handlers/req.rs b/crates/buzz-relay/src/handlers/req.rs
-index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85cacdca93 100644
+index bddaa55e15467b3bada8b388b601e26ec868cbd3..65748c98bdd3d52e2384c7fcaae21d725b688b9d 100644
 --- a/crates/buzz-relay/src/handlers/req.rs
 +++ b/crates/buzz-relay/src/handlers/req.rs
 @@ -7,7 +7,7 @@ use tracing::{debug, warn};
@@ -2735,20 +2735,20 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      KIND_HUDDLE_LIVENESS, P_GATED_KINDS, RESULT_GATED_KINDS, SHARED_GATED_KINDS,
  };
  use buzz_core::tenant::TenantContext;
-@@ -289,10 +289,10 @@ pub async fn handle_req(
-             ));
+@@ -296,10 +296,10 @@ pub async fn handle_req(
+             .await;
              return;
          }
 -        if !engram_filters_authorized(&filters, &authed_pubkey_hex) {
 +        if !agent_pair_filters_authorized(&filters, &authed_pubkey_hex) {
-             conn.send(RelayMessage::closed(
+             super::close::refuse(
                  &sub_id,
 -                "restricted: agent-engram reads require authors=[self] or #p=[self]",
 +                "restricted: agent-pair reads require authors=[self] or #p=[self]",
-             ));
-             return;
-         }
-@@ -1705,28 +1705,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex:
+                 &conn,
+                 &state,
+             )
+@@ -1741,28 +1741,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex:
      })
  }
  
@@ -2790,7 +2790,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      let p_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::P);
      filters.iter().all(|filter| {
          // Specific-event lookups don't fish.
-@@ -1734,11 +1735,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
+@@ -1770,11 +1771,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
              return true;
          }
  
@@ -2807,7 +2807,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
              return true;
          }
  
-@@ -1909,6 +1910,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
+@@ -1945,6 +1946,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -2818,7 +2818,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      use nostr::{Alphabet, Filter, SingleLetterTag};
  
      fn lifecycle_conn() -> (
-@@ -3326,7 +3331,7 @@ mod tests {
+@@ -3434,7 +3439,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2827,7 +2827,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      #[test]
-@@ -3338,7 +3343,7 @@ mod tests {
+@@ -3446,7 +3451,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2836,7 +2836,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      #[test]
-@@ -3349,7 +3354,7 @@ mod tests {
+@@ -3457,7 +3462,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .custom_tags(p_tag, [&owner]);
@@ -2845,7 +2845,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      #[test]
-@@ -3361,7 +3366,7 @@ mod tests {
+@@ -3469,7 +3474,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2854,7 +2854,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      #[test]
-@@ -3369,7 +3374,7 @@ mod tests {
+@@ -3477,7 +3482,7 @@ mod tests {
          // {kinds:[30174]} with no authors and no #p — open fishing.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16));
@@ -2863,7 +2863,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      #[test]
-@@ -3378,7 +3383,7 @@ mod tests {
+@@ -3486,7 +3491,7 @@ mod tests {
          // engrams; must still be gated.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new();
@@ -2872,7 +2872,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      #[test]
-@@ -3386,7 +3391,7 @@ mod tests {
+@@ -3494,7 +3499,7 @@ mod tests {
          // Filter not targeting engrams — pass through; this gate is silent.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(9));
@@ -2881,7 +2881,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      #[test]
-@@ -3400,7 +3405,7 @@ mod tests {
+@@ -3508,7 +3513,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .id(id);
@@ -2890,7 +2890,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      #[test]
-@@ -3415,7 +3420,7 @@ mod tests {
+@@ -3523,7 +3528,7 @@ mod tests {
                  nostr::PublicKey::from_hex(&agent).unwrap(),
                  nostr::PublicKey::from_hex(&other).unwrap(),
              ]);
@@ -2899,7 +2899,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      // These filters are the shape an authenticated relay member would send
-@@ -3429,7 +3434,7 @@ mod tests {
+@@ -3537,7 +3542,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .search("*");
@@ -2908,7 +2908,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      #[test]
-@@ -3437,7 +3442,7 @@ mod tests {
+@@ -3545,7 +3550,7 @@ mod tests {
          // {"search":"foo"} — no `kinds` field at all matches engrams too.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().search("foo");
@@ -2917,7 +2917,7 @@ index 6676dd19ad443987d208f4387e9accd61fb0f29b..ce821dcf485535f73277adfa30300c85
      }
  
      #[test]
-@@ -3448,7 +3453,62 @@ mod tests {
+@@ -3556,7 +3561,62 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .search("foo");
@@ -3816,7 +3816,7 @@ index 157b856b02289a8dd26be89a8ae9844521ee1ce8..9281eabc30a858c625010020e70e7374
          definition_respond_to: None,
          definition_respond_to_allowlist: vec![],
 diff --git a/desktop/src-tauri/src/managed_agents/mod.rs b/desktop/src-tauri/src/managed_agents/mod.rs
-index ad030769de0d4eede0b961550a68a7d6b3546e30..2c09224ee9d0087961132927ab59dee8bd360572 100644
+index afac5204c9bb6695ae2d9a0dbffeb2c1f7134de3..e01be2a38cb17bfbb5a3a2e3e28b64c7de1a5dcf 100644
 --- a/desktop/src-tauri/src/managed_agents/mod.rs
 +++ b/desktop/src-tauri/src/managed_agents/mod.rs
 @@ -42,6 +42,7 @@ mod runtime;

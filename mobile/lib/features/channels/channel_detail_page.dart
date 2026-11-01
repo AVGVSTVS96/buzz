@@ -1,5 +1,6 @@
 import 'package:buzz/shared/widgets/feedback_snackbar.dart';
 import 'message_swipe_reply.dart';
+import 'agent_reply_handoff.dart';
 import 'huddle_timeline.dart';
 import '../../shared/widgets/modal_presentation.dart';
 import '../../shared/widgets/ios_scroll_to_top.dart';
@@ -31,6 +32,7 @@ import '../../shared/identity_names/identity_names_provider.dart';
 import '../../shared/mentions/agent_identity_provider.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/widgets/avatar_shape.dart';
 import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/bouncing_dots_indicator.dart';
@@ -57,8 +59,8 @@ import 'channel_management_provider.dart';
 import 'channel_sections/channel_sections_provider.dart';
 import 'channel_messages_provider.dart';
 import 'channel_typing_provider.dart';
-import 'conversation_activity.dart';
-import 'conversation_activity_state.dart';
+import 'inline_agent_typing.dart';
+import 'typing_motion_preview.dart';
 import 'channel_ids_by_name_provider.dart';
 import 'channels_provider.dart';
 import 'unread_badge/observed_unread_event.dart';
@@ -102,7 +104,6 @@ part 'channel_detail_page/empty_messages.dart';
 part 'channel_detail_page/oldest_navigation.dart';
 part 'channel_detail_page/system_rows.dart';
 part 'channel_detail_page/thread_working.dart';
-part 'channel_detail_page/composer_activity.dart';
 part 'channel_detail_page/activity_members_sheet.dart';
 part 'channel_detail_page/huddle_sheet.dart';
 part 'channel_detail_page/huddle_call_avatar.dart';
@@ -445,8 +446,8 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
       channelBotPubkeys:
           channelBotPubkeysState.asData?.value ?? const <String>{},
     );
-    // As on desktop, the user's agents working in a thread show on its root
-    // message. Me counts thread typing as its own conversation's.
+    // Keep the working-agent reply link on channel and DM roots. Solo
+    // conversations already flatten their replies into the timeline.
     final threadWorking = _threadWorkingAgents(
       ref,
       personalChat
@@ -457,6 +458,26 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
               ).select((all) => _threadTypingKey(all, currentPubkey)),
             ),
     );
+    final ownedThreadTypers = {
+      for (final agents in threadWorking.values) ...agents,
+    };
+    // Agent work is visible in every DM, even when its response is threaded.
+    // Ordinary channels keep other thread activity inside the thread view,
+    // but, as on desktop, show the user's own agents working in any thread.
+    final typingEntries = ref
+        .watch(
+          visibleTypingProvider(
+            channel.id,
+            selfPubkey: currentPubkey,
+            include: (e) =>
+                personalChat ||
+                e.threadHeadId == null ||
+                ownedThreadTypers.contains(e.pubkey.toLowerCase()) ||
+                (resolvedChannel.isDm &&
+                    agentPubkeys.contains(e.pubkey.toLowerCase())),
+          ),
+        )
+        .entries;
     useEffect(() {
       if (sessionStatus != SessionStatus.connected ||
           identitySubscriptionPubkeys.isEmpty) {
@@ -525,10 +546,13 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
     final isConnectionInProgress =
         sessionStatus == SessionStatus.connecting ||
         sessionStatus == SessionStatus.reconnecting;
+    // A loaded timeline stays on screen through a reconnect, as a loaded
+    // forum does. The session drops its socket five seconds into the
+    // background, so nearly every return to the app reconnects. Only a forum
+    // with no posts yet waits out this debounce for its skeleton.
     final showConnectionSkeleton = useState(false);
     final shouldDebounceConnectionSkeleton =
-        isConnectionInProgress &&
-        (resolvedChannel.isForum || messagesNotifier.hasLoadedMessages);
+        isConnectionInProgress && resolvedChannel.isForum;
     useEffect(() {
       if (!shouldDebounceConnectionSkeleton) {
         showConnectionSkeleton.value = false;
@@ -661,7 +685,6 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
           !resolvedChannel.isForum &&
               timelineEntries.isNotEmpty &&
               !showInitialConnectionSkeleton &&
-              !showConnectionSkeleton.value &&
               !messagesState.isLoading
           ? Stack(
               children: [
@@ -711,6 +734,13 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
           'offline' => context.colors.outline,
           _ => null,
         },
+        // Loaded content stays readable while it reconnects and catches up;
+        // the title capsule shows that it is not current yet.
+        nativeTitleRefreshing: resolvedChannel.isForum
+            ? isConnectionInProgress &&
+                  ref.watch(forumPostsProvider(channel.id)).value != null
+            : (isConnectionInProgress && messagesNotifier.hasLoadedMessages) ||
+                  messagesNotifier.isCatchingUp,
         onNativeTitlePressed: openChannelDetails,
         nativeActions: [
           if (personalChat)
@@ -780,7 +810,6 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
                         key: ValueKey('message-loading:${channel.id}'),
                         loading:
                             showInitialConnectionSkeleton ||
-                            showConnectionSkeleton.value ||
                             messagesState.isLoading,
                         shimmerEnabled:
                             sessionStatus != SessionStatus.disconnected,
@@ -821,6 +850,11 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
                           data: (events) {
                             return _MessageList(
                               notifier: ref.watch(messagesProvider.notifier),
+                              inlineTyping:
+                                  resolvedChannel.isMember &&
+                                      !resolvedChannel.isArchived
+                                  ? typingEntries
+                                  : const [],
                               threadWorking: threadWorking,
                               stickyDateHeaderState: stickyDateHeaderState,
                               entries: timelineEntries,
@@ -889,15 +923,6 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      _ComposerActivity(
-                        scope: ActivityScope(
-                          channelId: channel.id,
-                          selfPubkey: currentPubkey,
-                          allThreads: personalChat,
-                        ),
-                        channel: resolvedChannel,
-                        messages: timelineMessages,
-                      ),
                       ?assistant.pendingNotice,
                       ComposeBar(
                         channelId: channel.id,

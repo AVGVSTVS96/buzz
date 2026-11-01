@@ -20,10 +20,14 @@ class OnboardingAppEntry extends HookConsumerWidget {
     this.addingCommunity = false,
     this.restoreAccount = true,
     this.onExit,
+    this.onComplete,
   });
   final bool addingCommunity;
   final bool restoreAccount;
   final VoidCallback? onExit;
+
+  /// Continues picker restoration before the completed Add route is removed.
+  final VoidCallback? onComplete;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -45,8 +49,11 @@ class OnboardingAppEntry extends HookConsumerWidget {
       unawaited(restore());
       return null;
     }, [flow]);
+    final finishing = useRef(false);
     void finishEntry() {
-      if (!addingCommunity) return;
+      if (!addingCommunity || finishing.value) return;
+      finishing.value = true;
+      onComplete?.call();
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!context.mounted) return;
         final route = ModalRoute.of(context);
@@ -188,7 +195,7 @@ class OnboardingAppEntry extends HookConsumerWidget {
             ? null
             : () => unawaited(flow.signInAccount()),
         accountStatus: status,
-        builderlabBusy: busy,
+        builderlabBusy: busy && !signingIn,
         signInPending: signingIn || busy,
         builderlabLabel: signingIn
             ? 'Cancel sign-in'

@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 3a5345b5bdc3aefd951ea5320daf2e9c25d70469..24119a4c5e37003b9e8f89aabd9131c5a3dc1dd0 100644
+index 2335abca718aa15f471c4f0e3eb5f25f85f773c6..7573ea8fd41e4f2bc9b1d6a3619b3803eb2e43c6 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [
@@ -2225,7 +2225,7 @@ index 7f38347f80804128dcb43845bed0821ab7bfd85c..9f81c0fb65a4b44907ea40e1199f43bd
  }
  
 diff --git a/crates/buzz-core/src/kind.rs b/crates/buzz-core/src/kind.rs
-index e9e2dfa5e741ed27a190050e85dbf19b04691055..8bd66caefda79bfcaebb7923520785986c73ef55 100644
+index ae7a6221ebca35ea0b3e894bcfdcec319536d5b3..e3eb36642242726879fc5463e93d9775478fc66e 100644
 --- a/crates/buzz-core/src/kind.rs
 +++ b/crates/buzz-core/src/kind.rs
 @@ -96,6 +96,40 @@ pub const KIND_AGENT_PROFILE: u32 = 10100;
@@ -2279,7 +2279,7 @@ index e9e2dfa5e741ed27a190050e85dbf19b04691055..8bd66caefda79bfcaebb792352078598
      KIND_EVENT_REMINDER,
      KIND_PERSONA,
      KIND_TEAM,
-@@ -920,6 +957,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 300
+@@ -924,6 +961,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 300
  const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 30177 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_TEAM_CATALOG)); // 30178 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_PRIVATE_MANAGED_AGENT)); // 30179 ∈ 30000–39999
@@ -2287,7 +2287,7 @@ index e9e2dfa5e741ed27a190050e85dbf19b04691055..8bd66caefda79bfcaebb792352078598
  const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999
-@@ -947,6 +985,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
+@@ -951,6 +989,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(!is_replaceable(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(!is_parameterized_replaceable(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(KIND_AGENT_TURN_METRIC <= u16::MAX as u32);
@@ -2361,7 +2361,7 @@ index 08ff84a017db906f29d44baa48117c86d76288bc..b8ec8b440a7fbe5966725182a49a2fda
          return;
      }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index 0e44eb8c1e5a68b724ff11eb91dcd28656c2788e..ca6623e22d0b8d1611f981ec50aec9df70d0d07b 100644
+index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4d95554a8 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;

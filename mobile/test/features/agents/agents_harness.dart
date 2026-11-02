@@ -1,4 +1,3 @@
-import 'package:buzz/features/agents/community_bot_profiles.dart';
 import 'package:buzz/shared/me/me_sync.dart';
 import '../../shared/me/me_sync_test.dart' show FakeRelay;
 import 'dart:async';
@@ -20,6 +19,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:hooks_riverpod/misc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../helpers/remote_agents_fixture.dart';
@@ -196,8 +196,8 @@ class AgentsHarness {
   Future<void> open(
     WidgetTester tester, {
     required List<String> directory,
-    List<String> botDirectory = const [],
     Widget? home,
+    List<Override> overrides = const [],
   }) async {
     registered = [...directory, oldAppAgentKeys.public];
     final prefs = await SharedPreferences.getInstance();
@@ -209,9 +209,6 @@ class AgentsHarness {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          communityBotProfilesProvider.overrideWith(
-            (ref) async => botDirectory,
-          ),
           ownedAgentDirectoryProvider.overrideWith(
             (ref) =>
                 loadOwnedAgentDirectory(fakeOwner.public, relay.fetchHistory),
@@ -231,6 +228,7 @@ class AgentsHarness {
                 AgentDirectoryEntry(pubkey: pubkey),
             ],
           ),
+          ...overrides,
         ],
         child: MaterialApp(
           theme: AppTheme.light(),

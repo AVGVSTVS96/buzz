@@ -32,6 +32,23 @@ bool supportsRemoteAgents(Community? community) =>
     community.pubkey != null &&
     HostedEnvironment.supportsRelay(Uri.parse(community.relayUrl));
 
+/// Whether a signed-out Builderlab account hides where this community's agents
+/// run: remote agents are unlistable until the user signs in, so an agent that
+/// is not in the registry is not necessarily desktop-managed.
+bool agentLocationUnknown(
+  Community? community,
+  RemoteAgentController controller,
+) => supportsRemoteAgents(community) && controller.account.account == null;
+
+/// Whether to ask the user to sign in to Builderlab: the agent location is
+/// unknown and no load is in flight. A cold start's saved-session restore
+/// runs inside the controller's refresh, so prompting then would start a
+/// needless browser sign-in for a session that is about to be adopted.
+bool builderlabSignInNeeded(
+  Community? community,
+  RemoteAgentController controller,
+) => agentLocationUnknown(community, controller) && !controller.busy;
+
 /// Restores a saved Builderlab session once, so a cold start with a stored
 /// session shows remote agents without waiting for another sign-in path.
 final builderlabRestoreProvider = FutureProvider<void>((ref) async {
@@ -290,7 +307,9 @@ class RemoteAgentController extends ChangeNotifier {
       return;
     }
     await ensureBinding();
-    final result = await account.post('/v3/beekeeper/list-agents', {});
+    final result = await account.post('/v3/beekeeper/list-agents', {
+      'include_instructions': true,
+    });
     requireStatus(result, 'SUCCESS', 1);
     final rows = result['agents'] ?? [];
     if (rows is! List) throw StateError('Invalid agent listing.');
@@ -443,11 +462,9 @@ class RemoteAgentController extends ChangeNotifier {
     }, expectedSubject: subject);
     check();
     if (result['error'] != null) throw AccountFailure.rejected;
-    final readback = await account.post(
-      '/v3/beekeeper/list-agents',
-      {},
-      expectedSubject: subject,
-    );
+    final readback = await account.post('/v3/beekeeper/list-agents', {
+      'include_instructions': true,
+    }, expectedSubject: subject);
     check();
     requireStatus(readback, 'SUCCESS', 1);
     final rows = readback['agents'];
@@ -777,7 +794,10 @@ class RemoteAgentController extends ChangeNotifier {
     final retries = Map<String, dynamic>.from(
       jsonDecode(prefs.getString('$scope:delete-retries') ?? '{}') as Map,
     );
-    retries[pubkey] = agent;
+    // Instructions are private, and this retry journal is plain preferences;
+    // a retry needs only the row's identity.
+    retries[pubkey] = Map<String, dynamic>.from(agent)
+      ..remove('agent_instructions');
     if (!await prefs.setString('$scope:delete-retries', jsonEncode(retries))) {
       throw StateError('Could not save deletion retry. Retry Delete.');
     }

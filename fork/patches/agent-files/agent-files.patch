@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 2335abca718aa15f471c4f0e3eb5f25f85f773c6..7573ea8fd41e4f2bc9b1d6a3619b3803eb2e43c6 100644
+index 92c8f60307abb190ee8746ee332d6c489e82ed79..046a10208158bc4d8bde2d3fa159ac52541e7fb1 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [
@@ -2361,7 +2361,7 @@ index 08ff84a017db906f29d44baa48117c86d76288bc..b8ec8b440a7fbe5966725182a49a2fda
          return;
      }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4d95554a8 100644
+index 9cae758646e9f4d452e69247fbec37bd97669884..43717601e07b1ac8c51351f5f88d0b497cc5a6b8 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2395,7 +2395,7 @@ index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4
          // NIP-56 reports are ordinary member writes into the mod-only queue.
          // Ingest persists them to `moderation_reports` and suppresses public
          // storage/fanout; reports are signals, never enforcement triggers.
-@@ -764,6 +768,11 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
+@@ -765,6 +769,11 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
              | KIND_EMOJI_LIST
              // NIP-AE agent engrams are addressed by (pubkey_a, kind, d_tag); never channel-scoped.
              | KIND_AGENT_ENGRAM
@@ -2407,7 +2407,7 @@ index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4
              // NIP-ER event reminders are addressed by (pubkey, kind, d_tag); never channel-scoped.
              | KIND_EVENT_REMINDER
              // Agent profile (10100): user-owned replaceable, keyed by pubkey.
-@@ -1573,8 +1582,9 @@ fn validate_diff_event(event: &Event) -> Result<(), String> {
+@@ -1574,8 +1583,9 @@ fn validate_diff_event(event: &Event) -> Result<(), String> {
      Ok(())
  }
  
@@ -2419,7 +2419,7 @@ index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4
  ///
  /// We deliberately do this here (not in the d-tag length check downstream)
  /// because a malformed envelope can otherwise *replace* a valid head in
-@@ -1586,6 +1596,11 @@ fn validate_diff_event(event: &Event) -> Result<(), String> {
+@@ -1587,6 +1597,11 @@ fn validate_diff_event(event: &Event) -> Result<(), String> {
  ///
  /// Content is opaque NIP-44 ciphertext; we do not parse it.
  fn validate_engram_envelope(event: &Event) -> Result<(), String> {
@@ -2431,7 +2431,7 @@ index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4
      let mut d_tags: Vec<&str> = Vec::new();
      let mut p_tags: Vec<&str> = Vec::new();
      for tag in event.tags.iter() {
-@@ -1601,13 +1616,13 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
+@@ -1602,13 +1617,13 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
      }
      if d_tags.len() != 1 {
          return Err(format!(
@@ -2447,7 +2447,7 @@ index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4
              p_tags.len()
          ));
      }
-@@ -1617,7 +1632,7 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
+@@ -1618,7 +1633,7 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
              .bytes()
              .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
      {
@@ -2456,7 +2456,7 @@ index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4
      }
      let p = p_tags[0];
      // Lowercase-only: readers query `#p` with `owner.to_hex()` (lowercase) and
-@@ -1629,16 +1644,88 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
+@@ -1630,16 +1645,88 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
              .bytes()
              .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
      {
@@ -2547,7 +2547,7 @@ index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4
  /// Enforce the `shared`-tag shape shared by every kind in
  /// [`buzz_core::kind::SHARED_GATED_KINDS`]: at most one `shared` tag, and if
  /// present it must be exactly `["shared", "true"]`.
-@@ -3150,11 +3237,16 @@ async fn ingest_event_inner(
+@@ -3151,11 +3238,16 @@ async fn ingest_event_inner(
          validate_diff_event(&event).map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
      }
  
@@ -2565,7 +2565,7 @@ index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4
      if kind_u32 == KIND_AGENT_TURN_METRIC {
          validate_agent_turn_metric_envelope(&event)
              .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-@@ -4471,6 +4563,9 @@ mod postgres_tests {
+@@ -4487,6 +4579,9 @@ mod postgres_tests {
              KIND_EMOJI_SET,
              KIND_EMOJI_LIST,
              KIND_AGENT_ENGRAM,
@@ -2575,7 +2575,7 @@ index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4
              KIND_AGENT_PROFILE,
              KIND_PERSONA,
              KIND_TEAM,
-@@ -4522,6 +4617,27 @@ mod postgres_tests {
+@@ -4538,6 +4633,27 @@ mod postgres_tests {
          );
      }
  
@@ -2603,7 +2603,7 @@ index 43698154b0bbc29b44ae63e139b27aa27ebc92c2..e6e9a262631ef1a267332152328546a4
      #[test]
      fn nip51_and_nip65_lists_are_global_only() {
          for kind in [
-@@ -4989,6 +5105,118 @@ mod postgres_tests {
+@@ -5005,6 +5121,118 @@ mod postgres_tests {
          assert!(err.contains("base64"), "got: {err}");
      }
  

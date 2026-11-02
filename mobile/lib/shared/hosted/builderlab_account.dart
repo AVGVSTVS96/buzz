@@ -83,6 +83,12 @@ class BuilderlabAccountClient {
     '/v3/beekeeper/list-agents',
   };
 
+  /// Agent listings carry each agent's instructions (up to 20,000 characters
+  /// apiece), so they get room for many full agents; every other route keeps
+  /// the default bound.
+  static int _responseLimit(String path) =>
+      path == '/v3/beekeeper/list-agents' ? 4 * 1024 * 1024 : 65536;
+
   /// Sessions are scoped per origin so staging never reads production state.
   late final _storageKey =
       'buzz_hosted_session_${accountOrigin.host.replaceAll('.', '_')}_v1';
@@ -231,12 +237,8 @@ class BuilderlabAccountClient {
       throw AccountFailure.invalidResponse;
     }
     if (!parsed.isAfter(DateTime.now().toUtc())) throw AccountFailure.signedOut;
-    final standing = result['account_standing'];
     final needsSetup =
-        standing is Map &&
-        (standing['details_status'] == 'ACCOUNT_DETAILS_STATUS_MISSING' ||
-            standing['screening_status'] ==
-                'ACCOUNT_SCREENING_STATUS_NOT_SCREENED');
+        result['account_status'] == 'ACCOUNT_STATUS_NEEDS_DETAILS';
     return BuilderlabAccount(
       subject: subject,
       expiresAt: parsed,
@@ -374,7 +376,11 @@ class BuilderlabAccountClient {
           );
         }
       }
-      final response = await boundedHttpResponse(_http, request);
+      final response = await boundedHttpResponse(
+        _http,
+        request,
+        maxBytes: _responseLimit(path),
+      );
       if (kDebugMode && response.statusCode >= 400) {
         debugPrint(
           'Builderlab ${accountOrigin.host} ${request.method} $path: HTTP ${response.statusCode} contentType=${response.headers['content-type']?.split(';').first}',

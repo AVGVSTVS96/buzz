@@ -503,13 +503,13 @@ index 01b1ddc8828638d2cb5e1531cb50336c9067e406..e141975a79ddff8009846722e06cac29
  pub use agent_logs::*;
  pub use agent_metric_archive::*;
 diff --git a/desktop/src-tauri/src/egress_guard_tests.rs b/desktop/src-tauri/src/egress_guard_tests.rs
-index c2d63b3cfffbb2735b323ca81450f097c7610456..2843e5305202ce31b2f71ac295e86b954eaa071c 100644
+index 77ac6479633bed23c5fa9fadda6fd6aafc73330f..b12ed20a0d162a7237558bd4b6e8748d7bb47fbd 100644
 --- a/desktop/src-tauri/src/egress_guard_tests.rs
 +++ b/desktop/src-tauri/src/egress_guard_tests.rs
-@@ -295,6 +295,9 @@ const EVENTS_INVENTORY: &[(&str, usize, usize)] = &[
-     ("src/commands/teams/pending/tests/gate.rs", 1, 0),
-     // Accepting stub relay in the starter-channel creation tests.
-     ("src/commands/channels/starter_tests.rs", 1, 0),
+@@ -296,6 +296,9 @@ const EVENTS_INVENTORY: &[(&str, usize, usize)] = &[
+     // Stub relays in the starter-channel creation tests: one accepts every
+     // event, the other refuses channel creates.
+     ("src/commands/channels/starter_tests.rs", 2, 0),
 +    // Recording stub relay in the connect-agent tests; production publish
 +    // goes through the guarded boundary-1 funnel via the flush loop.
 +    ("src/commands/agent_connect_tests.rs", 1, 0),

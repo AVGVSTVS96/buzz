@@ -348,6 +348,7 @@ class App extends HookConsumerWidget {
       navigatorKey: _mobileRootNavigatorKey,
       navigatorObservers: [appRouteObserver],
       title: 'Buzz',
+      debugShowCheckedModeBanner: false,
       theme: mobileAppearanceTheme(Brightness.light, communityTheme.accent),
       darkTheme: mobileAppearanceTheme(Brightness.dark, communityTheme.accent),
       themeMode: themeMode,
@@ -403,8 +404,6 @@ class App extends HookConsumerWidget {
                 newWorkspaceAction: workspace,
               ),
               settingsPageBuilder: _buildSettingsPage,
-              profilePageBuilder: (_) =>
-                  const _SettingsPageContent(embedded: true),
               communityInvitePageBuilder: (_) => const CommunityInvitePage(),
               communityAppearancePageBuilder: (_) => const ThemePickerPage(),
             ),
@@ -422,13 +421,11 @@ class App extends HookConsumerWidget {
 Widget _buildSettingsPage(BuildContext context) => const _SettingsPageContent();
 
 class _SettingsPageContent extends ConsumerWidget {
-  const _SettingsPageContent({this.embedded = false});
-  final bool embedded;
+  const _SettingsPageContent();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return SettingsPage(
-      embedded: embedded,
       profileHeader: const SettingsProfileHeader(),
       profileEditPageBuilder: (_) =>
           const ProfileEditPage(startInPhotoEditor: true),

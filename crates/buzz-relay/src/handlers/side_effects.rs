@@ -539,6 +539,26 @@ fn check_deletion_privacy_k_tag(event: &Event, target_kind: u32) -> anyhow::Resu
     Ok(())
 }
 
+/// True when `actor` may change a channel's privileged metadata: a channel
+/// owner or admin, or the owning human of an active owner-role agent in the
+/// channel, even when that human is not a member (this diverges from
+/// kind:9001 intentionally).
+async fn actor_has_channel_authority(
+    state: &Arc<AppState>,
+    community_id: buzz_core::CommunityId,
+    channel_id: Uuid,
+    actor_bytes: &[u8],
+) -> anyhow::Result<bool> {
+    let members = state.db.get_members(community_id, channel_id).await?;
+    if members
+        .iter()
+        .any(|m| m.pubkey == actor_bytes && (m.role == "owner" || m.role == "admin"))
+    {
+        return Ok(true);
+    }
+    actor_owns_any_owner_agent(state, community_id, &members, actor_bytes).await
+}
+
 /// Returns `true` if `actor_bytes` is the NIP-OA owner of **any** active owner-role
 /// member in `members`. Used by kind:9002 and kind:9008 to authorize the owning
 /// human of a channel's agent-owner(s) even when the human is not a channel member.
@@ -654,25 +674,13 @@ pub async fn validate_admin_event(
         }
         9002 => {
             // EDIT_METADATA: require at least one recognized metadata tag.
-            const RECOGNIZED_TAGS: &[&str] = &[
-                "name",
-                "about",
-                "archived",
-                "topic",
-                "purpose",
-                "visibility",
-                "ttl",
-                "t",
-                "join_role",
-                "unlisted",
-            ];
             let has_recognized = event
                 .tags
                 .iter()
-                .any(|t| RECOGNIZED_TAGS.contains(&t.kind().to_string().as_str()));
+                .any(|t| is_metadata_tag(&t.kind().to_string()));
             if !has_recognized {
                 return Err(anyhow::anyhow!(
-                    "kind:9002 must include at least one metadata tag (name, about, archived, topic, purpose, visibility, ttl, t, join_role, unlisted)"
+                    "kind:9002 must include at least one metadata tag (name, about, archived, topic, purpose, visibility, ttl, t, join_role, unlisted, auto_join)"
                 ));
             }
 
@@ -747,6 +755,48 @@ pub async fn validate_admin_event(
                 }
             }
 
+            // `auto_join` is a community setting, not a channel one: the
+            // relay joins every new community member into the channel. So it
+            // takes the actor's *relay* role (owner or admin), not a channel
+            // role, and the actor need not be a channel member. Only a
+            // stream channel can be a default channel; the open-and-
+            // unarchived requirement (just open, for `false`) is decided in
+            // the write, under the channel row lock, on the state the event
+            // leaves behind.
+            let mut sets_auto_join = false;
+            for t in event.tags.iter() {
+                if t.kind().to_string() == "auto_join" {
+                    match t.content() {
+                        Some("true") | Some("false") => sets_auto_join = true,
+                        Some(v) => {
+                            return Err(anyhow::anyhow!(
+                                "invalid auto_join value: {v} (must be \"true\" or \"false\")"
+                            ));
+                        }
+                        None => {
+                            return Err(anyhow::anyhow!("auto_join tag must have a value"));
+                        }
+                    }
+                }
+            }
+            if sets_auto_join {
+                let relay_role = state
+                    .db
+                    .get_relay_member(tenant.community(), &event.pubkey.to_hex())
+                    .await?
+                    .map(|m| m.role);
+                if !matches!(relay_role.as_deref(), Some("owner" | "admin")) {
+                    return Err(anyhow::anyhow!(
+                        "actor not authorized: auto_join requires a relay owner or admin"
+                    ));
+                }
+                if channel.channel_type != buzz_db::channel::ChannelType::Stream.as_str() {
+                    return Err(anyhow::anyhow!(
+                        "auto_join is only available on stream channels"
+                    ));
+                }
+            }
+
             // Validate ttl values before storage. Empty string clears the TTL
             // (channel becomes permanent); any other value must parse as a
             // positive integer number of seconds. A bare tag with no value is
@@ -778,44 +828,36 @@ pub async fn validate_admin_event(
             }
 
             // name/about/archived/visibility/ttl/labels/join_role/unlisted
-            // require owner/admin;
-            // topic/purpose allow any member who may post.
-            let has_privileged_tag = event.tags.iter().any(|t| {
-                let k = t.kind().to_string();
-                k == "name"
-                    || k == "about"
-                    || k == "archived"
-                    || k == "visibility"
-                    || k == "ttl"
-                    || k == "t"
-                    || k == "join_role"
-                    || k == "unlisted"
-            });
+            // require owner/admin; topic/purpose allow any member who may
+            // post; auto_join was decided above by relay role, so an event
+            // carrying only that tag needs neither.
+            let has_member_tag = event
+                .tags
+                .iter()
+                .any(|t| MEMBER_METADATA_TAGS.contains(&t.kind().to_string().as_str()));
+            let has_privileged_tag = event
+                .tags
+                .iter()
+                .any(|t| PRIVILEGED_METADATA_TAGS.contains(&t.kind().to_string().as_str()));
             if has_privileged_tag {
-                let members = state.db.get_members(tenant.community(), channel_id).await?;
-                let actor_member = members.iter().find(|m| m.pubkey == actor_bytes);
-                match actor_member {
-                    Some(m) if m.role == "owner" || m.role == "admin" => Ok(()),
-                    _ => {
-                        // Allow the owning human of any active owner-role agent in the
-                        // channel, even when the human is not a channel member —
-                        // diverges from kind:9001 intentionally.
-                        if actor_owns_any_owner_agent(
-                            state,
-                            tenant.community(),
-                            &members,
-                            &actor_bytes,
-                        )
-                        .await?
-                        {
-                            return Ok(());
-                        }
-                        Err(anyhow::anyhow!(
-                            "actor not authorized for name/about/archived/visibility/ttl/label/join_role/unlisted changes"
-                        ))
-                    }
+                if actor_has_channel_authority(state, tenant.community(), channel_id, &actor_bytes)
+                    .await?
+                {
+                    return Ok(());
                 }
-            } else {
+                // A relay operator may rename a listed channel, so that
+                // duplicate names can be repaired through this path
+                // (scripts/maintenance/rename_duplicate_listed_channel_names.sh).
+                // Every other privileged change still needs a channel owner
+                // or admin. The store checks "listed" again under the row
+                // lock (`ChannelMetadataEdit::operator_rename`).
+                if operator_may_rename(state, event, &channel).await? {
+                    return Ok(());
+                }
+                Err(anyhow::anyhow!(
+                    "actor not authorized for name/about/archived/visibility/ttl/label/join_role/unlisted changes"
+                ))
+            } else if has_member_tag {
                 // topic/purpose: any member whose role may post (never a
                 // guest).
                 let is_member = state
@@ -842,6 +884,15 @@ pub async fn validate_admin_event(
                 } else {
                     Err(anyhow::anyhow!("only members can change topic or purpose"))
                 }
+            } else if sets_auto_join {
+                Ok(())
+            } else {
+                // Every recognized tag must be authorized by one of the arms
+                // above; a tag added to `is_metadata_tag` but to no rule
+                // is refused rather than accepted with no authorization.
+                Err(anyhow::anyhow!(
+                    "kind:9002 metadata tag has no authorization rule"
+                ))
             }
         }
         9005 => {
@@ -1238,6 +1289,71 @@ async fn emit_typed_membership_notification(
         "membership notification emitted"
     );
     Ok(())
+}
+
+/// kind:9002 tags that only a channel owner or admin may change.
+const PRIVILEGED_METADATA_TAGS: &[&str] = &[
+    "name",
+    "about",
+    "archived",
+    "visibility",
+    "ttl",
+    "t",
+    "join_role",
+    "unlisted",
+];
+
+/// kind:9002 tags that any member who may post may change.
+const MEMBER_METADATA_TAGS: &[&str] = &["topic", "purpose"];
+
+/// kind:9002 tags that a relay owner or admin may change, whatever their
+/// channel role.
+const RELAY_ROLE_METADATA_TAGS: &[&str] = &["auto_join"];
+
+/// True when `kind` is a kind:9002 tag that changes channel metadata.
+fn is_metadata_tag(kind: &str) -> bool {
+    PRIVILEGED_METADATA_TAGS.contains(&kind)
+        || MEMBER_METADATA_TAGS.contains(&kind)
+        || RELAY_ROLE_METADATA_TAGS.contains(&kind)
+}
+
+/// True when a relay operator sends `event` and it only renames `channel`, a
+/// listed channel: open, not unlisted, a stream or forum, and not deleted.
+/// Those are the channels whose names must be unique, so this is the repair
+/// path for a duplicate name and grants nothing else.
+async fn operator_may_rename(
+    state: &crate::state::AppState,
+    event: &Event,
+    channel: &buzz_db::channel::ChannelRecord,
+) -> anyhow::Result<bool> {
+    let listed = channel.visibility == "open"
+        && !channel.unlisted
+        && matches!(channel.channel_type.as_str(), "stream" | "forum")
+        && channel.deleted_at.is_none();
+    Ok(listed
+        && is_rename_only(event)
+        && actor_is_relay_operator(state, event.pubkey.to_bytes()).await?)
+}
+
+/// True when the only metadata a kind:9002 changes is the channel name.
+fn is_rename_only(event: &Event) -> bool {
+    let mut changes = event
+        .tags
+        .iter()
+        .map(|t| t.kind().to_string())
+        .filter(|kind| is_metadata_tag(kind));
+    changes.all(|kind| kind == "name") && event.tags.iter().any(|t| t.kind().to_string() == "name")
+}
+
+/// True when `pubkey` holds the relay operator role. A roster lookup failure
+/// is an error, never "not an operator".
+async fn actor_is_relay_operator(
+    state: &crate::state::AppState,
+    pubkey: [u8; 32],
+) -> anyhow::Result<bool> {
+    crate::api::admin::is_relay_operator(state, pubkey)
+        .await
+        .map_err(|e| anyhow::anyhow!("relay staff lookup failed: {}", e.message))
 }
 
 /// Sign, store (replacing previous), and fan-out a single addressable discovery event.
@@ -2074,6 +2190,15 @@ pub(crate) async fn persist_edit_metadata(
                     val.parse().map_err(|e: String| anyhow::anyhow!(e))?;
                 edit.columns.join_role = Some(join_role.as_str().to_string());
             }
+            "auto_join" => {
+                // Validated during authorization; fail closed on a resend
+                // that somehow carries another value.
+                edit.columns.auto_join = Some(match val {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(anyhow::anyhow!("invalid auto_join value: {val}")),
+                });
+            }
             "ttl" => {
                 // Empty string clears the TTL (permanent); otherwise it is a
                 // positive integer of seconds, validated during authorization.
@@ -2108,6 +2233,16 @@ pub(crate) async fn persist_edit_metadata(
     if let Some(labels) = channel_labels_from_tags(event) {
         edit.columns.labels = Some(labels.map_err(|e| anyhow::anyhow!("{e}"))?);
     }
+    // A relay operator may rename a listed channel, archived ones included,
+    // whatever the operator's channel role, so that duplicate names can be
+    // repaired. Without channel authority the rename applies only to a
+    // listed channel. The store decides both under the channel row lock, so
+    // an owner who makes the channel private or unlisted meanwhile is seen.
+    // Channel authority is looked up only for an operator's rename.
+    edit.operator_rename =
+        is_rename_only(event) && actor_is_relay_operator(state, event.pubkey.to_bytes()).await?;
+    edit.channel_authority = edit.operator_rename
+        && actor_has_channel_authority(state, tenant.community(), channel_id, &actor_bytes).await?;
 
     let now = chrono::Utc::now();
     let mut notices = Vec::new();
@@ -2134,6 +2269,11 @@ pub(crate) async fn persist_edit_metadata(
     if let Some(unlisted) = edit.columns.unlisted {
         notices.push(serde_json::json!({
             "type": "unlisted_changed", "actor": actor_hex, "unlisted": unlisted
+        }));
+    }
+    if let Some(auto_join) = edit.columns.auto_join {
+        notices.push(serde_json::json!({
+            "type": "auto_join_changed", "actor": actor_hex, "auto_join": auto_join
         }));
     }
     if let Some(ttl_seconds) = edit.columns.ttl_seconds {
@@ -2437,17 +2577,14 @@ async fn handle_create_group(
         .unwrap_or_default();
     let unlisted = create_unlisted_from_tags(event)?;
 
-    // If the event has an h-tag UUID, ingest_event() already created the channel
-    // via create_channel_with_id(). Fetch it rather than creating a duplicate.
-    // If no h-tag, fall back to the original auto-UUID creation path.
+    // Ingest already created the channel named by the h tag, in the same
+    // commit as this event. Fetch it rather than creating a duplicate.
     //
-    // Double-count analysis (C5): the counter increments below do NOT
-    // double-count vs. ingest.rs. For the h-tag path, ingest increments on
-    // was_created=true and this handler only reaches create_channel() on a DB
-    // lookup Err — an error recovery path where ingest's channel is
-    // inaccessible, so the counter correctly records a new creation. For the
-    // no-h-tag path, ingest never creates the channel, so this is the sole
-    // increment.
+    // Double-count analysis (C5): the counter increment below does NOT
+    // double-count vs. ingest.rs. Ingest increments on was_created=true and
+    // this handler only reaches create_channel() on a DB lookup Err — an
+    // error recovery path where ingest's channel is inaccessible, so the
+    // counter correctly records a new creation.
     // `members_added`: ingest's create also added the event's `p` tags.
     let (channel, members_added) = if let Some(client_uuid) = extract_h_tag_channel(event) {
         match state
@@ -2483,27 +2620,8 @@ async fn handle_create_group(
             }
         }
     } else {
-        let ch = state
-            .db
-            .create_labeled_channel(
-                tenant.community(),
-                &name,
-                channel_type,
-                visibility,
-                description.as_deref(),
-                &actor_bytes,
-                ttl_seconds,
-                &labels,
-                unlisted,
-            )
-            .await?;
-        metrics::counter!(
-            "buzz_channels_created_total",
-            "community" => tenant.host().to_owned(),
-            "type" => channel_type.to_string()
-        )
-        .increment(1);
-        (ch, false)
+        // Ingest refuses a kind:9007 without an `h` tag before storing it.
+        anyhow::bail!("missing or invalid h tag");
     };
 
     // Creator becomes owner — evict any stale negative membership lookup.
@@ -2639,15 +2757,25 @@ async fn handle_delete_group(
     Ok(())
 }
 
-async fn handle_join_request(
-    tenant: &TenantContext,
-    event: &Event,
-    state: &Arc<AppState>,
-) -> anyhow::Result<()> {
-    let channel_id =
-        extract_h_tag_channel(event).ok_or_else(|| anyhow::anyhow!("missing h tag"))?;
-    let actor_bytes = event.pubkey.to_bytes().to_vec();
+/// What [`join_channel_as_self`] did for the member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelfJoinOutcome {
+    /// The member was added and every join side effect was emitted.
+    Joined,
+    /// The member was already active in the channel; nothing changed.
+    AlreadyMember,
+}
 
+/// Join `pubkey` to an open, unarchived channel as a self-join: no inviter,
+/// the channel's `join_role`, and the kind:40099, 39000/39002 and 44100
+/// side effects of a kind:9021. Shared by the kind:9021 handler and the
+/// default-channel auto-join on new community memberships.
+pub(crate) async fn join_channel_as_self(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    channel_id: Uuid,
+    pubkey: &[u8],
+) -> anyhow::Result<SelfJoinOutcome> {
     // Only open channels allow self-join via kind:9021.
     let channel = state
         .db
@@ -2659,27 +2787,45 @@ async fn handle_join_request(
             "channel is private — request an invitation"
         ));
     }
+    if channel.archived_at.is_some() {
+        return Err(anyhow::anyhow!("channel is archived"));
+    }
 
     // Skip if already an active member — prevents duplicate join notifications.
     // Fail closed on DB errors rather than falling through to add_member.
     if state
-        .is_member_cached(tenant.community(), channel_id, &actor_bytes)
+        .is_member_cached(tenant.community(), channel_id, pubkey)
         .await?
     {
-        info!(channel = %channel_id, "kind:9021 join — already a member, skipping");
-        return Ok(());
+        return Ok(SelfJoinOutcome::AlreadyMember);
     }
 
     // A self-join gets the channel's `join_role`, read by `put_member` under
     // the membership lock: member in a normal channel, guest in an announce
-    // channel, where a member must then make them a member.
+    // channel, where a member must then make them a member. `put_member`
+    // also decides visibility and archive state again under its locks, so a
+    // channel made private or archived since the checks above is refused
+    // here, with no side effects.
     state
         .db
-        .put_member(tenant.community(), channel_id, &actor_bytes, None, None)
+        .put_member(tenant.community(), channel_id, pubkey, None, None)
         .await?;
-    state.invalidate_membership(tenant, channel_id, &actor_bytes);
+    announce_self_join(tenant, state, channel_id, pubkey).await?;
+    Ok(SelfJoinOutcome::Joined)
+}
 
-    let actor_hex = hex::encode(&actor_bytes);
+/// The side effects of a committed self-join: the membership cache, the
+/// `member_joined` kind:40099, kind:39000/39002 and kind:44100. Only the
+/// system message is fatal, as for kind:9021.
+async fn announce_self_join(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    channel_id: Uuid,
+    pubkey: &[u8],
+) -> anyhow::Result<()> {
+    state.invalidate_membership(tenant, channel_id, pubkey);
+
+    let actor_hex = hex::encode(pubkey);
     emit_system_message(
         tenant,
         state,
@@ -2701,8 +2847,8 @@ async fn handle_join_request(
         tenant,
         state,
         channel_id,
-        &actor_bytes,
-        &actor_bytes,
+        pubkey,
+        pubkey,
         buzz_core::kind::KIND_MEMBER_ADDED_NOTIFICATION,
     )
     .await
@@ -2710,7 +2856,175 @@ async fn handle_join_request(
         warn!("membership notification for join failed: {e}");
     }
 
-    info!(channel = %channel_id, "kind:9021 join processed");
+    Ok(())
+}
+
+/// Join a new community member to every effective `auto_join` channel, as
+/// kind:9021 self-joins. Runs inline at the roster write sites (invite
+/// claim, kind:9030) and nowhere else, so a later kind:9022 leave stands. A
+/// community without a roster joins on admission instead
+/// ([`auto_join_never_joined_channels`]).
+///
+/// Best effort: the relay membership has already committed, so a channel
+/// that fails is logged and counted, never retried, and never fails the
+/// caller. The `auto_join` tag on kind:39000 is the durable record a client
+/// reconciles against. A channel archived or made private after the list
+/// was read is one such failure: `put_member` refuses it under its locks.
+///
+/// `added_by` is the actor of a third-party add (kind:9030), `None` when the
+/// member joined by themselves (an invite claim). A third-party add first
+/// asks the member's `channel_add_policy`, once, as a kind:9000 from the same
+/// actor would; a refusal skips every default channel, logged and counted.
+pub(crate) async fn auto_join_default_channels(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    pubkey_hex: &str,
+    added_by: Option<&[u8]>,
+) {
+    let Ok(pubkey) = hex::decode(pubkey_hex) else {
+        warn!(member = %pubkey_hex, "auto-join skipped: member pubkey is not hex");
+        return;
+    };
+    let channels = match state.db.list_auto_join_channels(tenant.community()).await {
+        Ok(channels) => channels,
+        Err(e) => {
+            warn!(member = %pubkey_hex, error = %e, "auto-join skipped: listing default channels failed");
+            metrics::counter!("buzz_auto_join_failures_total").increment(1);
+            return;
+        }
+    };
+    if channels.is_empty() {
+        return;
+    }
+    if let Some(actor) = added_by.filter(|actor| *actor != pubkey.as_slice()) {
+        match state
+            .db
+            .get_agent_channel_policy(tenant.community(), &pubkey)
+            .await
+        {
+            Ok(None) => {}
+            Ok(Some((policy, owner))) => {
+                if let Err(denied) =
+                    channel_authz::decide_channel_add_policy(&policy, owner.as_deref(), actor)
+                {
+                    warn!(member = %pubkey_hex, error = %denied, "auto-join skipped: the member's channel_add_policy refuses the actor");
+                    metrics::counter!("buzz_auto_join_failures_total").increment(1);
+                    return;
+                }
+            }
+            Err(e) => {
+                warn!(member = %pubkey_hex, error = %e, "auto-join skipped: reading the member's channel_add_policy failed");
+                metrics::counter!("buzz_auto_join_failures_total").increment(1);
+                return;
+            }
+        }
+    }
+    for channel in channels {
+        match join_channel_as_self(tenant, state, channel.id, &pubkey).await {
+            Ok(SelfJoinOutcome::Joined) => {
+                metrics::counter!("buzz_auto_join_channels_total").increment(1);
+                info!(channel = %channel.id, member = %pubkey_hex, "auto-joined default channel");
+            }
+            Ok(SelfJoinOutcome::AlreadyMember) => {}
+            Err(e) => {
+                metrics::counter!("buzz_auto_join_failures_total").increment(1);
+                warn!(channel = %channel.id, member = %pubkey_hex, error = %e, "auto-join of default channel failed");
+            }
+        }
+    }
+}
+
+/// Join a person admitted to a community that keeps no membership roster
+/// (`require_relay_membership = false`) to every effective `auto_join`
+/// channel they have never been a member of, as kind:9021 self-joins.
+///
+/// Runs after every human WebSocket admission there, because such a
+/// community has no roster insert to run [`auto_join_default_channels`] at.
+/// "Never a member" is the channel's own membership history: a kind:9022
+/// leave or a kind:9001 removal keeps a removed row, so the person is not
+/// joined back, and a channel flagged later is joined on their next
+/// admission.
+///
+/// Each channel's write and announcement hold an effect permit from the
+/// admitting socket's `gate`, as every other session effect does, so nothing
+/// is written once the session has expired or the socket is cancelled; the
+/// task stops at the first refusal. A channel it stops before, or whose
+/// membership write fails, has no row, so the next admission tries it again.
+/// Failures are logged and counted (`buzz_auto_join_failures_total`).
+pub(crate) async fn auto_join_never_joined_channels(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    pubkey: &[u8],
+    gate: &Arc<crate::nip_fi_gate::SessionAdmissionGate>,
+) {
+    join_never_joined_channels(tenant, state, pubkey, gate).await;
+    #[cfg(test)]
+    crate::nip_fi_test_hooks::after_auto_join(tenant.community()).await;
+}
+
+async fn join_never_joined_channels(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    pubkey: &[u8],
+    gate: &Arc<crate::nip_fi_gate::SessionAdmissionGate>,
+) {
+    let member = hex::encode(pubkey);
+    let channels = match state
+        .db
+        .list_never_joined_auto_join_channels(tenant.community(), pubkey)
+        .await
+    {
+        Ok(channels) => channels,
+        Err(e) => {
+            warn!(%member, error = %e, "auto-join skipped: listing default channels failed");
+            metrics::counter!("buzz_auto_join_failures_total").increment(1);
+            return;
+        }
+    };
+    for channel_id in channels {
+        #[cfg(test)]
+        crate::nip_fi_test_hooks::before_auto_join_channel(tenant.community()).await;
+        let Ok(_permit) = gate.acquire_effect().await else {
+            info!(channel = %channel_id, %member, "auto-join stopped: the session ended");
+            return;
+        };
+        let joined = match state
+            .db
+            .put_first_member(tenant.community(), channel_id, pubkey)
+            .await
+        {
+            Ok(None) => continue,
+            Ok(Some(_)) => announce_self_join(tenant, state, channel_id, pubkey).await,
+            Err(e) => Err(e.into()),
+        };
+        match joined {
+            Ok(()) => {
+                metrics::counter!("buzz_auto_join_channels_total").increment(1);
+                info!(channel = %channel_id, %member, "auto-joined default channel on admission");
+            }
+            Err(e) => {
+                metrics::counter!("buzz_auto_join_failures_total").increment(1);
+                warn!(channel = %channel_id, %member, error = %e, "auto-join of default channel on admission failed");
+            }
+        }
+    }
+}
+
+async fn handle_join_request(
+    tenant: &TenantContext,
+    event: &Event,
+    state: &Arc<AppState>,
+) -> anyhow::Result<()> {
+    let channel_id =
+        extract_h_tag_channel(event).ok_or_else(|| anyhow::anyhow!("missing h tag"))?;
+    match join_channel_as_self(tenant, state, channel_id, &event.pubkey.to_bytes()).await? {
+        SelfJoinOutcome::AlreadyMember => {
+            info!(channel = %channel_id, "kind:9021 join — already a member, skipping");
+        }
+        SelfJoinOutcome::Joined => {
+            info!(channel = %channel_id, "kind:9021 join processed");
+        }
+    }
     Ok(())
 }
 

@@ -2302,10 +2302,10 @@ index 99b4aa68032064273c9cf989ff77ec674faafac0..aa80f27d9291b984e49102326a2bc864
  pub mod agent_turn_metric;
  /// Channel and membership enums shared across crates.
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index 1d75835ff19a29abb50b72b79b3610e93ffedea5..bf616040eaa3a875fca3dfab1bf8879d8e21e6b5 100644
+index 3c6320e04487a64f814cbba292df5a81500158d6..59340a6cc6f8de6dee2ab54477b2c3882aec525f 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
-@@ -1532,10 +1532,10 @@ async fn query_member_events(
+@@ -1518,10 +1518,10 @@ async fn query_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2318,7 +2318,7 @@ index 1d75835ff19a29abb50b72b79b3610e93ffedea5..bf616040eaa3a875fca3dfab1bf8879d
          ));
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
-@@ -2220,10 +2220,10 @@ async fn count_member_events(
+@@ -2206,10 +2206,10 @@ async fn count_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2349,7 +2349,7 @@ index 08ff84a017db906f29d44baa48117c86d76288bc..b8ec8b440a7fbe5966725182a49a2fda
          return;
      }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index 9cae758646e9f4d452e69247fbec37bd97669884..43717601e07b1ac8c51351f5f88d0b497cc5a6b8 100644
+index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f304236dbf7 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2535,7 +2535,7 @@ index 9cae758646e9f4d452e69247fbec37bd97669884..43717601e07b1ac8c51351f5f88d0b49
  /// Enforce the `shared`-tag shape shared by every kind in
  /// [`buzz_core::kind::SHARED_GATED_KINDS`]: at most one `shared` tag, and if
  /// present it must be exactly `["shared", "true"]`.
-@@ -3151,11 +3238,16 @@ async fn ingest_event_inner(
+@@ -3128,11 +3215,16 @@ async fn ingest_event_inner(
          validate_diff_event(&event).map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
      }
  
@@ -2553,7 +2553,7 @@ index 9cae758646e9f4d452e69247fbec37bd97669884..43717601e07b1ac8c51351f5f88d0b49
      if kind_u32 == KIND_AGENT_TURN_METRIC {
          validate_agent_turn_metric_envelope(&event)
              .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-@@ -4487,6 +4579,9 @@ mod postgres_tests {
+@@ -4464,6 +4556,9 @@ mod postgres_tests {
              KIND_EMOJI_SET,
              KIND_EMOJI_LIST,
              KIND_AGENT_ENGRAM,
@@ -2563,7 +2563,7 @@ index 9cae758646e9f4d452e69247fbec37bd97669884..43717601e07b1ac8c51351f5f88d0b49
              KIND_AGENT_PROFILE,
              KIND_PERSONA,
              KIND_TEAM,
-@@ -4538,6 +4633,27 @@ mod postgres_tests {
+@@ -4515,6 +4610,27 @@ mod postgres_tests {
          );
      }
  
@@ -2591,7 +2591,7 @@ index 9cae758646e9f4d452e69247fbec37bd97669884..43717601e07b1ac8c51351f5f88d0b49
      #[test]
      fn nip51_and_nip65_lists_are_global_only() {
          for kind in [
-@@ -5005,6 +5121,118 @@ mod postgres_tests {
+@@ -4982,6 +5098,118 @@ mod postgres_tests {
          assert!(err.contains("base64"), "got: {err}");
      }
  

@@ -1,15 +1,3 @@
-diff --git a/Cargo.lock b/Cargo.lock
-index 92c8f60307abb190ee8746ee332d6c489e82ed79..046a10208158bc4d8bde2d3fa159ac52541e7fb1 100644
---- a/Cargo.lock
-+++ b/Cargo.lock
-@@ -944,6 +944,7 @@ dependencies = [
-  "git-sign-nostr",
-  "hex",
-  "httparse",
-+ "ignore",
-  "nix 0.31.3",
-  "nostr 0.44.7",
-  "reqwest 0.13.4",
 diff --git a/crates/buzz-acp/Cargo.toml b/crates/buzz-acp/Cargo.toml
 index 244bae144ed215aaefff252660cc28bfd61f84be..2e827007d0193d5402e4efb46d417bbf6909c1ee 100644
 --- a/crates/buzz-acp/Cargo.toml

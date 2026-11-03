@@ -1,11 +1,14 @@
 name: Desktop fork build
 
+# autofork.yml starts this after each sync of main: it builds the commit it
+# was started on and publishes it, with its updater manifest, to the rolling
+# buzz-desktop-fork-latest release that installs update from.
 on:
-  workflow_run:
-    workflows: [Sync patched fork]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      attempt:
+        description: Which try this is, when no macOS runner picked up the last one
+        default: "1"
 
 concurrency:
   group: desktop-fork-release
@@ -15,7 +18,6 @@ permissions:
   contents: read
 
 env:
-  SOURCE_REF: main
   RELEASE_TAG: buzz-desktop-fork-latest
   BUZZ_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/download/buzz-desktop-fork-latest/latest.json
   BUZZ_UPDATER_PUBLIC_KEY: ${{ vars.BUZZ_UPDATER_PUBLIC_KEY }}
@@ -24,9 +26,7 @@ env:
 jobs:
   plan:
     name: Plan
-    if: >-
-      github.repository == 'AVGVSTVS96/buzz' &&
-      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    if: github.repository == 'AVGVSTVS96/buzz'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -39,7 +39,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE_REF" --jq .sha)
+          SHA=$GITHUB_SHA
           PUBLISHED=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha 2>/dev/null || true)
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           if [[ "$PUBLISHED" == "$SHA" ]]; then
@@ -274,3 +274,41 @@ jobs:
         with:
           path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
           key: pnpm-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
+
+  report:
+    name: Retry or report
+    needs: [plan, build]
+    if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      issues: write
+    steps:
+      # GitHub's macOS arm64 runners sometimes never pick a job up ("not
+      # acquired by Runner of type hosted"), which fails the run without a
+      # build. Those runs try again, up to three times in all.
+      - name: Try again, or open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTEMPT: ${{ inputs.attempt }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          runner=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs" \
+            --jq '[.jobs[] | select(.name | startswith("Build")) | .runner_name // ""][0] // "none"')
+          if [[ -z "$runner" && "$ATTEMPT" -lt 3 ]]; then
+            echo "No macOS runner picked up the build, so trying again."
+            gh workflow run desktop.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f attempt=$((ATTEMPT + 1))
+            exit 0
+          fi
+          title="Desktop fork build failed"
+          issue="$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title \
+            --jq "map(select(.title == \"$title\"))[0].number // empty")"
+          if [[ -n "$issue" ]]; then
+            gh issue comment "$issue" -R "$GITHUB_REPOSITORY" --body "Building $GITHUB_SHA failed too: $RUN"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --body "Building $GITHUB_SHA failed: $RUN
+
+          Installs update again once a Desktop fork build passes. Fix what broke and run it again, or let the next sync's build do it, then close this issue."
+          fi

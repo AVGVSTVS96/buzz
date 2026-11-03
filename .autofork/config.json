@@ -1,0 +1,15 @@
+{
+  "upstream": "block/buzz",
+  "follow": "main",
+  "setup": "pnpm install --frozen-lockfile && cargo metadata --format-version 1 >/dev/null && cargo metadata --manifest-path desktop/src-tauri/Cargo.toml --format-version 1 >/dev/null",
+  "generated": [
+    "Cargo.lock",
+    "desktop/src-tauri/Cargo.lock"
+  ],
+  "verify": "just fmt-check clippy desktop-tauri-fmt-check desktop-tauri-clippy desktop-tauri-test desktop-check desktop-typecheck desktop-test && cargo test -p buzz-core -p buzz-acp -p buzz-relay --lib",
+  "limits": {
+    "rebuilds": 10,
+    "month": 200,
+    "rebuild": 20
+  }
+}

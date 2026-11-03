@@ -1,0 +1,18 @@
+diff --git a/README.md b/README.md
+index bdf218e57dbcad380380e9a0d4e4148e5d1b6c5b..3e3aebf9a407a91e54b5a1b4ad16a15df1d003f3 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,13 @@
++> [!NOTE]
++> **This is a personal fork of [Buzz](https://github.com/block/buzz) that updates itself with [autofork](https://autofork.com).**
++> It carries a few small changes, each written as a future upstream PR and
++> described in plain words in [`.autofork/`](.autofork/). Each sync builds the
++> macOS app into the
++> [`buzz-desktop-fork-latest`](https://github.com/AVGVSTVS96/buzz/releases/tag/buzz-desktop-fork-latest)
++> release, which installs of the fork update from.
++>
++> Everything below is the upstream README, unchanged.
++
+ <h1 align="center">Buzz 🐝</h1>
+ 
+ <p align="center">

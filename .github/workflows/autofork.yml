@@ -1,0 +1,81 @@
+name: autofork
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [autofork]
+    paths: [".autofork/**"]
+
+permissions:
+  actions: write
+  contents: write
+  issues: write
+  id-token: write
+
+concurrency: autofork
+
+env:
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      # Each Rust cache is 2-3 GB and the repo holds 10 GB, so superseded
+      # ones would evict the desktop build's cache.
+      - name: Keep only the newest Rust cache of each kind
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list -R "$GITHUB_REPOSITORY" --key v0-rust- -L 100 --json id,key,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | group_by(.key | split("-")[:-2]) | map(.[1:][].id)[]' |
+            xargs -r -n1 gh cache delete -R "$GITHUB_REPOSITORY"
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - uses: rui314/setup-mold@7e4f20ad28a2e8ca6fd0892ccf72e2abb706b9c3 # v1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          workspaces: . -> target
+          shared-key: autofork
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install Tauri dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+            build-essential file libasound2-dev libayatana-appindicator3-dev \
+            libgtk-3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev patchelf
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-${{ runner.os }}-
+
+      - id: autofork
+        uses: AVGVSTVS96/autofork@v1
+        with:
+          heal: false
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      # Pushes made with GITHUB_TOKEN start no workflows, but dispatches do.
+      # Installs update from main's build, so only main's syncs publish one.
+      - name: Build the synced desktop app
+        if: steps.autofork.outputs.result == 'synced' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run desktop.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+
+      - name: Capture Claude accounting
+        if: always()
+        uses: AVGVSTVS96/autofork/.github/actions/usage@bf88ce65d7096d600ebe31ea4e607260ba1b9826

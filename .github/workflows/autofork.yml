@@ -5,7 +5,7 @@ on:
     - cron: "17 6 * * *"
   workflow_dispatch:
   push:
-    branches: [autofork]
+    branches: [main]
     paths: [".autofork/**"]
 
 permissions:
@@ -63,8 +63,6 @@ jobs:
 
       - id: autofork
         uses: AVGVSTVS96/autofork@v1
-        with:
-          heal: false
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 

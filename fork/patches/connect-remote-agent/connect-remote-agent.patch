@@ -468,7 +468,7 @@ index 0000000000000000000000000000000000000000..7cec3d93763edadbedbda17e1b2e269c
 +    assert_eq!(events.lock().unwrap().len(), 1);
 +}
 diff --git a/desktop/src-tauri/src/commands/agents.rs b/desktop/src-tauri/src/commands/agents.rs
-index ba28ba67c0391e65280c26c5805e4ddd37ab637d..86e8f10b7bafa483f7a19ff13845f90212864c52 100644
+index c80ef617c469451c35a28f2bf02c86e51c7ddc92..737d3571488ea827f29170c06826a1165840247e 100644
 --- a/desktop/src-tauri/src/commands/agents.rs
 +++ b/desktop/src-tauri/src/commands/agents.rs
 @@ -30,7 +30,9 @@ pub(super) fn workspace_owner_hex(state: &AppState) -> Result<String, String> {
@@ -483,7 +483,7 @@ index ba28ba67c0391e65280c26c5805e4ddd37ab637d..86e8f10b7bafa483f7a19ff13845f902
  /// Build a summary from fresh disk state (personas, teams, global config).
  /// For one-shot command paths only — the 5s list poll calls
 diff --git a/desktop/src-tauri/src/commands/mod.rs b/desktop/src-tauri/src/commands/mod.rs
-index 01b1ddc8828638d2cb5e1531cb50336c9067e406..e141975a79ddff8009846722e06cac295c130060 100644
+index c9933babc07d23a2772f8b394e511f724f8a33f1..825c0e22bc23da576392d9b9667fe16d22828d7f 100644
 --- a/desktop/src-tauri/src/commands/mod.rs
 +++ b/desktop/src-tauri/src/commands/mod.rs
 @@ -2,6 +2,7 @@ pub mod admin;
@@ -494,7 +494,7 @@ index 01b1ddc8828638d2cb5e1531cb50336c9067e406..e141975a79ddff8009846722e06cac29
  mod agent_discovery;
  mod agent_logs;
  mod agent_metric_archive;
-@@ -80,6 +81,7 @@ pub use admin::*;
+@@ -81,6 +82,7 @@ pub use admin::*;
  pub use agent_access::*;
  pub use agent_auth::*;
  pub use agent_config::*;
@@ -517,7 +517,7 @@ index 77ac6479633bed23c5fa9fadda6fd6aafc73330f..b12ed20a0d162a7237558bd4b6e8748d
      // `helpers::send_admin_mutation` (injection tests in admin `direct_action_tests.rs`),
      // and every admin API request URL passes it before signing or sending:
 diff --git a/desktop/src-tauri/src/lib.rs b/desktop/src-tauri/src/lib.rs
-index 4497eb78e563b33601290174b8d176f48ca2b099..330724e8ccd36a8eb3f70d739583652606e19cc3 100644
+index 133cd2a9060469e21ecabf113a4fa647fa4888a0..416dbfa8dc2a66a1306b85e98929ed1bb98fe9d0 100644
 --- a/desktop/src-tauri/src/lib.rs
 +++ b/desktop/src-tauri/src/lib.rs
 @@ -712,6 +712,8 @@ pub fn run() {
@@ -1557,7 +1557,7 @@ index 0000000000000000000000000000000000000000..8c12e2895b960679937fe0890e0e5ec4
 +  );
 +}
 diff --git a/desktop/src/features/channels/ui/ChannelScreen.tsx b/desktop/src/features/channels/ui/ChannelScreen.tsx
-index c6a8907896190a385ee6112d87c8914102ad712c..f54757ebdaeaf572cd00f26de8395c7c2fbd02d3 100644
+index 640a50678d5823d970e5572ca8ae9c4ab434ec2a..afc66e95b7da7e8c872afdf5d704560d38d0ffa4 100644
 --- a/desktop/src/features/channels/ui/ChannelScreen.tsx
 +++ b/desktop/src/features/channels/ui/ChannelScreen.tsx
 @@ -360,6 +360,7 @@ export function ChannelScreen({

@@ -14,6 +14,8 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../../shared/auth/auth.dart';
 import '../../shared/identity_transfer/nsec_export_sheet.dart';
 import '../../shared/clipboard_utils.dart';
+import '../../shared/hosted/organization_environment.dart';
+import '../../shared/hosted/organization_sign_out.dart';
 import '../../shared/push/push_relay_capability_provider.dart';
 import '../../shared/push/push_bootstrap.dart';
 import '../../shared/relay/relay.dart';
@@ -130,6 +132,21 @@ class SettingsPage extends HookConsumerWidget {
             _ConnectionSection(
               identityRecoveryPageBuilder: identityRecoveryPageBuilder,
             ),
+            // An internal build's only way out of its organization, rarely
+            // needed, so it sits last.
+            if (OrganizationEnvironment.enabled)
+              AppListCard(
+                verticalPadding: Grid.twelve,
+                children: [
+                  AppListRow(
+                    key: const Key('settings-sign-out'),
+                    icon: BuzzIcons.logOut,
+                    title: 'Sign out',
+                    titleColor: context.colors.error,
+                    onTap: () => confirmOrganizationSignOut(context, ref),
+                  ),
+                ],
+              ),
             if (packageInfo.hasData)
               _VersionFooter(
                 version: packageInfo.data!.version,
@@ -150,15 +167,41 @@ class _VersionFooter extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final label = buildNumber.isEmpty
+        ? 'v$version'
+        : 'v$version ($buildNumber)';
     return SafeArea(
       top: false,
-      child: Padding(
-        padding: const EdgeInsets.only(bottom: Grid.xs, top: Grid.xxs),
-        child: Center(
-          child: Text(
-            buildNumber.isEmpty ? 'v$version' : 'v$version ($buildNumber)',
-            style: context.textTheme.bodySmall?.copyWith(
-              color: context.colors.onSurfaceVariant.withValues(alpha: 0.6),
+      child: Center(
+        child: Semantics(
+          button: true,
+          onTapHint: 'Copy version',
+          child: InkWell(
+            borderRadius: BorderRadius.circular(Grid.xs),
+            onTap: () =>
+                copyToClipboard(context, label, message: 'Version copied'),
+            // Keep the text where it was and grow the tap target downward
+            // to the platform minimum.
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                minHeight: kMinInteractiveDimension,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  Grid.xs,
+                  Grid.xxs,
+                  Grid.xs,
+                  Grid.xs,
+                ),
+                child: Text(
+                  label,
+                  style: context.textTheme.bodySmall?.copyWith(
+                    color: context.colors.onSurfaceVariant.withValues(
+                      alpha: 0.6,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
         ),

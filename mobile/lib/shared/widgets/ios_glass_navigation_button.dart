@@ -13,6 +13,7 @@ import '../theme/theme.dart';
 enum IosGlassNavigationIcon {
   back,
   close,
+  check,
   camera,
   photoLibrary,
   palette,
@@ -29,6 +30,7 @@ enum IosGlassNavigationIcon {
   more,
   reply,
   trash,
+  bell,
 }
 
 /// Leading width used by iOS channel-style headers.
@@ -245,12 +247,14 @@ class IosGlassNavigationButton extends HookWidget {
                         : Icon(
                             switch (icon) {
                               IosGlassNavigationIcon.more => BuzzIcons.ellipsis,
+                              IosGlassNavigationIcon.bell => BuzzIcons.bell,
                               IosGlassNavigationIcon.trash => BuzzIcons.trash2,
                               IosGlassNavigationIcon.reply =>
                                 BuzzIcons.cornerUpLeft,
                               IosGlassNavigationIcon.back =>
                                 BuzzIcons.chevronLeft,
                               IosGlassNavigationIcon.close => BuzzIcons.x,
+                              IosGlassNavigationIcon.check => BuzzIcons.check,
                               IosGlassNavigationIcon.camera => BuzzIcons.camera,
                               IosGlassNavigationIcon.photoLibrary =>
                                 BuzzIcons.images,

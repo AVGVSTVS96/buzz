@@ -57,6 +57,11 @@ class OrganizationSignIn extends ChangeNotifier {
   bool _initialized = false;
   bool _disposed = false;
 
+  /// A sign-out whose session is still saved. Until it is cleared, the
+  /// session counts as signed out and the next sign-in clears it first, so a
+  /// retired credential is never reused.
+  bool _retiring = false;
+
   Future<void> initialize() async {
     if (_initialized || _disposed) return;
     _initialized = true;
@@ -64,15 +69,15 @@ class OrganizationSignIn extends ChangeNotifier {
     _subscriptions
       ..add(browser.codes.listen((code) => unawaited(_exchange(code))))
       ..add(browser.failures.listen(_onBrowserFailure));
+    // A sign-in or sign-out started meanwhile owns the status.
+    final attempt = _attempt;
     await browser.initialize();
     try {
-      final restored = account.account ?? await account.restore();
-      _set(
-        restored == null
-            ? OrganizationSessionStatus.signedOut
-            : OrganizationSessionStatus.signedIn,
-      );
+      if (account.account == null) await account.restore();
+      if (attempt != _attempt) return;
+      _set(_currentStatus());
     } on AccountFailure catch (error) {
+      if (attempt != _attempt) return;
       // Unknown, for example offline. Relay connection retries the restore.
       // An unreadable record is kept so the next sign-in can replace it.
       if (error == AccountFailure.storage) failure = error;
@@ -84,7 +89,9 @@ class OrganizationSignIn extends ChangeNotifier {
       // An unreadable saved session blocks every exchange, and its subject is
       // unknown. Signing in again explicitly replaces only that session.
       _begin(
-        clear: failure == AccountFailure.storage && account.account == null,
+        clear:
+            _retiring ||
+            (failure == AccountFailure.storage && account.account == null),
       );
 
   /// Drops only the organization session and signs in again, for an account
@@ -106,6 +113,7 @@ class OrganizationSignIn extends ChangeNotifier {
         _set(_currentStatus());
         return;
       }
+      _retiring = false;
       if (_disposed || attempt != _attempt) return;
     }
     try {
@@ -115,6 +123,25 @@ class OrganizationSignIn extends ChangeNotifier {
       failure = error;
       _set(_currentStatus());
     }
+  }
+
+  /// Ends the organization session, so the next sign-in goes through single
+  /// sign-on again.
+  Future<void> signOut() async {
+    if (_disposed) return;
+    final attempt = ++_attempt;
+    failure = null;
+    _set(OrganizationSessionStatus.checking);
+    try {
+      await account.clearLocalSession();
+      _retiring = false;
+    } on AccountFailure catch (error) {
+      _retiring = true;
+      if (attempt != _attempt) return;
+      failure = error;
+    }
+    if (attempt != _attempt) return;
+    _set(_currentStatus());
   }
 
   Future<void> cancel() async {
@@ -171,7 +198,8 @@ class OrganizationSignIn extends ChangeNotifier {
     _set(_currentStatus());
   }
 
-  OrganizationSessionStatus _currentStatus() => account.account == null
+  OrganizationSessionStatus _currentStatus() =>
+      account.account == null || _retiring
       ? OrganizationSessionStatus.signedOut
       : OrganizationSessionStatus.signedIn;
 
@@ -191,4 +219,36 @@ class OrganizationSignIn extends ChangeNotifier {
     unawaited(browser.dispose());
     super.dispose();
   }
+}
+
+/// The relay's refusal for this community and key, if any.
+AccountFailure? organizationRelayFailure(
+  HostedRelayAuth auth,
+  RelayConfig config,
+) =>
+    auth.failedRelay == config.baseUrl &&
+        auth.failedPubkey == pubkeyFromNsec(config.nsec)
+    ? auth.failure
+    : null;
+
+/// Whether the organization sign-in banner offers an action for [config]. The
+/// community switcher closes early on this so the banner is reachable.
+bool organizationSignInPromptVisible(
+  OrganizationSignIn? signIn,
+  HostedRelayAuth auth,
+  RelayConfig config,
+) {
+  if (signIn == null || !auth.organizationProtects(config)) return false;
+  return switch (signIn.status) {
+    OrganizationSessionStatus.checking => false,
+    OrganizationSessionStatus.signingIn ||
+    OrganizationSessionStatus.signedOut => true,
+    OrganizationSessionStatus.signedIn => switch (organizationRelayFailure(
+      auth,
+      config,
+    )) {
+      null || AccountFailure.signedOut || AccountFailure.unavailable => false,
+      _ => true,
+    },
+  };
 }

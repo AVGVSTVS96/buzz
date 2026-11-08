@@ -167,6 +167,7 @@ async fn typing_uses_cached_restriction_row() {
         (f.community, f.member.public_key().to_bytes().to_vec()),
         buzz_db::moderation::RestrictionState {
             banned: true,
+            own_banned: true,
             muted_until: None,
         },
     );
@@ -200,6 +201,7 @@ async fn typing_ban_gate_uses_cached_restriction_row() {
         (f.community, member),
         buzz_db::moderation::RestrictionState {
             banned: false,
+            own_banned: false,
             muted_until: None,
         },
     );
@@ -221,6 +223,7 @@ async fn persistent_post_ban_gate_uses_cached_restriction_row() {
         (f.community, f.member.public_key().to_bytes().to_vec()),
         buzz_db::moderation::RestrictionState {
             banned: true,
+            own_banned: true,
             muted_until: None,
         },
     );
@@ -233,12 +236,12 @@ async fn persistent_post_ban_gate_uses_cached_restriction_row() {
 }
 
 /// HTTP typing reads the cached serving state, like the WebSocket path.
-/// Mutation: call the uncached `is_serving_active` → RED.
+/// Mutation: call the uncached `is_community_active` → RED.
 #[tokio::test]
 #[ignore = "requires Postgres and Redis"]
 async fn typing_uses_cached_serving_state() {
     let f = Fixture::new().await;
-    f.state.serving_active_cache.insert(f.community, false);
+    f.state.community_active.seed(f.community, false);
     let (status, body) = f
         .post(&f.member, &f.typing(&f.member, Some(f.channel)))
         .await;

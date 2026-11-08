@@ -1,8 +1,12 @@
+import 'message_author_visibility.dart';
 import 'package:buzz/shared/widgets/feedback_snackbar.dart';
 
 import 'message_swipe_reply.dart';
+import 'bestie_welcome.dart';
+import 'bestie_welcome_storage.dart';
 import 'agent_reply_handoff.dart';
 import 'huddle_timeline.dart';
+import '../../shared/widgets/confirmation_dialog.dart';
 import '../../shared/widgets/modal_presentation.dart';
 import '../../shared/widgets/ios_scroll_to_top.dart';
 import 'message_footer_layout.dart';
@@ -40,13 +44,13 @@ import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/buzz_loading_indicator.dart';
 import '../../shared/widgets/bouncing_dots_indicator.dart';
 import '../../shared/widgets/concentric_sheet_surface.dart';
+import '../../shared/widgets/covered_route_keyboard_insets.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
 import '../../shared/widgets/frosted_scaffold.dart';
 import '../../shared/widgets/flapping_bee.dart';
 import '../../shared/widgets/keyboard_dismiss_on_drag.dart';
 import '../../shared/widgets/load_error_view.dart';
 import '../../shared/widgets/message_author_meta.dart';
-import '../../shared/widgets/verified_mark.dart';
 import '../../shared/widgets/skeleton.dart';
 import '../profile/presence_cache_provider.dart';
 import '../../shared/profile/user_cache_provider.dart';
@@ -97,14 +101,18 @@ import 'send_message_provider.dart';
 import '../profile/user_profile_sheet.dart';
 import 'small_avatar.dart';
 import 'sticky_date_header.dart';
+import 'date_header_scroll_activity.dart';
 import 'thread_detail_page.dart';
 import 'thread_replies_provider.dart';
 import 'reading_marks.dart';
 import 'timeline_message.dart';
 
 part 'channel_detail_page/message_list.dart';
+part 'channel_detail_page/jump_to_oldest_unread_button.dart';
+part 'channel_detail_page/row_cache.dart';
 part 'channel_detail_page/placement_route.dart';
 part 'channel_detail_page/empty_messages.dart';
+part 'channel_detail_page/hidden_history_paging.dart';
 part 'channel_detail_page/oldest_navigation.dart';
 part 'channel_detail_page/system_rows.dart';
 part 'channel_detail_page/thread_working.dart';
@@ -271,7 +279,7 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
 
   /// Uses personal assistant routing for a chat placed in Me.
   final bool personalChat;
-  final bool continuousConversation;
+  final String? welcomeAgent;
   final bool placementKnown;
   final String? initialAssistant;
   final String? initialMessageId;
@@ -284,7 +292,7 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
     super.key,
     required this.channel,
     required this.personalChat,
-    required this.continuousConversation,
+    this.welcomeAgent,
     required this.placementKnown,
     this.initialAssistant,
     this.initialMessageId,
@@ -294,10 +302,10 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final flatConversation = personalChat || continuousConversation;
-    final messagesProvider = flatConversation
+    final messagesProvider = personalChat
         ? meMessagesProvider(channel.id)
         : channelMessagesProvider(channel.id);
+    final dateScrollActivity = useDateHeaderScrollActivity(channel.id);
     final stickyDateHeaderState = useValueNotifier(
       StickyDateHeaderState.hidden,
       [channel.id],
@@ -305,8 +313,13 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
     final composerDockHeight = useState(0.0);
     final composerFocusNode = useFocusNode();
     final restoreComposerFocus = useRef<VoidCallback?>(null);
+    // Stable, so the message list can keep reusing its rows.
+    final restoreComposerFocusCallback = useCallback(
+      () => restoreComposerFocus.value?.call(),
+      const [],
+    );
     final sendMessage = ref.read(
-      flatConversation ? meSendMessageProvider : sendMessageProvider,
+      personalChat ? meSendMessageProvider : sendMessageProvider,
     );
     final messagesState = ref.watch(messagesProvider);
     final workspace = useMeWorkspace(
@@ -349,7 +362,7 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
                     .observedUnreadEventsByChannel[channel.id]
                     ?.values ??
                 const <ObservedUnreadEvent>[])
-          if ((flatConversation || event.rootId == null) &&
+          if ((personalChat || event.rootId == null) &&
               event.createdAt >
                   (observedUnreadEventReadAt(
                         event,
@@ -462,31 +475,30 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
     // Flat conversations show agent work inline instead of linking to threads.
     final threadWorking = _threadWorkingAgents(
       ref,
-      flatConversation
+      personalChat
           ? ''
           : ref.watch(
               channelTypingProvider(
                 channel.id,
               ).select((all) => _threadTypingKey(all, currentPubkey)),
             ),
+      additionalAgents: resolvedChannel.isDm ? agentPubkeys : const {},
     );
     final ownedThreadTypers = {
       for (final agents in threadWorking.values) ...agents,
     };
-    // Agent work is visible in every DM, even when its response is threaded.
-    // Ordinary channels keep other thread activity inside the thread view,
-    // but, as on desktop, show the user's own agents working in any thread.
+    // DM thread activity belongs on its message, not in the main typing row.
+    // Flat Solo chats and ordinary channel typing keep their existing scope.
     final typingEntries = ref
         .watch(
           visibleTypingProvider(
             channel.id,
             selfPubkey: currentPubkey,
             include: (e) =>
-                flatConversation ||
+                personalChat ||
                 e.threadHeadId == null ||
-                ownedThreadTypers.contains(e.pubkey.toLowerCase()) ||
-                (resolvedChannel.isDm &&
-                    agentPubkeys.contains(e.pubkey.toLowerCase())),
+                (!resolvedChannel.isDm &&
+                    ownedThreadTypers.contains(e.pubkey.toLowerCase())),
           ),
         )
         .entries;
@@ -664,6 +676,7 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
             .read(channelSectionsProvider)
             .store
             .assignments[resolvedChannel.id],
+        personalChat: personalChat,
       );
       if (shouldClose == true && context.mounted) {
         Navigator.of(context).pop();
@@ -689,10 +702,12 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
       // End events still update the original card through allMessages.
       timelineMessages
           .where(
-            (message) => !isCollapsedHuddleEnding(message, timelineMessages),
+            (message) =>
+                !isHiddenMembershipNotice(message) &&
+                !isCollapsedHuddleEnding(message, timelineMessages),
           )
           .toList(),
-      flat: flatConversation,
+      flat: personalChat,
       relaySummaries: ref.read(messagesProvider.notifier).threadSummaries,
     );
 
@@ -716,6 +731,7 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
                   child: StickyDateHeader(
                     key: const ValueKey('channel-sticky-date-header'),
                     state: stickyDateHeaderState,
+                    scrollVisible: dateScrollActivity,
                   ),
                 ),
               ],
@@ -867,6 +883,7 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
                           ),
                           data: (events) {
                             return _MessageList(
+                              welcomeAgent: welcomeAgent,
                               notifier: ref.watch(messagesProvider.notifier),
                               inlineTyping:
                                   resolvedChannel.isMember &&
@@ -874,15 +891,15 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
                                   ? typingEntries
                                   : const [],
                               threadWorking: threadWorking,
-                              allowThreads: !continuousConversation,
                               stickyDateHeaderState: stickyDateHeaderState,
+                              dateScrollActivity: dateScrollActivity,
                               entries: timelineEntries,
                               allMessages: timelineMessages,
-                              initialMessageId: flatConversation
+                              initialMessageId: personalChat
                                   ? initialMessageId ?? initialThreadRootId
                                   : initialMessageId,
                               initialThreadRootId:
-                                  flatConversation || !placementKnown
+                                  personalChat || !placementKnown
                                   ? null
                                   : initialThreadRootId,
                               initialThreadRouteBehavior:
@@ -914,7 +931,7 @@ class _ResolvedChannelDetailPage extends HookConsumerWidget {
                                   ? composerFocusNode
                                   : null,
                               restoreComposerFocus: showsComposer
-                                  ? () => restoreComposerFocus.value?.call()
+                                  ? restoreComposerFocusCallback
                                   : null,
                             );
                           },

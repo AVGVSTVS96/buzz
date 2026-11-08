@@ -102,7 +102,7 @@ pub const KIND_AGENT_ENGRAM: u32 = 30174;
 /// `(pubkey_a, kind, d_tag)`, where `d_tag` is an HMAC over the agent↔owner
 /// conversation key and the file's path. See `docs/nips/NIP-AF.md` and
 /// [`crate::agent_files`].
-pub const KIND_AGENT_FILE: u32 = 30180;
+pub const KIND_AGENT_FILE: u32 = 34180;
 
 /// NIP-AF: Agent File edit request (regular, owner-authored).
 ///
@@ -153,6 +153,15 @@ pub const KIND_PUSH_LEASE: u32 = 30350;
 /// the owner's key to itself and contains the runnable identity/configuration
 /// plus exact public projection bindings. See `docs/nips/NIP-PMA.md`.
 pub const KIND_PRIVATE_MANAGED_AGENT: u32 = 30179;
+/// Custom emoji entry (parameterized replaceable) — one event per emoji.
+///
+/// User-owned, keyed by `(pubkey, kind, d_tag)` where `d` is the normalized
+/// shortcode. `content` is the shortcode with `_` and `-` turned into spaces (the
+/// search text); one `["emoji", shortcode, url]` tag carries the image. Unlike
+/// the kind:30030 set, the catalog scales without any client loading it whole:
+/// clients resolve names with `#d` filters and search with NIP-50 prefix mode.
+/// See `docs/nips/NIP-CE.md`.
+pub const KIND_EMOJI_ENTRY: u32 = 30180;
 
 /// Kinds whose stored events are readable only by their author.
 ///
@@ -517,6 +526,12 @@ pub const KIND_WINDOW_BOUNDS: u32 = 39006;
 /// NIP-CW thread-mode query-time bounds, bound to a normalized newest-first thread request.
 pub const KIND_THREAD_WINDOW_BOUNDS: u32 = 39007;
 
+/// NIP-CL: request-bound compact viewer membership overlay; query-time only, never stored.
+pub const KIND_MEMBERSHIP_SNAPSHOT: u32 = 39008;
+
+/// NIP-CL: request-bound public membership overlay; query-time only, never stored.
+pub const KIND_MEMBERSHIP_PUBLIC: u32 = 39009;
+
 /// Workflow definition (parameterized replaceable, d=workflow_uuid).
 pub const KIND_WORKFLOW_DEF: u32 = 30620;
 
@@ -732,6 +747,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_FOLLOW_SET,
     KIND_BOOKMARK_SET,
     KIND_EMOJI_SET,
+    KIND_EMOJI_ENTRY,
     KIND_CHANNEL_METADATA,
     KIND_DELETION,
     KIND_REACTION,
@@ -784,6 +800,8 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_THREAD_SUMMARY,
     KIND_WINDOW_BOUNDS,
     KIND_THREAD_WINDOW_BOUNDS,
+    KIND_MEMBERSHIP_SNAPSHOT,
+    KIND_MEMBERSHIP_PUBLIC,
     KIND_PRESENCE_UPDATE,
     KIND_TYPING_INDICATOR,
     KIND_AGENT_PRESENCE,
@@ -939,6 +957,8 @@ pub const fn is_relay_only_kind(kind: u32) -> bool {
             | KIND_THREAD_SUMMARY
             | KIND_WINDOW_BOUNDS
             | KIND_THREAD_WINDOW_BOUNDS
+            | KIND_MEMBERSHIP_SNAPSHOT
+            | KIND_MEMBERSHIP_PUBLIC
     )
 }
 
@@ -961,7 +981,8 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 300
 const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 30177 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_TEAM_CATALOG)); // 30178 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_PRIVATE_MANAGED_AGENT)); // 30179 ∈ 30000–39999
-const _: () = assert!(is_parameterized_replaceable(KIND_AGENT_FILE)); // 30180 ∈ 30000–39999
+const _: () = assert!(is_parameterized_replaceable(KIND_EMOJI_ENTRY)); // 30180 ∈ 30000–39999
+const _: () = assert!(is_parameterized_replaceable(KIND_AGENT_FILE)); // 34180 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999
@@ -1026,6 +1047,15 @@ mod tests {
     fn thread_window_bounds_is_relay_only() {
         assert_eq!(KIND_THREAD_WINDOW_BOUNDS, 39007);
         assert!(is_relay_only_kind(KIND_THREAD_WINDOW_BOUNDS));
+    }
+
+    #[test]
+    fn compact_membership_snapshot_is_relay_only() {
+        assert_eq!(KIND_MEMBERSHIP_SNAPSHOT, 39008);
+        assert!(is_relay_only_kind(KIND_MEMBERSHIP_SNAPSHOT));
+        assert_eq!(KIND_MEMBERSHIP_PUBLIC, 39009);
+        assert!(is_relay_only_kind(KIND_MEMBERSHIP_PUBLIC));
+        assert!(ALL_KINDS.contains(&KIND_MEMBERSHIP_PUBLIC));
     }
 
     #[test]

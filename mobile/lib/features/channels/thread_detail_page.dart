@@ -1,3 +1,4 @@
+import 'message_author_visibility.dart';
 import 'message_swipe_reply.dart';
 import '../../shared/widgets/ios_scroll_to_top.dart';
 import 'message_footer_layout.dart';
@@ -25,7 +26,6 @@ import '../../shared/widgets/frosted_scaffold.dart';
 import '../../shared/widgets/ios_glass_navigation_button.dart';
 import '../../shared/widgets/keyboard_dismiss_on_drag.dart';
 import '../../shared/widgets/message_author_meta.dart';
-import '../../shared/widgets/verified_mark.dart';
 import '../../shared/profile/user_cache_provider.dart';
 import '../../shared/profile/user_profile.dart';
 import 'android_ime_lift.dart';
@@ -62,6 +62,7 @@ import 'reaction_row.dart';
 import '../../shared/read_state/read_state_provider.dart';
 import 'send_message_provider.dart';
 import 'sticky_date_header.dart';
+import 'date_header_scroll_activity.dart';
 import 'reading_marks.dart';
 import 'timeline_message.dart';
 
@@ -266,6 +267,7 @@ class ThreadDetailPage extends HookConsumerWidget {
     final itemPositionsListener = useMemoized(ItemPositionsListener.create);
     final listViewport = useMemoized(LaidOutViewport.new);
     useEffect(() => listViewport.dispose, [listViewport]);
+    final dateScrollActivity = useDateHeaderScrollActivity(threadHead.id);
     final stickyDateHeaderState = useValueNotifier(
       StickyDateHeaderState.hidden,
     );
@@ -937,6 +939,7 @@ class ThreadDetailPage extends HookConsumerWidget {
                   child: StickyDateHeader(
                     key: const ValueKey('thread-sticky-date-header'),
                     state: stickyDateHeaderState,
+                    scrollVisible: dateScrollActivity,
                   ),
                 ),
               ],
@@ -951,6 +954,7 @@ class ThreadDetailPage extends HookConsumerWidget {
             children: [
               Expanded(
                 child: _ThreadMessageList(
+                  dateScrollActivity: dateScrollActivity,
                   headHeight: headHeight.value ?? 0,
                   onHeadHeightChanged: (height) {
                     if (context.mounted) headHeight.value = height;

@@ -384,7 +384,7 @@ fn sha256_field(obj: &JsonObject, name: &str) -> Result<Option<String>, AgentFil
     }
 }
 
-/// Build a signed `kind:30180` file record.
+/// Build a signed `kind:34180` file record.
 ///
 /// * `created_at` is the timestamp to sign — callers MUST supply a value
 ///   respecting the *Writing* monotonic rule (`max(now, T_head + 1)`).
@@ -411,7 +411,7 @@ pub fn build_file_event(
     )
 }
 
-/// Validate a `kind:30180` event against *Head selection* and return the
+/// Validate a `kind:34180` event against *Head selection* and return the
 /// decoded body. Caller must verify the signature beforehand.
 ///
 /// * `expected_agent` — the agent pubkey the event's `pubkey` field must equal.
@@ -632,23 +632,23 @@ mod tests {
     /// `[content, id, sig]` of the pinned *Reference test vectors* events.
     const EVENT_NOTES: [&str; 3] = [
         "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABeWYcxyTrp5d68LBgA38mWthpZhLbxJYMfhJBIaLKj/BibYNSQQWLt6lkAXZKid+iG4Qbw5alru2O5QNHEsvgLDxoohNxwegWO+R8ZglzvKJvONpvb2DQgtDOCoAHlk4U79qce+Bc6EPESBbYYhyTsoZ3K4phyhQbPf4Wf17d6VrIjF90VGEnjdGQ8+kf9Q+LvFbLZK5Yy8TJmm+uSe6nruhmEJtEgN+E4HqYl3hm3wi0I7zDVq6XE5YP8+33SUgi3Fw=",
-        "ffedcefb2ceca14ebd23fc5832be2eaece81364e5749b40551febb34ece68129",
-        "851749264f0ee6cc356343942f6a8987687eeeb36718624459c8057ebd910676afa566280b06896b627e024b99a5ac65508c98becca7359873e2241ef9b46db6",
+        "8d740f4965bb27935feea98fe2e20f1d24445d1836c1a03be5d1276d61de420c",
+        "e4f681bc46916fba7c291217e210b6cb8cb49c693f8c4f9fdc270a050bf56ea0ea2cfe5031693e505e31c3965f5f15bf116caad03ff95a18a0e21696dc77c65a",
     ];
     const EVENT_PLAN: [&str; 3] = [
         "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACGzxBPvRUxTMAxOGGRKGhZiqgsEArQCRWg50Ke1gDJx+TGj9/Fewz3WSyeAfivT3k1gBothiBPJ5s4cOhoEO8II+l0uqLSfcuoPyWdKtqiGzypCM6179dYp0PvWim9j+wvCOLYun2TmeW8X9jYUNEs30aK7W0KxbM0JFd90vjbhlIh9YFQzQmV/gd5sN2BqBULXmmZgc5sMVzdb8DKkbG4CfkSf4eefdbfkQh4P8Adrk5gFTQ3MMFjBFsMXvjpLUQrAs=",
-        "7057f1c1826c58d24cd61bd2ca084e6ebe3ac23e9d664deb286629e029d43da4",
-        "c72a734e84af6b038e7c28dfefba7576b0bcb02f385bd38a99ce7c4795b867dc6d27e72d446aed33c2fcf4a211099fd55fc135ee3236f863180baa56a18ff751",
+        "e7f5b20bb36c9d347775076f26b03047088fc74ec8a917d6da9897730bc57f30",
+        "f3c93e2c038de5d1ce46332ac4b88baddd39899dd0a9b4433ac58583fdcf5b447024a19f317287b796532de1b11c6eb0f6d036d09f693ae945a338e45026ff00",
     ];
     const EVENT_BIG: [&str; 3] = [
         "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADufi8i0aj4uoLnp2rR/0icXfrLlipO1/EFjgIaMEZgjMtBxFfHRl2FE2vy5jJ/Z0ZfIqS0LWZbYrASsnxSWX0T0d1keXs2rhM8a/1YsmLEwPZUyetBJ6AUQpEoMjyKlwhJ8hHY02Z/WmOvJ+eAcSak81lFyUYqr/Q+r9Vu8cOmTJd+doLd9zrrbg1weUnGD1ZxHH403ggde05EdOMG+BgzCWm",
-        "6ba315bfc0b986c56662e78e94de1a5df07fdee30e410e2b84e62b1608b3fba7",
-        "5b73e8ffda0caeb76fac13150a2e617b2b4bb0b1c1a38dbee6619a5ee5852ed81ee1b0a3e6d80733e0d47f57625303988d842285880189c4656a0c4a81254947",
+        "5c0a6057f2cff7ad64fa0b32a72af0a8b15ebde55f7bbd0b61e8b7f2cccec4d0",
+        "9cbeb52a78432ae2090a47bc42a3bdb1fa1dcbec49f8adb0412a1c9a0448c97f1bb76a06b222f4c0cda20621c6ea14e64b1a3a315ad059fa3b867e375f7ae107",
     ];
     const EVENT_NOTES_REMOVED: [&str; 3] = [
         "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEEZ1HAFvscs/AcKaYSSZ7c4DJyiq9MWbCVhh3F5cJYKzzNVHP0Co4mCrkLHwQYMHhOrSCVp2209axj77xAk5tDKg8mc1ZeRGDsVVtCEMHNYahgYEMzcE4bH/po+T3shhnl0c=",
-        "1bec75664cb1939429d2f18b0a431dac23c5557668ac28665fa4ce7b2024c38a",
-        "ff395138e65c57fa113c59c70e60f82a6ef47738a2de72fc9ab527c399f852836f7b74ce792b568ac7fec7986801d674c4881d87d21df4f87b4b413fc8bc0600",
+        "0d7f4380aaefffb984cd16ae1606ea63b8e3c0836acf74eaac1baff3d3ff2483",
+        "37057eec9b646df24de96b4e8dfe7a84a2a54be695623b77f2b01ae8a5c70d99f3dcdce641eec017ee22f039580c16ea2f7139cd97b5c652741678e472e01d76",
     ];
     const EVENT_REQUEST: [&str; 3] = [
         "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFxUvaeNKl0ciXDyss+prpTNPK3paTrOuWRaJv0G9O6yQ57/2WtCobF8+8BMczu9OQI4Q9KwSBdWkY8Ip329LNeWAYp5u5pPq6pcxk/n3lIITYflSIQ+xSL+Q7Z3J4Nl1W4sFSQVcEqz7vBIYEE1qQDNS9vhdTUr+iNPkyvK4eTC4HtGywJUG1vzo4lQxPLf9go1gQAgGTZd97QXNgYSm9wmuVLpCkQm34rQJWejJvvI7CTY5h5m6BsjqGG39EahG9EzE=",

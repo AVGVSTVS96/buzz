@@ -134,8 +134,9 @@ fn may_set_workspace_profile(
 /// [`super::push_lease::AcceptError`] and its `map_push_accept_error` seam.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum RelayAdminError {
-    /// Sender is under a durable community ban — `blocked:` / HTTP 403.
-    Banned,
+    /// Sender is under a durable community ban — `blocked:` / HTTP 403. The
+    /// source says whether its own row or its owner's decided it.
+    Banned(crate::handlers::auth::BanSource),
     /// Legacy command rejection — `invalid:` / HTTP 400. This is whatever
     /// [`execute_relay_admin_command`] returned as a `String`, which is mostly
     /// validation and authorization but also still includes that function's own
@@ -162,7 +163,9 @@ fn admits_relay_admin_command(
     restriction: &buzz_db::moderation::RestrictionState,
 ) -> Result<(), RelayAdminError> {
     if restriction.banned {
-        return Err(RelayAdminError::Banned);
+        return Err(RelayAdminError::Banned(
+            crate::handlers::auth::BanSource::of(restriction),
+        ));
     }
     Ok(())
 }
@@ -338,11 +341,11 @@ async fn execute_relay_admin_command(
             // to change an existing member's role.
             let write = state
                 .db
-                .add_relay_member(
+                .add_relay_member_with_default_channels(
                     tenant.community(),
                     &target_hex,
                     &role,
-                    Some(&sender_hex),
+                    &sender_hex,
                     &state.relay_keypair,
                 )
                 .await
@@ -363,16 +366,9 @@ async fn execute_relay_admin_command(
                 if let Err(e) = publish_nip43_member_added(tenant, state, &target_hex).await {
                     warn!(error = %e, "failed to publish NIP-43 member added event");
                 }
-                // The sender adds someone else, so the target's
-                // `channel_add_policy` decides whether they are auto-joined.
-                auto_join_default_channels(
-                    tenant,
-                    state,
-                    &target_hex,
-                    Some(&event.pubkey.to_bytes()),
-                )
-                .await;
             }
+            // A no-op re-add also resumes unfinished work from the original actor.
+            auto_join_default_channels(tenant, state, &target_hex, None).await;
             fan_out_nip43_membership_list(tenant, state, write.snapshot).await;
         }
 
@@ -537,11 +533,14 @@ mod postgres_tests {
     fn banned_actor_is_not_admitted_to_a_relay_admin_command() {
         let banned = buzz_db::moderation::RestrictionState {
             banned: true,
+            own_banned: true,
             muted_until: None,
         };
         assert_eq!(
             admits_relay_admin_command(&banned),
-            Err(RelayAdminError::Banned),
+            Err(RelayAdminError::Banned(
+                crate::handlers::auth::BanSource::Own
+            )),
             "a durably banned admin must never reach a relay-admin command"
         );
     }
@@ -553,6 +552,7 @@ mod postgres_tests {
     fn timed_out_actor_is_still_admitted() {
         let timed_out = buzz_db::moderation::RestrictionState {
             banned: false,
+            own_banned: false,
             muted_until: Some(chrono::Utc::now() + chrono::Duration::minutes(5)),
         };
         assert!(
@@ -764,9 +764,8 @@ mod postgres_tests {
             .expect("ensure community");
         let tenant = TenantContext::resolved(record.id, host);
 
-        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .expect("redis pool config");
+        let redis_pool =
+            buzz_pubsub::redis_connection(&config.redis_url).expect("redis pool config");
         let pubsub = Arc::new(
             buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
                 .await
@@ -1431,13 +1430,13 @@ mod postgres_tests {
         assert!(!bystander_socket.is_cancelled(), "the bystander stays");
     }
 
-    /// A timeout and an untimeout each drop the target's cached restriction
-    /// row on the pod that handles them, so typing and observer frames see
-    /// the change at once instead of after the cache TTL.
-    /// Mutation: remove `invalidate_restriction_cache` from either → RED.
+    /// Each of the ban, unban, timeout and untimeout commands drops the
+    /// target's cached restriction row, so HTTP gates, typing and observer
+    /// frames see the change at once instead of after the cache's max age.
+    /// Mutation: remove `invalidate_restrictions` from any of them → RED.
     #[tokio::test]
     #[ignore = "requires Postgres — runs in postgres-ci nextest lane"]
-    async fn timeout_commands_drop_the_cached_restriction_row() {
+    async fn restriction_commands_drop_the_cached_restriction_row() {
         let host = format!("timeout-cache-{}.example", uuid::Uuid::new_v4().simple());
         let (state, tenant) = workspace_profile_test_state(&host, true).await;
         let (owner, target) = (Keys::generate(), Keys::generate());
@@ -1476,6 +1475,14 @@ mod postgres_tests {
                 buzz_core::kind::KIND_MODERATION_UNTIMEOUT,
                 vec![Tag::public_key(target.public_key())],
             ),
+            command(
+                buzz_core::kind::KIND_MODERATION_BAN,
+                vec![Tag::public_key(target.public_key())],
+            ),
+            command(
+                buzz_core::kind::KIND_MODERATION_UNBAN,
+                vec![Tag::public_key(target.public_key())],
+            ),
         ] {
             state.seed_restriction(
                 key.clone(),
@@ -1487,7 +1494,7 @@ mod postgres_tests {
             .await
             .unwrap_or_else(|e| panic!("kind {} must apply: {e:?}", event.kind.as_u16()));
             assert_eq!(
-                state.restriction_cache.get(&key).map(|cached| cached.state),
+                state.restriction_cache.entry(&key).map(|(state, _)| state),
                 None,
                 "kind {} must drop the cached row",
                 event.kind.as_u16()

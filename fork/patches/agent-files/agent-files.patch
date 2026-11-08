@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 92c8f60307abb190ee8746ee332d6c489e82ed79..046a10208158bc4d8bde2d3fa159ac52541e7fb1 100644
+index 41a068ff88d92a35221de068b1996ff6d6b8c17c..c2378dfcf0b750ac8dd88142a39a00e5bf05fd97 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [
@@ -999,7 +999,7 @@ index 375f399a23d4e5002d7712257ca1bc5dbef697b8..86b83db4ed18580c599716cf45fb8209
  
 diff --git a/crates/buzz-core/src/agent_files.rs b/crates/buzz-core/src/agent_files.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..bd5b8e15052dc6074990d29cde7f8b615e920432
+index 0000000000000000000000000000000000000000..feee24982f337d8800a2e5e6d6e050f47876b903
 --- /dev/null
 +++ b/crates/buzz-core/src/agent_files.rs
 @@ -0,0 +1,1155 @@
@@ -1389,7 +1389,7 @@ index 0000000000000000000000000000000000000000..bd5b8e15052dc6074990d29cde7f8b61
 +    }
 +}
 +
-+/// Build a signed `kind:30180` file record.
++/// Build a signed `kind:34180` file record.
 +///
 +/// * `created_at` is the timestamp to sign — callers MUST supply a value
 +///   respecting the *Writing* monotonic rule (`max(now, T_head + 1)`).
@@ -1416,7 +1416,7 @@ index 0000000000000000000000000000000000000000..bd5b8e15052dc6074990d29cde7f8b61
 +    )
 +}
 +
-+/// Validate a `kind:30180` event against *Head selection* and return the
++/// Validate a `kind:34180` event against *Head selection* and return the
 +/// decoded body. Caller must verify the signature beforehand.
 +///
 +/// * `expected_agent` — the agent pubkey the event's `pubkey` field must equal.
@@ -1637,23 +1637,23 @@ index 0000000000000000000000000000000000000000..bd5b8e15052dc6074990d29cde7f8b61
 +    /// `[content, id, sig]` of the pinned *Reference test vectors* events.
 +    const EVENT_NOTES: [&str; 3] = [
 +        "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABeWYcxyTrp5d68LBgA38mWthpZhLbxJYMfhJBIaLKj/BibYNSQQWLt6lkAXZKid+iG4Qbw5alru2O5QNHEsvgLDxoohNxwegWO+R8ZglzvKJvONpvb2DQgtDOCoAHlk4U79qce+Bc6EPESBbYYhyTsoZ3K4phyhQbPf4Wf17d6VrIjF90VGEnjdGQ8+kf9Q+LvFbLZK5Yy8TJmm+uSe6nruhmEJtEgN+E4HqYl3hm3wi0I7zDVq6XE5YP8+33SUgi3Fw=",
-+        "ffedcefb2ceca14ebd23fc5832be2eaece81364e5749b40551febb34ece68129",
-+        "851749264f0ee6cc356343942f6a8987687eeeb36718624459c8057ebd910676afa566280b06896b627e024b99a5ac65508c98becca7359873e2241ef9b46db6",
++        "8d740f4965bb27935feea98fe2e20f1d24445d1836c1a03be5d1276d61de420c",
++        "e4f681bc46916fba7c291217e210b6cb8cb49c693f8c4f9fdc270a050bf56ea0ea2cfe5031693e505e31c3965f5f15bf116caad03ff95a18a0e21696dc77c65a",
 +    ];
 +    const EVENT_PLAN: [&str; 3] = [
 +        "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACGzxBPvRUxTMAxOGGRKGhZiqgsEArQCRWg50Ke1gDJx+TGj9/Fewz3WSyeAfivT3k1gBothiBPJ5s4cOhoEO8II+l0uqLSfcuoPyWdKtqiGzypCM6179dYp0PvWim9j+wvCOLYun2TmeW8X9jYUNEs30aK7W0KxbM0JFd90vjbhlIh9YFQzQmV/gd5sN2BqBULXmmZgc5sMVzdb8DKkbG4CfkSf4eefdbfkQh4P8Adrk5gFTQ3MMFjBFsMXvjpLUQrAs=",
-+        "7057f1c1826c58d24cd61bd2ca084e6ebe3ac23e9d664deb286629e029d43da4",
-+        "c72a734e84af6b038e7c28dfefba7576b0bcb02f385bd38a99ce7c4795b867dc6d27e72d446aed33c2fcf4a211099fd55fc135ee3236f863180baa56a18ff751",
++        "e7f5b20bb36c9d347775076f26b03047088fc74ec8a917d6da9897730bc57f30",
++        "f3c93e2c038de5d1ce46332ac4b88baddd39899dd0a9b4433ac58583fdcf5b447024a19f317287b796532de1b11c6eb0f6d036d09f693ae945a338e45026ff00",
 +    ];
 +    const EVENT_BIG: [&str; 3] = [
 +        "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADufi8i0aj4uoLnp2rR/0icXfrLlipO1/EFjgIaMEZgjMtBxFfHRl2FE2vy5jJ/Z0ZfIqS0LWZbYrASsnxSWX0T0d1keXs2rhM8a/1YsmLEwPZUyetBJ6AUQpEoMjyKlwhJ8hHY02Z/WmOvJ+eAcSak81lFyUYqr/Q+r9Vu8cOmTJd+doLd9zrrbg1weUnGD1ZxHH403ggde05EdOMG+BgzCWm",
-+        "6ba315bfc0b986c56662e78e94de1a5df07fdee30e410e2b84e62b1608b3fba7",
-+        "5b73e8ffda0caeb76fac13150a2e617b2b4bb0b1c1a38dbee6619a5ee5852ed81ee1b0a3e6d80733e0d47f57625303988d842285880189c4656a0c4a81254947",
++        "5c0a6057f2cff7ad64fa0b32a72af0a8b15ebde55f7bbd0b61e8b7f2cccec4d0",
++        "9cbeb52a78432ae2090a47bc42a3bdb1fa1dcbec49f8adb0412a1c9a0448c97f1bb76a06b222f4c0cda20621c6ea14e64b1a3a315ad059fa3b867e375f7ae107",
 +    ];
 +    const EVENT_NOTES_REMOVED: [&str; 3] = [
 +        "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEEZ1HAFvscs/AcKaYSSZ7c4DJyiq9MWbCVhh3F5cJYKzzNVHP0Co4mCrkLHwQYMHhOrSCVp2209axj77xAk5tDKg8mc1ZeRGDsVVtCEMHNYahgYEMzcE4bH/po+T3shhnl0c=",
-+        "1bec75664cb1939429d2f18b0a431dac23c5557668ac28665fa4ce7b2024c38a",
-+        "ff395138e65c57fa113c59c70e60f82a6ef47738a2de72fc9ab527c399f852836f7b74ce792b568ac7fec7986801d674c4881d87d21df4f87b4b413fc8bc0600",
++        "0d7f4380aaefffb984cd16ae1606ea63b8e3c0836acf74eaac1baff3d3ff2483",
++        "37057eec9b646df24de96b4e8dfe7a84a2a54be695623b77f2b01ae8a5c70d99f3dcdce641eec017ee22f039580c16ea2f7139cd97b5c652741678e472e01d76",
 +    ];
 +    const EVENT_REQUEST: [&str; 3] = [
 +        "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFxUvaeNKl0ciXDyss+prpTNPK3paTrOuWRaJv0G9O6yQ57/2WtCobF8+8BMczu9OQI4Q9KwSBdWkY8Ip329LNeWAYp5u5pPq6pcxk/n3lIITYflSIQ+xSL+Q7Z3J4Nl1W4sFSQVcEqz7vBIYEE1qQDNS9vhdTUr+iNPkyvK4eTC4HtGywJUG1vzo4lQxPLf9go1gQAgGTZd97QXNgYSm9wmuVLpCkQm34rQJWejJvvI7CTY5h5m6BsjqGG39EahG9EzE=",
@@ -2159,7 +2159,7 @@ index 0000000000000000000000000000000000000000..bd5b8e15052dc6074990d29cde7f8b61
 +    }
 +}
 diff --git a/crates/buzz-core/src/engram.rs b/crates/buzz-core/src/engram.rs
-index 7f38347f80804128dcb43845bed0821ab7bfd85c..9f81c0fb65a4b44907ea40e1199f43bd6c735526 100644
+index f2f30c3b6e33e4d78ba03000106670a63b517091..d42ffe782140633eb8f921e1947902aa3e776187 100644
 --- a/crates/buzz-core/src/engram.rs
 +++ b/crates/buzz-core/src/engram.rs
 @@ -142,14 +142,20 @@ pub fn conversation_key(my_seckey: &SecretKey, their_pubkey: &PublicKey) -> Conv
@@ -2225,7 +2225,7 @@ index 7f38347f80804128dcb43845bed0821ab7bfd85c..9f81c0fb65a4b44907ea40e1199f43bd
  }
  
 diff --git a/crates/buzz-core/src/kind.rs b/crates/buzz-core/src/kind.rs
-index ae7a6221ebca35ea0b3e894bcfdcec319536d5b3..e3eb36642242726879fc5463e93d9775478fc66e 100644
+index 7e65c30f72e8e43f9cac5c8bfbafe37abfbe4134..5a6e5d78c9b90bfdf53fbce5e79d412dc7458d06 100644
 --- a/crates/buzz-core/src/kind.rs
 +++ b/crates/buzz-core/src/kind.rs
 @@ -96,6 +96,40 @@ pub const KIND_AGENT_PROFILE: u32 = 10100;
@@ -2238,7 +2238,7 @@ index ae7a6221ebca35ea0b3e894bcfdcec319536d5b3..e3eb36642242726879fc5463e93d9775
 +/// `(pubkey_a, kind, d_tag)`, where `d_tag` is an HMAC over the agent↔owner
 +/// conversation key and the file's path. See `docs/nips/NIP-AF.md` and
 +/// [`crate::agent_files`].
-+pub const KIND_AGENT_FILE: u32 = 30180;
++pub const KIND_AGENT_FILE: u32 = 34180;
 +
 +/// NIP-AF: Agent File edit request (regular, owner-authored).
 +///
@@ -2269,7 +2269,7 @@ index ae7a6221ebca35ea0b3e894bcfdcec319536d5b3..e3eb36642242726879fc5463e93d9775
  /// NIP-ER: Event Reminder (parameterized replaceable, author-only).
  ///
  /// Encrypted, author-only reminder addressed by `(pubkey, kind, d_tag)`. The
-@@ -705,6 +739,9 @@ pub const ALL_KINDS: &[u32] = &[
+@@ -721,6 +755,9 @@ pub const ALL_KINDS: &[u32] = &[
      KIND_FILE_METADATA,
      KIND_AGENT_PROFILE,
      KIND_AGENT_ENGRAM,
@@ -2279,15 +2279,15 @@ index ae7a6221ebca35ea0b3e894bcfdcec319536d5b3..e3eb36642242726879fc5463e93d9775
      KIND_EVENT_REMINDER,
      KIND_PERSONA,
      KIND_TEAM,
-@@ -924,6 +961,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 300
- const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 30177 ∈ 30000–39999
+@@ -945,6 +982,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 3017
  const _: () = assert!(is_parameterized_replaceable(KIND_TEAM_CATALOG)); // 30178 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_PRIVATE_MANAGED_AGENT)); // 30179 ∈ 30000–39999
-+const _: () = assert!(is_parameterized_replaceable(KIND_AGENT_FILE)); // 30180 ∈ 30000–39999
+ const _: () = assert!(is_parameterized_replaceable(KIND_EMOJI_ENTRY)); // 30180 ∈ 30000–39999
++const _: () = assert!(is_parameterized_replaceable(KIND_AGENT_FILE)); // 34180 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999
-@@ -951,6 +989,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
+@@ -972,6 +1010,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(!is_replaceable(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(!is_parameterized_replaceable(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(KIND_AGENT_TURN_METRIC <= u16::MAX as u32);
@@ -2300,7 +2300,7 @@ index ae7a6221ebca35ea0b3e894bcfdcec319536d5b3..e3eb36642242726879fc5463e93d9775
  // 1984 is a regular event (persisted to the queue, never fanned out);
  // 9040–9044 are direct commands (executed, never stored).
 diff --git a/crates/buzz-core/src/lib.rs b/crates/buzz-core/src/lib.rs
-index 99b4aa68032064273c9cf989ff77ec674faafac0..aa80f27d9291b984e49102326a2bc864555bf270 100644
+index f1330a6565516647af8b84df9a65709589778d23..587d3011dfebc6eaa46bbcef43d4e1f2f84321cf 100644
 --- a/crates/buzz-core/src/lib.rs
 +++ b/crates/buzz-core/src/lib.rs
 @@ -5,6 +5,9 @@
@@ -2313,11 +2313,48 @@ index 99b4aa68032064273c9cf989ff77ec674faafac0..aa80f27d9291b984e49102326a2bc864
  /// NIP-AM: Agent Turn Metric — payload type and encrypt/decrypt helpers.
  pub mod agent_turn_metric;
  /// Channel and membership enums shared across crates.
+diff --git a/crates/buzz-db/src/store/media.rs b/crates/buzz-db/src/store/media.rs
+index e6218ae2c3fd5f348e6177347200f4c3e87e40fe..745f7066c8cc76e2045f05b15ffdc9c5b38745bc 100644
+--- a/crates/buzz-db/src/store/media.rs
++++ b/crates/buzz-db/src/store/media.rs
+@@ -162,7 +162,7 @@ impl Db {
+                     let kind = event.kind.as_u16() as u32;
+                     let tagged = event.tags.iter().any(|tag| matches!(tag.as_slice(), [name, value, ..] if name == "p" && value == &hex::encode(pubkey)));
+                     let private_ok = (!kind::P_GATED_KINDS.contains(&kind) || tagged)
+-                        && (kind != kind::KIND_AGENT_ENGRAM
++                        && (!kind::AGENT_PAIR_KINDS.contains(&kind)
+                             || event.pubkey.as_bytes() == pubkey
+                             || tagged);
+                     if readable && private_ok && visible(event, pubkey) {
+@@ -364,6 +364,10 @@ pub(super) fn media_reference_query(
+             .iter()
+             .map(|kind| *kind as i32)
+             .collect();
++        let agent_pair: Vec<i32> = kind::AGENT_PAIR_KINDS
++            .iter()
++            .map(|kind| *kind as i32)
++            .collect();
+         let shared: Vec<i32> = kind::SHARED_GATED_KINDS
+             .iter()
+             .map(|kind| *kind as i32)
+@@ -381,9 +385,9 @@ pub(super) fn media_reference_query(
+             .push_bind(pubkey)
+             .push(")");
+         query
+-            .push(" AND (kind <> ")
+-            .push_bind(kind::KIND_AGENT_ENGRAM as i32)
+-            .push(" OR pubkey=")
++            .push(" AND (kind <> ALL(")
++            .push_bind(agent_pair)
++            .push(") OR pubkey=")
+             .push_bind(pubkey)
+             .push(" OR tags @> ")
+             .push_bind(serde_json::json!([["p", hex::encode(pubkey)]]))
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index 3c6320e04487a64f814cbba292df5a81500158d6..59340a6cc6f8de6dee2ab54477b2c3882aec525f 100644
+index 0b6c481a887e39944e8cdc8b21f627dc24855a75..a2df458c2bca9769d014cad89f6338820068426c 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
-@@ -1518,10 +1518,10 @@ async fn query_member_events(
+@@ -1755,10 +1755,10 @@ async fn query_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2330,7 +2367,7 @@ index 3c6320e04487a64f814cbba292df5a81500158d6..59340a6cc6f8de6dee2ab54477b2c388
          ));
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
-@@ -2206,10 +2206,10 @@ async fn count_member_events(
+@@ -2432,10 +2432,10 @@ async fn count_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2344,11 +2381,11 @@ index 3c6320e04487a64f814cbba292df5a81500158d6..59340a6cc6f8de6dee2ab54477b2c388
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
 diff --git a/crates/buzz-relay/src/handlers/count.rs b/crates/buzz-relay/src/handlers/count.rs
-index 08ff84a017db906f29d44baa48117c86d76288bc..b8ec8b440a7fbe5966725182a49a2fda78800694 100644
+index 3672ce6b3000dd73ed8b615e52c1eefa2e0d8f9a..493446a296184c3088c61c61bb1a9a1062acee92 100644
 --- a/crates/buzz-relay/src/handlers/count.rs
 +++ b/crates/buzz-relay/src/handlers/count.rs
-@@ -49,10 +49,10 @@ pub async fn handle_count(
-         ));
+@@ -52,10 +52,10 @@ pub async fn handle_count(
+         access.deny("p_gated");
          return;
      }
 -    if !super::req::engram_filters_authorized(&filters, &authed_pubkey_hex) {
@@ -2358,10 +2395,10 @@ index 08ff84a017db906f29d44baa48117c86d76288bc..b8ec8b440a7fbe5966725182a49a2fda
 -            "restricted: agent-engram reads require authors=[self] or #p=[self]",
 +            "restricted: agent-pair reads require authors=[self] or #p=[self]",
          ));
+         access.deny("engram_gated");
          return;
-     }
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f304236dbf7 100644
+index 46a1c81f28265e4ca5b6a7ba67fd8352f7cf3637..6fa812e118a41a29a5b5030c8950b0d960fb8483 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2375,10 +2412,10 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
 +    KIND_AGENT_FILE_EDIT_RESULT, KIND_AGENT_PROFILE, KIND_AGENT_TURN_METRIC, KIND_APPROVAL_DENY,
 +    KIND_APPROVAL_GRANT, KIND_AUTH, KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS,
 +    KIND_CONTACT_LIST, KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN,
-     KIND_EMOJI_LIST, KIND_EMOJI_SET, KIND_EVENT_REMINDER, KIND_FOLLOW_SET, KIND_FORUM_COMMENT,
-     KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
-     KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
-@@ -547,12 +548,15 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
+     KIND_EMOJI_ENTRY, KIND_EMOJI_LIST, KIND_EMOJI_SET, KIND_EVENT_REMINDER, KIND_FOLLOW_SET,
+     KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE,
+     KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT,
+@@ -599,12 +600,15 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
          KIND_PROFILE => Ok(Scope::UsersWrite),
          KIND_TEXT_NOTE | KIND_LONG_FORM | buzz_core::kind::KIND_ARTIFACT => Ok(Scope::MessagesWrite),
          KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS | KIND_AGENT_ENGRAM
@@ -2395,8 +2432,8 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
          // NIP-56 reports are ordinary member writes into the mod-only queue.
          // Ingest persists them to `moderation_reports` and suppresses public
          // storage/fanout; reports are signals, never enforcement triggers.
-@@ -765,6 +769,11 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
-             | KIND_EMOJI_LIST
+@@ -821,6 +825,11 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
+             | KIND_EMOJI_ENTRY
              // NIP-AE agent engrams are addressed by (pubkey_a, kind, d_tag); never channel-scoped.
              | KIND_AGENT_ENGRAM
 +            // NIP-AF agent files are addressed like engrams; edit requests and
@@ -2407,19 +2444,19 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
              // NIP-ER event reminders are addressed by (pubkey, kind, d_tag); never channel-scoped.
              | KIND_EVENT_REMINDER
              // Agent profile (10100): user-owned replaceable, keyed by pubkey.
-@@ -1574,8 +1583,9 @@ fn validate_diff_event(event: &Event) -> Result<(), String> {
+@@ -1612,8 +1621,9 @@ fn validate_diff_event(event: &Event) -> Result<(), String> {
      Ok(())
  }
  
 -/// Validate the public envelope of a NIP-AE `kind:30174` event before it
 -/// reaches NIP-33 parameterized replacement.
 +/// Validate the public envelope of a NIP-AE `kind:30174` engram or a NIP-AF
-+/// `kind:30180` agent file (same envelope) before it reaches NIP-33
++/// `kind:34180` agent file (same envelope) before it reaches NIP-33
 +/// parameterized replacement.
  ///
  /// We deliberately do this here (not in the d-tag length check downstream)
  /// because a malformed envelope can otherwise *replace* a valid head in
-@@ -1587,6 +1597,11 @@ fn validate_diff_event(event: &Event) -> Result<(), String> {
+@@ -1625,6 +1635,11 @@ fn validate_diff_event(event: &Event) -> Result<(), String> {
  ///
  /// Content is opaque NIP-44 ciphertext; we do not parse it.
  fn validate_engram_envelope(event: &Event) -> Result<(), String> {
@@ -2431,7 +2468,7 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
      let mut d_tags: Vec<&str> = Vec::new();
      let mut p_tags: Vec<&str> = Vec::new();
      for tag in event.tags.iter() {
-@@ -1602,13 +1617,13 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
+@@ -1640,13 +1655,13 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
      }
      if d_tags.len() != 1 {
          return Err(format!(
@@ -2447,7 +2484,7 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
              p_tags.len()
          ));
      }
-@@ -1618,7 +1633,7 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
+@@ -1656,7 +1671,7 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
              .bytes()
              .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
      {
@@ -2456,7 +2493,7 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
      }
      let p = p_tags[0];
      // Lowercase-only: readers query `#p` with `owner.to_hex()` (lowercase) and
-@@ -1630,16 +1645,88 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
+@@ -1668,16 +1683,88 @@ fn validate_engram_envelope(event: &Event) -> Result<(), String> {
              .bytes()
              .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
      {
@@ -2547,7 +2584,7 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
  /// Enforce the `shared`-tag shape shared by every kind in
  /// [`buzz_core::kind::SHARED_GATED_KINDS`]: at most one `shared` tag, and if
  /// present it must be exactly `["shared", "true"]`.
-@@ -3128,11 +3215,16 @@ async fn ingest_event_inner(
+@@ -3195,11 +3282,16 @@ async fn ingest_event_inner(
          validate_diff_event(&event).map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
      }
  
@@ -2565,9 +2602,9 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
      if kind_u32 == KIND_AGENT_TURN_METRIC {
          validate_agent_turn_metric_envelope(&event)
              .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-@@ -4464,6 +4556,9 @@ mod postgres_tests {
-             KIND_EMOJI_SET,
+@@ -4884,6 +4976,9 @@ mod postgres_tests {
              KIND_EMOJI_LIST,
+             KIND_EMOJI_ENTRY,
              KIND_AGENT_ENGRAM,
 +            KIND_AGENT_FILE,
 +            KIND_AGENT_FILE_EDIT_REQUEST,
@@ -2575,7 +2612,7 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
              KIND_AGENT_PROFILE,
              KIND_PERSONA,
              KIND_TEAM,
-@@ -4515,6 +4610,27 @@ mod postgres_tests {
+@@ -4935,6 +5030,27 @@ mod postgres_tests {
          );
      }
  
@@ -2603,7 +2640,7 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
      #[test]
      fn nip51_and_nip65_lists_are_global_only() {
          for kind in [
-@@ -4982,6 +5098,118 @@ mod postgres_tests {
+@@ -5402,6 +5518,118 @@ mod postgres_tests {
          assert!(err.contains("base64"), "got: {err}");
      }
  
@@ -2723,7 +2760,7 @@ index b2031936abd1ab1a113e8d4cac149c6e18d2f4a9..a581995b0173241beb45bc0ce0751f30
      fn not_before_accepts_zero() {
          assert_eq!(validate_not_before("0"), Ok(0));
 diff --git a/crates/buzz-relay/src/handlers/req.rs b/crates/buzz-relay/src/handlers/req.rs
-index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049b1023738 100644
+index b5e9347941b4304757d4f860b4feb059508e306f..7f2564ec8b70ec2a7a50c8fa55d88fc2020a8007 100644
 --- a/crates/buzz-relay/src/handlers/req.rs
 +++ b/crates/buzz-relay/src/handlers/req.rs
 @@ -7,7 +7,7 @@ use tracing::{debug, warn};
@@ -2735,8 +2772,8 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      KIND_HUDDLE_LIVENESS, P_GATED_KINDS, RESULT_GATED_KINDS, SHARED_GATED_KINDS,
  };
  use buzz_core::tenant::TenantContext;
-@@ -296,10 +296,10 @@ pub async fn handle_req(
-             .await;
+@@ -326,10 +326,10 @@ pub async fn handle_req(
+             access.deny("p_gated");
              return;
          }
 -        if !engram_filters_authorized(&filters, &authed_pubkey_hex) {
@@ -2748,7 +2785,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
                  &conn,
                  &state,
              )
-@@ -1752,28 +1752,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex:
+@@ -1852,28 +1852,29 @@ pub(crate) fn p_gated_filters_authorized(filters: &[Filter], authed_pubkey_hex:
      })
  }
  
@@ -2790,7 +2827,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      let p_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::P);
      filters.iter().all(|filter| {
          // Specific-event lookups don't fish.
-@@ -1781,11 +1782,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
+@@ -1881,11 +1882,11 @@ pub(crate) fn engram_filters_authorized(filters: &[Filter], authed_pubkey_hex: &
              return true;
          }
  
@@ -2807,7 +2844,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
              return true;
          }
  
-@@ -1956,6 +1957,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
+@@ -2056,6 +2057,10 @@ pub(crate) fn author_only_filters_authorized(filters: &[Filter], authed_pubkey_h
  #[cfg(test)]
  mod tests {
      use super::*;
@@ -2818,7 +2855,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      use nostr::{Alphabet, Filter, SingleLetterTag};
  
      fn lifecycle_conn() -> (
-@@ -3445,7 +3450,7 @@ mod tests {
+@@ -3691,7 +3696,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2827,7 +2864,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      #[test]
-@@ -3457,7 +3462,7 @@ mod tests {
+@@ -3703,7 +3708,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2836,7 +2873,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      #[test]
-@@ -3468,7 +3473,7 @@ mod tests {
+@@ -3714,7 +3719,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .custom_tags(p_tag, [&owner]);
@@ -2845,7 +2882,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      #[test]
-@@ -3480,7 +3485,7 @@ mod tests {
+@@ -3726,7 +3731,7 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .custom_tags(p_tag, [&owner]);
@@ -2854,7 +2891,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      #[test]
-@@ -3488,7 +3493,7 @@ mod tests {
+@@ -3734,7 +3739,7 @@ mod tests {
          // {kinds:[30174]} with no authors and no #p — open fishing.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16));
@@ -2863,7 +2900,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      #[test]
-@@ -3497,7 +3502,7 @@ mod tests {
+@@ -3743,7 +3748,7 @@ mod tests {
          // engrams; must still be gated.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new();
@@ -2872,7 +2909,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      #[test]
-@@ -3505,7 +3510,7 @@ mod tests {
+@@ -3751,7 +3756,7 @@ mod tests {
          // Filter not targeting engrams — pass through; this gate is silent.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().kind(nostr::Kind::Custom(9));
@@ -2881,7 +2918,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      #[test]
-@@ -3519,7 +3524,7 @@ mod tests {
+@@ -3765,7 +3770,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .id(id);
@@ -2890,7 +2927,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      #[test]
-@@ -3534,7 +3539,7 @@ mod tests {
+@@ -3780,7 +3785,7 @@ mod tests {
                  nostr::PublicKey::from_hex(&agent).unwrap(),
                  nostr::PublicKey::from_hex(&other).unwrap(),
              ]);
@@ -2899,7 +2936,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      // These filters are the shape an authenticated relay member would send
-@@ -3548,7 +3553,7 @@ mod tests {
+@@ -3794,7 +3799,7 @@ mod tests {
          let f = Filter::new()
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .search("*");
@@ -2908,7 +2945,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      #[test]
-@@ -3556,7 +3561,7 @@ mod tests {
+@@ -3802,7 +3807,7 @@ mod tests {
          // {"search":"foo"} — no `kinds` field at all matches engrams too.
          let (agent, _, _) = three_pubkeys();
          let f = Filter::new().search("foo");
@@ -2917,7 +2954,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
      }
  
      #[test]
-@@ -3567,7 +3572,62 @@ mod tests {
+@@ -3813,7 +3818,62 @@ mod tests {
              .kind(nostr::Kind::Custom(KIND_AGENT_ENGRAM as u16))
              .author(nostr::PublicKey::from_hex(&agent).unwrap())
              .search("foo");
@@ -2982,7 +3019,7 @@ index c0ff3b5356f305b41c416fe65cbdde7c225f39c7..93faf1c268325a62bddf8c5695c65049
  
      #[test]
 diff --git a/desktop/playwright.config.ts b/desktop/playwright.config.ts
-index 61f77de46cb10c6e76f3c6e12626f769b2d8f74c..c5faf642b5bb781433f8d31350ef466d0bcd4d27 100644
+index 4923a67928beebfd7b6c68367b09a4a108aced2a..75820a5745f5e320aa341d4408ab21fea3fbd3aa 100644
 --- a/desktop/playwright.config.ts
 +++ b/desktop/playwright.config.ts
 @@ -58,6 +58,7 @@ export default defineConfig({
@@ -3407,7 +3444,7 @@ index 6d059e2700044956b3b36b9b4c5e7b88ed5b86b2..0b33ecc5b6d424b60621a44c19e8c3e8
          // command is always catalog-derived (known_acp_runtime at spawn time)
          // and the per-record field is never read by the runtime.
 diff --git a/desktop/src-tauri/src/commands/agents.rs b/desktop/src-tauri/src/commands/agents.rs
-index 86e8f10b7bafa483f7a19ff13845f90212864c52..f01f0934645144cfe04b5d78bc267103bddaf6ef 100644
+index 737d3571488ea827f29170c06826a1165840247e..c485e042b03ae1438d758129ea48d0e73cc71886 100644
 --- a/desktop/src-tauri/src/commands/agents.rs
 +++ b/desktop/src-tauri/src/commands/agents.rs
 @@ -752,6 +752,7 @@ async fn create_managed_agent_in<R: tauri::Runtime>(
@@ -3568,7 +3605,7 @@ index 74de12949253b4f29e52140c8dee4e6661298dc6..66a7ddeb74c431268ecfdeb727a9afed
      // Owner = viewer. Clone the secret key out of the lock immediately so
      // we don't hold the mutex across the relay round trip.
 diff --git a/desktop/src-tauri/src/commands/mod.rs b/desktop/src-tauri/src/commands/mod.rs
-index e141975a79ddff8009846722e06cac295c130060..b146452c20949e0a9083d901f537f29e8c42b745 100644
+index 825c0e22bc23da576392d9b9667fe16d22828d7f..446f4733cb90e80a6896a131aebe661d68ede58f 100644
 --- a/desktop/src-tauri/src/commands/mod.rs
 +++ b/desktop/src-tauri/src/commands/mod.rs
 @@ -4,6 +4,7 @@ mod agent_auth;
@@ -3579,7 +3616,7 @@ index e141975a79ddff8009846722e06cac295c130060..b146452c20949e0a9083d901f537f29e
  mod agent_logs;
  mod agent_metric_archive;
  mod agent_model_process;
-@@ -83,6 +84,7 @@ pub use agent_auth::*;
+@@ -84,6 +85,7 @@ pub use agent_auth::*;
  pub use agent_config::*;
  pub use agent_connect::*;
  pub use agent_discovery::*;
@@ -3624,10 +3661,10 @@ index 1eec21d9fafbaa8aaf6891fdb579b3a9a5da00c5..b033c32173f864d1643c6fd8f387954a
  }
  
 diff --git a/desktop/src-tauri/src/commands/personas/snapshot/import.rs b/desktop/src-tauri/src/commands/personas/snapshot/import.rs
-index 0c9f170916595016074d3bdb39b3488c3c5dfe6b..ab7c3d029bcdb1e5712fa9580d6b37d68c2ec94d 100644
+index ffec154f7921bf5f533b4be6420917b24aa09073..f8f87f62d2c51c3de730e44746bda399fc07250f 100644
 --- a/desktop/src-tauri/src/commands/personas/snapshot/import.rs
 +++ b/desktop/src-tauri/src/commands/personas/snapshot/import.rs
-@@ -668,6 +668,7 @@ pub async fn confirm_agent_snapshot_import(
+@@ -674,6 +674,7 @@ pub async fn confirm_agent_snapshot_import(
              definition_parallelism: minted_parallelism,
              relay_mesh: None,
              effort_level: None,
@@ -3648,7 +3685,7 @@ index 5a41b86f8d90d1383c773307e7367772c9059fc8..37a2af3ed1a2d6f978654aa1e8051c49
  }
  
 diff --git a/desktop/src-tauri/src/commands/personas/update/name_propagation_tests.rs b/desktop/src-tauri/src/commands/personas/update/name_propagation_tests.rs
-index e75e88edfe11036d9736216a6bd284f90beb107d..d3bec7f31775d25eb698b542d49990e7017cfd6d 100644
+index 89f93e8d15b5771af9d7377de123b4605309c0b8..caf7f0ac1026ab1f295710be1c65220295ae6cd7 100644
 --- a/desktop/src-tauri/src/commands/personas/update/name_propagation_tests.rs
 +++ b/desktop/src-tauri/src/commands/personas/update/name_propagation_tests.rs
 @@ -63,6 +63,7 @@ fn agent(persona_id: &str, name: &str, display_name: Option<&str>) -> ManagedAge
@@ -3660,10 +3697,10 @@ index e75e88edfe11036d9736216a6bd284f90beb107d..d3bec7f31775d25eb698b542d49990e7
  }
  
 diff --git a/desktop/src-tauri/src/commands/team_snapshot.rs b/desktop/src-tauri/src/commands/team_snapshot.rs
-index 8f43e4f8ce506d3e82db55b76a3cf79aeb68cbad..615cb93be3b08fa70b599fb941f1673c2f421b56 100644
+index 9cd2d0fa1f1d358bd0d9d2e4cc8a7f738d285b4e..512448191fed29683952238e2edb2648db444db1 100644
 --- a/desktop/src-tauri/src/commands/team_snapshot.rs
 +++ b/desktop/src-tauri/src/commands/team_snapshot.rs
-@@ -628,6 +628,7 @@ pub async fn confirm_team_snapshot_import(
+@@ -629,6 +629,7 @@ pub async fn confirm_team_snapshot_import(
              definition_parallelism: minted_parallelism,
              relay_mesh: None,
              effort_level: None,
@@ -3684,10 +3721,10 @@ index 4cf1bf49e4c66458538109774360eb0b6eacba49..675b6bd40294c547985ccd460030e70d
          name_pool: vec![],
      };
 diff --git a/desktop/src-tauri/src/lib.rs b/desktop/src-tauri/src/lib.rs
-index 330724e8ccd36a8eb3f70d739583652606e19cc3..0ed607770310a253513440b794e779ef45b5e191 100644
+index 416dbfa8dc2a66a1306b85e98929ed1bb98fe9d0..7a40fd102721dccf7da971769d43e35c0bbf4f92 100644
 --- a/desktop/src-tauri/src/lib.rs
 +++ b/desktop/src-tauri/src/lib.rs
-@@ -853,6 +853,8 @@ pub fn run() {
+@@ -854,6 +854,8 @@ pub fn run() {
              fetch_join_policy,
              set_prevent_sleep_active,
              get_agent_memory,
@@ -5568,7 +5605,7 @@ index 3460494a44bc463b9eeefe7c21682761f24af7b1..008323677c1f77303ef8878563f391a4
    effortLevel?: string | null;
  };
 diff --git a/desktop/src/testing/e2eBridge.ts b/desktop/src/testing/e2eBridge.ts
-index 9fa7b42b2a227ff1cc319fd5ce884e018d7d4d11..6ae14b5ae33f8326ddf4b4fe82c0c829a378f7ba 100644
+index 5facb404cc672b9fae3bba663d4c30477aed316e..e5774174ea9762e04e86e7941438fc69cb2f4e55 100644
 --- a/desktop/src/testing/e2eBridge.ts
 +++ b/desktop/src/testing/e2eBridge.ts
 @@ -361,6 +361,7 @@ type E2eConfig = {
@@ -5579,7 +5616,7 @@ index 9fa7b42b2a227ff1cc319fd5ce884e018d7d4d11..6ae14b5ae33f8326ddf4b4fe82c0c829
      addChannelMembersDelayMs?: number;
      /** Sequenced add-member failures. A string fails that call; null succeeds. */
      addChannelMembersErrors?: (string | null)[];
-@@ -1037,6 +1038,34 @@ type RawAgentMemoryListing = {
+@@ -1042,6 +1043,34 @@ type RawAgentMemoryListing = {
    fetchedAt: number;
  };
  
@@ -5614,7 +5651,7 @@ index 9fa7b42b2a227ff1cc319fd5ce884e018d7d4d11..6ae14b5ae33f8326ddf4b4fe82c0c829
  type RawCommandAvailability = {
    command: string;
    resolved_path: string | null;
-@@ -8963,6 +8992,58 @@ async function handleGetAgentMemory(
+@@ -8968,6 +8997,58 @@ async function handleGetAgentMemory(
        };
  }
  
@@ -5673,7 +5710,7 @@ index 9fa7b42b2a227ff1cc319fd5ce884e018d7d4d11..6ae14b5ae33f8326ddf4b4fe82c0c829
  async function handleListPersonas(): Promise<RawPersona[]> {
    return mockPersonas.map((persona) => ({ ...persona }));
  }
-@@ -14120,6 +14201,15 @@ export function maybeInstallE2eTauriMocks() {
+@@ -14149,6 +14230,15 @@ export function maybeInstallE2eTauriMocks() {
            (payload as Parameters<typeof handleGetAgentMemory>[0]) ?? {},
            activeConfig,
          );
@@ -5838,7 +5875,7 @@ index 0000000000000000000000000000000000000000..15194dd9248da1109399f33b3a071fbd
 +  await capture(page, "06-edit-conflict");
 +});
 diff --git a/desktop/tests/helpers/bridge.ts b/desktop/tests/helpers/bridge.ts
-index 3eaf58a5e4b677743721740d3242c10226ccba0d..83aabeac18212647807334ad027a35ab72b9c942 100644
+index 1e9147361424a66b900c056c2c5089f1632615f5..0c532cc84e99ea16504e909bd009c1bb9003f21e 100644
 --- a/desktop/tests/helpers/bridge.ts
 +++ b/desktop/tests/helpers/bridge.ts
 @@ -129,6 +129,34 @@ export type MockAgentMemoryListing = {
@@ -5887,7 +5924,7 @@ index 3eaf58a5e4b677743721740d3242c10226ccba0d..83aabeac18212647807334ad027a35ab
      mcp?: MockCommandAvailability;
 diff --git a/docs/nips/NIP-AF.md b/docs/nips/NIP-AF.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b95d8e593
+index 0000000000000000000000000000000000000000..d2fa0d569c5e99afd0417689dd77504c67192965
 --- /dev/null
 +++ b/docs/nips/NIP-AF.md
 @@ -0,0 +1,295 @@
@@ -5899,7 +5936,7 @@ index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b
 +
 +`draft` `optional`
 +
-+This NIP defines how an AI agent shares files from its workspace with its owner, and how the owner proposes edits to them. Each shared file is an addressable `kind:30180` event ([NIP-01](01.md)) signed by the agent's key and encrypted with [NIP-44](44.md) using the conversation key between the agent and its owner — the same key [NIP-AE](NIP-AE.md) uses for agent memory. The owner suggests a change with a `kind:4180` edit request; the agent answers with a `kind:4181` edit result and, when it applies the change, republishes the file.
++This NIP defines how an AI agent shares files from its workspace with its owner, and how the owner proposes edits to them. Each shared file is an addressable `kind:34180` event ([NIP-01](01.md)) signed by the agent's key and encrypted with [NIP-44](44.md) using the conversation key between the agent and its owner — the same key [NIP-AE](NIP-AE.md) uses for agent memory. The owner suggests a change with a `kind:4180` edit request; the agent answers with a `kind:4181` edit result and, when it applies the change, republishes the file.
 +
 +The agent decides which files it shares and whether it accepts an edit. The owner never writes the agent's records.
 +
@@ -5907,7 +5944,7 @@ index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b
 +
 +This NIP claims three kinds:
 +
-+- `kind:30180` — **file record**. Addressable per [NIP-01](01.md): relays store only the latest per `(kind, pubkey, d)`.
++- `kind:34180` — **file record**. Addressable per [NIP-01](01.md): relays store only the latest per `(kind, pubkey, d)`.
 +- `kind:4180` — **edit request**. Regular, so relays store it and an agent that was offline when the request was sent can still answer it.
 +- `kind:4181` — **edit result**. Regular.
 +
@@ -5952,7 +5989,7 @@ index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b
 +
 +```jsonc
 +{
-+  "kind": 30180,
++  "kind": 34180,
 +  "pubkey": "<pubkey_a>",
 +  "created_at": <unix_seconds>,
 +  "tags": [
@@ -5995,13 +6032,13 @@ index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b
 +
 +A file record is **valid** if all of the following hold:
 +
-+1. `kind == 30180`, `pubkey == pubkey_a`, exactly one `d` tag, exactly one `p` tag, and the `p` tag value is `pubkey_o`.
++1. `kind == 34180`, `pubkey == pubkey_a`, exactly one `d` tag, exactly one `p` tag, and the `p` tag value is `pubkey_o`.
 +2. Its signature verifies (per [NIP-01](01.md)). Validation MUST occur before decryption.
 +3. Its `content` decrypts under `K_c` and parses as a JSON object with no duplicate member names.
 +4. The body's `path` is a valid path and re-derives to the event's `d` tag per *Addressing*.
 +5. The body is a well-formed file body or tombstone per *Bodies*, including the `content`/`sha256`/`size` agreement.
 +
-+The **head** of a path is selected exactly as in [NIP-AE](NIP-AE.md): query every configured relay for `kind:30180` events authored by `pubkey_a` tagged `["d", d]` and `["p", pubkey_o]`, take the union, discard invalid events, and select the greatest `created_at` (ties broken by lowest event `id`). A path whose head is a tombstone is not shared.
++The **head** of a path is selected exactly as in [NIP-AE](NIP-AE.md): query every configured relay for `kind:34180` events authored by `pubkey_a` tagged `["d", d]` and `["p", pubkey_o]`, take the union, discard invalid events, and select the greatest `created_at` (ties broken by lowest event `id`). A path whose head is a tombstone is not shared.
 +
 +## Publishing
 +
@@ -6011,7 +6048,7 @@ index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b
 +
 +## Listing
 +
-+To list an agent's shared files: query every configured relay for `kind:30180` events from `pubkey_a` tagged `["p", pubkey_o]`, take the union, discard invalid events, group by `d`, select each group's head, and drop tombstones. Listing is best-effort in the same way as [NIP-AE](NIP-AE.md) *Listing*: relays may cap result sets, and implementations SHOULD surface a possible truncation.
++To list an agent's shared files: query every configured relay for `kind:34180` events from `pubkey_a` tagged `["p", pubkey_o]`, take the union, discard invalid events, group by `d`, select each group's head, and drop tombstones. Listing is best-effort in the same way as [NIP-AE](NIP-AE.md) *Listing*: relays may cap result sets, and implementations SHOULD surface a possible truncation.
 +
 +## Edit requests
 +
@@ -6081,7 +6118,7 @@ index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b
 +These events are private to the agent ↔ owner pair. Relays that know these kinds SHOULD:
 +
 +- treat all three as global (never channel-scoped);
-+- reject events whose public tags break the shapes above (exactly one lowercase-hex `d` and `p` for `kind:30180`; exactly one lowercase-hex `p` for `kind:4180`; exactly one lowercase-hex `p` and `e` for `kind:4181`) and whose `content` is not plausibly NIP-44 v2, so a malformed event cannot replace a valid head;
++- reject events whose public tags break the shapes above (exactly one lowercase-hex `d` and `p` for `kind:34180`; exactly one lowercase-hex `p` for `kind:4180`; exactly one lowercase-hex `p` and `e` for `kind:4181`) and whose `content` is not plausibly NIP-44 v2, so a malformed event cannot replace a valid head;
 +- serve them only to readers whose filter pins `authors` or `#p` to the reader's own authenticated pubkey, as for [NIP-AE](NIP-AE.md) engrams.
 +
 +## Security considerations
@@ -6129,15 +6166,15 @@ index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b
 +
 +### Events
 +
-+Events 1–4 use `kind=30180`, `pubkey=pubkey_a`, `tags=[["d", d], ["p", pubkey_o]]`. Event 5 uses `kind=4180`, `pubkey=pubkey_o`, `tags=[["p", pubkey_a]]`. Event 6 uses `kind=4181`, `pubkey=pubkey_a`, `tags=[["p", pubkey_o], ["e", id_5]]`.
++Events 1–4 use `kind=34180`, `pubkey=pubkey_a`, `tags=[["d", d], ["p", pubkey_o]]`. Event 5 uses `kind=4180`, `pubkey=pubkey_o`, `tags=[["p", pubkey_a]]`. Event 6 uses `kind=4181`, `pubkey=pubkey_a`, `tags=[["p", pubkey_o], ["e", id_5]]`.
 +
 +**Event 1 — publish `notes.md` (`body_1`):**
 +```
 +created_at  = 1700000000
 +nip44_nonce = 0000000000000000000000000000000000000000000000000000000000000001
 +content     = AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABeWYcxyTrp5d68LBgA38mWthpZhLbxJYMfhJBIaLKj/BibYNSQQWLt6lkAXZKid+iG4Qbw5alru2O5QNHEsvgLDxoohNxwegWO+R8ZglzvKJvONpvb2DQgtDOCoAHlk4U79qce+Bc6EPESBbYYhyTsoZ3K4phyhQbPf4Wf17d6VrIjF90VGEnjdGQ8+kf9Q+LvFbLZK5Yy8TJmm+uSe6nruhmEJtEgN+E4HqYl3hm3wi0I7zDVq6XE5YP8+33SUgi3Fw=
-+id          = ffedcefb2ceca14ebd23fc5832be2eaece81364e5749b40551febb34ece68129
-+sig         = 851749264f0ee6cc356343942f6a8987687eeeb36718624459c8057ebd910676afa566280b06896b627e024b99a5ac65508c98becca7359873e2241ef9b46db6
++id          = 8d740f4965bb27935feea98fe2e20f1d24445d1836c1a03be5d1276d61de420c
++sig         = e4f681bc46916fba7c291217e210b6cb8cb49c693f8c4f9fdc270a050bf56ea0ea2cfe5031693e505e31c3965f5f15bf116caad03ff95a18a0e21696dc77c65a
 +```
 +
 +**Event 2 — publish `PLANS/agent files.md` (`body_2`):**
@@ -6145,8 +6182,8 @@ index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b
 +created_at  = 1700000001
 +nip44_nonce = 0000000000000000000000000000000000000000000000000000000000000002
 +content     = AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACGzxBPvRUxTMAxOGGRKGhZiqgsEArQCRWg50Ke1gDJx+TGj9/Fewz3WSyeAfivT3k1gBothiBPJ5s4cOhoEO8II+l0uqLSfcuoPyWdKtqiGzypCM6179dYp0PvWim9j+wvCOLYun2TmeW8X9jYUNEs30aK7W0KxbM0JFd90vjbhlIh9YFQzQmV/gd5sN2BqBULXmmZgc5sMVzdb8DKkbG4CfkSf4eefdbfkQh4P8Adrk5gFTQ3MMFjBFsMXvjpLUQrAs=
-+id          = 7057f1c1826c58d24cd61bd2ca084e6ebe3ac23e9d664deb286629e029d43da4
-+sig         = c72a734e84af6b038e7c28dfefba7576b0bcb02f385bd38a99ce7c4795b867dc6d27e72d446aed33c2fcf4a211099fd55fc135ee3236f863180baa56a18ff751
++id          = e7f5b20bb36c9d347775076f26b03047088fc74ec8a917d6da9897730bc57f30
++sig         = f3c93e2c038de5d1ce46332ac4b88baddd39899dd0a9b4433ac58583fdcf5b447024a19f317287b796532de1b11c6eb0f6d036d09f693ae945a338e45026ff00
 +```
 +
 +**Event 3 — list `logs/big.log` without content (`body_3`):**
@@ -6154,8 +6191,8 @@ index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b
 +created_at  = 1700000002
 +nip44_nonce = 0000000000000000000000000000000000000000000000000000000000000003
 +content     = AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADufi8i0aj4uoLnp2rR/0icXfrLlipO1/EFjgIaMEZgjMtBxFfHRl2FE2vy5jJ/Z0ZfIqS0LWZbYrASsnxSWX0T0d1keXs2rhM8a/1YsmLEwPZUyetBJ6AUQpEoMjyKlwhJ8hHY02Z/WmOvJ+eAcSak81lFyUYqr/Q+r9Vu8cOmTJd+doLd9zrrbg1weUnGD1ZxHH403ggde05EdOMG+BgzCWm
-+id          = 6ba315bfc0b986c56662e78e94de1a5df07fdee30e410e2b84e62b1608b3fba7
-+sig         = 5b73e8ffda0caeb76fac13150a2e617b2b4bb0b1c1a38dbee6619a5ee5852ed81ee1b0a3e6d80733e0d47f57625303988d842285880189c4656a0c4a81254947
++id          = 5c0a6057f2cff7ad64fa0b32a72af0a8b15ebde55f7bbd0b61e8b7f2cccec4d0
++sig         = 9cbeb52a78432ae2090a47bc42a3bdb1fa1dcbec49f8adb0412a1c9a0448c97f1bb76a06b222f4c0cda20621c6ea14e64b1a3a315ad059fa3b867e375f7ae107
 +```
 +
 +**Event 4 — tombstone `notes.md` (`body_4`; supersedes Event 1, same `d`, greater `created_at`):**
@@ -6163,8 +6200,8 @@ index 0000000000000000000000000000000000000000..9c055d31329754276b6ea9932590452b
 +created_at  = 1700000003
 +nip44_nonce = 0000000000000000000000000000000000000000000000000000000000000004
 +content     = AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEEZ1HAFvscs/AcKaYSSZ7c4DJyiq9MWbCVhh3F5cJYKzzNVHP0Co4mCrkLHwQYMHhOrSCVp2209axj77xAk5tDKg8mc1ZeRGDsVVtCEMHNYahgYEMzcE4bH/po+T3shhnl0c=
-+id          = 1bec75664cb1939429d2f18b0a431dac23c5557668ac28665fa4ce7b2024c38a
-+sig         = ff395138e65c57fa113c59c70e60f82a6ef47738a2de72fc9ab527c399f852836f7b74ce792b568ac7fec7986801d674c4881d87d21df4f87b4b413fc8bc0600
++id          = 0d7f4380aaefffb984cd16ae1606ea63b8e3c0836acf74eaac1baff3d3ff2483
++sig         = 37057eec9b646df24de96b4e8dfe7a84a2a54be695623b77f2b01ae8a5c70d99f3dcdce641eec017ee22f039580c16ea2f7139cd97b5c652741678e472e01d76
 +```
 +
 +**Event 5 — owner requests an edit to `PLANS/agent files.md` (`body_5`, base = `body_2`):**

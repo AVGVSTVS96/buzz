@@ -14,11 +14,13 @@ import 'package:hooks_riverpod/hooks_riverpod.dart';
 import '../../helpers/fake_relay.dart';
 import 'verified_profile_fixture.dart';
 
-/// Counts the keys read through [keys], which [entries] and [values] also use.
+/// Counts the iterations started over [keys], which [entries] and [values]
+/// also use. Each one costs a walk past every slot that earlier removals left
+/// behind, so one per eviction is quadratic even when it stops at the first key.
 class _CountingMap extends MapBase<String, int> {
-  _CountingMap(this.visits);
+  _CountingMap(this.iterations);
 
-  final void Function() visits;
+  final void Function() iterations;
   final Map<String, int> _inner = {};
 
   @override
@@ -39,20 +41,34 @@ class _CountingMap extends MapBase<String, int> {
   bool containsKey(Object? key) => _inner.containsKey(key);
   @override
   Iterable<String> get keys sync* {
-    for (final key in _inner.keys) {
-      visits();
-      yield key;
-    }
+    iterations();
+    yield* _inner.keys;
   }
 }
 
 class _CountingNotifier extends VerifiedProfilesNotifier {
-  _CountingNotifier(this.visits);
+  _CountingNotifier(this.iterations);
 
-  final void Function() visits;
+  final void Function() iterations;
 
   @override
-  Map<String, int> newInterestMap() => _CountingMap(visits);
+  Map<String, int> newInterestMap() => _CountingMap(iterations);
+}
+
+class _ParseCountingNotifier extends VerifiedProfilesNotifier {
+  _ParseCountingNotifier(this.parses);
+
+  final List<String> parses;
+
+  @override
+  VerifiedProfile? parseHead(
+    NostrEvent event,
+    VerifiedProfileAuthority authority, {
+    required bool checked,
+  }) {
+    parses.add(verifiedProfileSubject(event, authority)!);
+    return super.parseHead(event, authority, checked: checked);
+  }
 }
 
 class Harness {
@@ -109,23 +125,44 @@ void journey(String name, void Function(Harness h) body) {
 }
 
 void main() {
-  test('evicting past the interest limit does not scan the interest map', () {
+  test('evicting past the interest limit iterates the interest map once', () {
     fakeAsync((async) {
-      var visits = 0;
+      var iterations = 0;
       final h = Harness(
         async,
-        notifier: () => _CountingNotifier(() => visits++),
+        notifier: () => _CountingNotifier(() => iterations++),
       );
       addTearDown(h.container.dispose);
       String key(int i) => i.toRadixString(16).padLeft(64, '0');
       h.start([for (var i = 0; i < 1024; i++) key(i)]);
-      visits = 0;
-      // Each new subject evicts one: 3,276 evictions. Scanning the map for the
-      // oldest entry each time would visit about a thousand keys apiece.
+      iterations = 0;
+      // 3,276 evictions. Starting an iteration per eviction, whether to scan
+      // for the oldest entry or to read the first key, is quadratic.
       h.container.read(verifiedProfilesProvider.notifier).track([
         for (var i = 1024; i < 4300; i++) key(i),
       ]);
-      expect(visits, lessThanOrEqualTo(4300 - 1024));
+      expect(iterations, 1);
+    });
+  });
+
+  test('a later batch reuses profiles already parsed', () {
+    fakeAsync((async) {
+      final parses = <String>[];
+      final h = Harness(async, notifier: () => _ParseCountingNotifier(parses));
+      addTearDown(h.container.dispose);
+      h.relay.seed([
+        signedProjection(profileTags(subjectA)),
+        signedProjection(profileTags(subjectB)),
+      ]);
+      h.start([subjectA]);
+      expect(h.profiles[subjectA]?.checked, isTrue);
+      h.container.read(verifiedProfilesProvider.notifier).track([subjectB]);
+      h.settle();
+      // Rebatching unchecks and rechecks A; every publish rebuilds the map,
+      // but each head is validated once.
+      expect(h.profiles[subjectA]?.checked, isTrue);
+      expect(h.profiles[subjectB]?.checked, isTrue);
+      expect(parses..sort(), [subjectA, subjectB]);
     });
   });
 
@@ -180,6 +217,25 @@ void main() {
         ...(f['#d'] as List).cast<String>(),
     };
     expect(subscribed, {for (var i = 4300 - 1024; i < 4300; i++) key(i)});
+  });
+
+  journey('a subject evicted by a large roster keeps its last known name', (h) {
+    String key(int i) => i.toRadixString(16).padLeft(64, '0');
+    h.relay.seed([signedProjection(profileTags(subjectA))]);
+    h.start([subjectA]);
+    expect(h.profiles[subjectA]?.checked, isTrue);
+
+    final notifier = h.container.read(verifiedProfilesProvider.notifier);
+    notifier.track([for (var i = 0; i < 1100; i++) key(i)]);
+    h.settle();
+    // Untracked, so no longer confirmed, but the name stays on screen rather
+    // than falling back to a profile name or an npub.
+    expect(h.profiles[subjectA]?.displayName, 'Ada Lovelace');
+    expect(h.profiles[subjectA]?.checked, isFalse);
+
+    notifier.track([subjectA]);
+    h.settle();
+    expect(h.profiles[subjectA]?.checked, isTrue);
   });
 
   journey('live updates, retractions and ordering apply on the subscription', (

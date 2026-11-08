@@ -6,7 +6,7 @@ Agent Files
 
 `draft` `optional`
 
-This NIP defines how an AI agent shares files from its workspace with its owner, and how the owner proposes edits to them. Each shared file is an addressable `kind:30180` event ([NIP-01](01.md)) signed by the agent's key and encrypted with [NIP-44](44.md) using the conversation key between the agent and its owner — the same key [NIP-AE](NIP-AE.md) uses for agent memory. The owner suggests a change with a `kind:4180` edit request; the agent answers with a `kind:4181` edit result and, when it applies the change, republishes the file.
+This NIP defines how an AI agent shares files from its workspace with its owner, and how the owner proposes edits to them. Each shared file is an addressable `kind:34180` event ([NIP-01](01.md)) signed by the agent's key and encrypted with [NIP-44](44.md) using the conversation key between the agent and its owner — the same key [NIP-AE](NIP-AE.md) uses for agent memory. The owner suggests a change with a `kind:4180` edit request; the agent answers with a `kind:4181` edit result and, when it applies the change, republishes the file.
 
 The agent decides which files it shares and whether it accepts an edit. The owner never writes the agent's records.
 
@@ -14,7 +14,7 @@ The agent decides which files it shares and whether it accepts an edit. The owne
 
 This NIP claims three kinds:
 
-- `kind:30180` — **file record**. Addressable per [NIP-01](01.md): relays store only the latest per `(kind, pubkey, d)`.
+- `kind:34180` — **file record**. Addressable per [NIP-01](01.md): relays store only the latest per `(kind, pubkey, d)`.
 - `kind:4180` — **edit request**. Regular, so relays store it and an agent that was offline when the request was sent can still answer it.
 - `kind:4181` — **edit result**. Regular.
 
@@ -59,7 +59,7 @@ Implementations MUST NOT include the path or any plaintext form of it in tags.
 
 ```jsonc
 {
-  "kind": 30180,
+  "kind": 34180,
   "pubkey": "<pubkey_a>",
   "created_at": <unix_seconds>,
   "tags": [
@@ -102,13 +102,13 @@ If `removed` is present it MUST be `true`.
 
 A file record is **valid** if all of the following hold:
 
-1. `kind == 30180`, `pubkey == pubkey_a`, exactly one `d` tag, exactly one `p` tag, and the `p` tag value is `pubkey_o`.
+1. `kind == 34180`, `pubkey == pubkey_a`, exactly one `d` tag, exactly one `p` tag, and the `p` tag value is `pubkey_o`.
 2. Its signature verifies (per [NIP-01](01.md)). Validation MUST occur before decryption.
 3. Its `content` decrypts under `K_c` and parses as a JSON object with no duplicate member names.
 4. The body's `path` is a valid path and re-derives to the event's `d` tag per *Addressing*.
 5. The body is a well-formed file body or tombstone per *Bodies*, including the `content`/`sha256`/`size` agreement.
 
-The **head** of a path is selected exactly as in [NIP-AE](NIP-AE.md): query every configured relay for `kind:30180` events authored by `pubkey_a` tagged `["d", d]` and `["p", pubkey_o]`, take the union, discard invalid events, and select the greatest `created_at` (ties broken by lowest event `id`). A path whose head is a tombstone is not shared.
+The **head** of a path is selected exactly as in [NIP-AE](NIP-AE.md): query every configured relay for `kind:34180` events authored by `pubkey_a` tagged `["d", d]` and `["p", pubkey_o]`, take the union, discard invalid events, and select the greatest `created_at` (ties broken by lowest event `id`). A path whose head is a tombstone is not shared.
 
 ## Publishing
 
@@ -118,7 +118,7 @@ An agent SHOULD publish a record whenever a shared file's `sha256` differs from 
 
 ## Listing
 
-To list an agent's shared files: query every configured relay for `kind:30180` events from `pubkey_a` tagged `["p", pubkey_o]`, take the union, discard invalid events, group by `d`, select each group's head, and drop tombstones. Listing is best-effort in the same way as [NIP-AE](NIP-AE.md) *Listing*: relays may cap result sets, and implementations SHOULD surface a possible truncation.
+To list an agent's shared files: query every configured relay for `kind:34180` events from `pubkey_a` tagged `["p", pubkey_o]`, take the union, discard invalid events, group by `d`, select each group's head, and drop tombstones. Listing is best-effort in the same way as [NIP-AE](NIP-AE.md) *Listing*: relays may cap result sets, and implementations SHOULD surface a possible truncation.
 
 ## Edit requests
 
@@ -188,7 +188,7 @@ Because step 2 compares against the file on disk rather than the head on the rel
 These events are private to the agent ↔ owner pair. Relays that know these kinds SHOULD:
 
 - treat all three as global (never channel-scoped);
-- reject events whose public tags break the shapes above (exactly one lowercase-hex `d` and `p` for `kind:30180`; exactly one lowercase-hex `p` for `kind:4180`; exactly one lowercase-hex `p` and `e` for `kind:4181`) and whose `content` is not plausibly NIP-44 v2, so a malformed event cannot replace a valid head;
+- reject events whose public tags break the shapes above (exactly one lowercase-hex `d` and `p` for `kind:34180`; exactly one lowercase-hex `p` for `kind:4180`; exactly one lowercase-hex `p` and `e` for `kind:4181`) and whose `content` is not plausibly NIP-44 v2, so a malformed event cannot replace a valid head;
 - serve them only to readers whose filter pins `authors` or `#p` to the reader's own authenticated pubkey, as for [NIP-AE](NIP-AE.md) engrams.
 
 ## Security considerations
@@ -236,15 +236,15 @@ body_6 = {"status":"applied","path":"PLANS/agent files.md","sha256":"e62b5d89e5e
 
 ### Events
 
-Events 1–4 use `kind=30180`, `pubkey=pubkey_a`, `tags=[["d", d], ["p", pubkey_o]]`. Event 5 uses `kind=4180`, `pubkey=pubkey_o`, `tags=[["p", pubkey_a]]`. Event 6 uses `kind=4181`, `pubkey=pubkey_a`, `tags=[["p", pubkey_o], ["e", id_5]]`.
+Events 1–4 use `kind=34180`, `pubkey=pubkey_a`, `tags=[["d", d], ["p", pubkey_o]]`. Event 5 uses `kind=4180`, `pubkey=pubkey_o`, `tags=[["p", pubkey_a]]`. Event 6 uses `kind=4181`, `pubkey=pubkey_a`, `tags=[["p", pubkey_o], ["e", id_5]]`.
 
 **Event 1 — publish `notes.md` (`body_1`):**
 ```
 created_at  = 1700000000
 nip44_nonce = 0000000000000000000000000000000000000000000000000000000000000001
 content     = AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABeWYcxyTrp5d68LBgA38mWthpZhLbxJYMfhJBIaLKj/BibYNSQQWLt6lkAXZKid+iG4Qbw5alru2O5QNHEsvgLDxoohNxwegWO+R8ZglzvKJvONpvb2DQgtDOCoAHlk4U79qce+Bc6EPESBbYYhyTsoZ3K4phyhQbPf4Wf17d6VrIjF90VGEnjdGQ8+kf9Q+LvFbLZK5Yy8TJmm+uSe6nruhmEJtEgN+E4HqYl3hm3wi0I7zDVq6XE5YP8+33SUgi3Fw=
-id          = ffedcefb2ceca14ebd23fc5832be2eaece81364e5749b40551febb34ece68129
-sig         = 851749264f0ee6cc356343942f6a8987687eeeb36718624459c8057ebd910676afa566280b06896b627e024b99a5ac65508c98becca7359873e2241ef9b46db6
+id          = 8d740f4965bb27935feea98fe2e20f1d24445d1836c1a03be5d1276d61de420c
+sig         = e4f681bc46916fba7c291217e210b6cb8cb49c693f8c4f9fdc270a050bf56ea0ea2cfe5031693e505e31c3965f5f15bf116caad03ff95a18a0e21696dc77c65a
 ```
 
 **Event 2 — publish `PLANS/agent files.md` (`body_2`):**
@@ -252,8 +252,8 @@ sig         = 851749264f0ee6cc356343942f6a8987687eeeb36718624459c8057ebd910676af
 created_at  = 1700000001
 nip44_nonce = 0000000000000000000000000000000000000000000000000000000000000002
 content     = AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACGzxBPvRUxTMAxOGGRKGhZiqgsEArQCRWg50Ke1gDJx+TGj9/Fewz3WSyeAfivT3k1gBothiBPJ5s4cOhoEO8II+l0uqLSfcuoPyWdKtqiGzypCM6179dYp0PvWim9j+wvCOLYun2TmeW8X9jYUNEs30aK7W0KxbM0JFd90vjbhlIh9YFQzQmV/gd5sN2BqBULXmmZgc5sMVzdb8DKkbG4CfkSf4eefdbfkQh4P8Adrk5gFTQ3MMFjBFsMXvjpLUQrAs=
-id          = 7057f1c1826c58d24cd61bd2ca084e6ebe3ac23e9d664deb286629e029d43da4
-sig         = c72a734e84af6b038e7c28dfefba7576b0bcb02f385bd38a99ce7c4795b867dc6d27e72d446aed33c2fcf4a211099fd55fc135ee3236f863180baa56a18ff751
+id          = e7f5b20bb36c9d347775076f26b03047088fc74ec8a917d6da9897730bc57f30
+sig         = f3c93e2c038de5d1ce46332ac4b88baddd39899dd0a9b4433ac58583fdcf5b447024a19f317287b796532de1b11c6eb0f6d036d09f693ae945a338e45026ff00
 ```
 
 **Event 3 — list `logs/big.log` without content (`body_3`):**
@@ -261,8 +261,8 @@ sig         = c72a734e84af6b038e7c28dfefba7576b0bcb02f385bd38a99ce7c4795b867dc6d
 created_at  = 1700000002
 nip44_nonce = 0000000000000000000000000000000000000000000000000000000000000003
 content     = AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADufi8i0aj4uoLnp2rR/0icXfrLlipO1/EFjgIaMEZgjMtBxFfHRl2FE2vy5jJ/Z0ZfIqS0LWZbYrASsnxSWX0T0d1keXs2rhM8a/1YsmLEwPZUyetBJ6AUQpEoMjyKlwhJ8hHY02Z/WmOvJ+eAcSak81lFyUYqr/Q+r9Vu8cOmTJd+doLd9zrrbg1weUnGD1ZxHH403ggde05EdOMG+BgzCWm
-id          = 6ba315bfc0b986c56662e78e94de1a5df07fdee30e410e2b84e62b1608b3fba7
-sig         = 5b73e8ffda0caeb76fac13150a2e617b2b4bb0b1c1a38dbee6619a5ee5852ed81ee1b0a3e6d80733e0d47f57625303988d842285880189c4656a0c4a81254947
+id          = 5c0a6057f2cff7ad64fa0b32a72af0a8b15ebde55f7bbd0b61e8b7f2cccec4d0
+sig         = 9cbeb52a78432ae2090a47bc42a3bdb1fa1dcbec49f8adb0412a1c9a0448c97f1bb76a06b222f4c0cda20621c6ea14e64b1a3a315ad059fa3b867e375f7ae107
 ```
 
 **Event 4 — tombstone `notes.md` (`body_4`; supersedes Event 1, same `d`, greater `created_at`):**
@@ -270,8 +270,8 @@ sig         = 5b73e8ffda0caeb76fac13150a2e617b2b4bb0b1c1a38dbee6619a5ee5852ed81e
 created_at  = 1700000003
 nip44_nonce = 0000000000000000000000000000000000000000000000000000000000000004
 content     = AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEEZ1HAFvscs/AcKaYSSZ7c4DJyiq9MWbCVhh3F5cJYKzzNVHP0Co4mCrkLHwQYMHhOrSCVp2209axj77xAk5tDKg8mc1ZeRGDsVVtCEMHNYahgYEMzcE4bH/po+T3shhnl0c=
-id          = 1bec75664cb1939429d2f18b0a431dac23c5557668ac28665fa4ce7b2024c38a
-sig         = ff395138e65c57fa113c59c70e60f82a6ef47738a2de72fc9ab527c399f852836f7b74ce792b568ac7fec7986801d674c4881d87d21df4f87b4b413fc8bc0600
+id          = 0d7f4380aaefffb984cd16ae1606ea63b8e3c0836acf74eaac1baff3d3ff2483
+sig         = 37057eec9b646df24de96b4e8dfe7a84a2a54be695623b77f2b01ae8a5c70d99f3dcdce641eec017ee22f039580c16ea2f7139cd97b5c652741678e472e01d76
 ```
 
 **Event 5 — owner requests an edit to `PLANS/agent files.md` (`body_5`, base = `body_2`):**

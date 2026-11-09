@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 41a068ff88d92a35221de068b1996ff6d6b8c17c..c2378dfcf0b750ac8dd88142a39a00e5bf05fd97 100644
+index 1c48460c70081904827dbbe9f1a72579eea952da..41b07222efc44f92a3d2872154e7968cb91329b4 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [
@@ -2314,10 +2314,10 @@ index f1330a6565516647af8b84df9a65709589778d23..587d3011dfebc6eaa46bbcef43d4e1f2
  pub mod agent_turn_metric;
  /// Channel and membership enums shared across crates.
 diff --git a/crates/buzz-db/src/store/media.rs b/crates/buzz-db/src/store/media.rs
-index e6218ae2c3fd5f348e6177347200f4c3e87e40fe..745f7066c8cc76e2045f05b15ffdc9c5b38745bc 100644
+index 9f5551ab2e2457237289d80cdca62fd06081da4f..b4b757d4ed7ce12651364e75fcc4acd2b0be15c3 100644
 --- a/crates/buzz-db/src/store/media.rs
 +++ b/crates/buzz-db/src/store/media.rs
-@@ -162,7 +162,7 @@ impl Db {
+@@ -236,7 +236,7 @@ impl Db {
                      let kind = event.kind.as_u16() as u32;
                      let tagged = event.tags.iter().any(|tag| matches!(tag.as_slice(), [name, value, ..] if name == "p" && value == &hex::encode(pubkey)));
                      let private_ok = (!kind::P_GATED_KINDS.contains(&kind) || tagged)
@@ -2326,7 +2326,7 @@ index e6218ae2c3fd5f348e6177347200f4c3e87e40fe..745f7066c8cc76e2045f05b15ffdc9c5
                              || event.pubkey.as_bytes() == pubkey
                              || tagged);
                      if readable && private_ok && visible(event, pubkey) {
-@@ -364,6 +364,10 @@ pub(super) fn media_reference_query(
+@@ -439,6 +439,10 @@ pub(super) fn media_reference_query(
              .iter()
              .map(|kind| *kind as i32)
              .collect();
@@ -2337,7 +2337,7 @@ index e6218ae2c3fd5f348e6177347200f4c3e87e40fe..745f7066c8cc76e2045f05b15ffdc9c5
          let shared: Vec<i32> = kind::SHARED_GATED_KINDS
              .iter()
              .map(|kind| *kind as i32)
-@@ -381,9 +385,9 @@ pub(super) fn media_reference_query(
+@@ -456,9 +460,9 @@ pub(super) fn media_reference_query(
              .push_bind(pubkey)
              .push(")");
          query
@@ -2351,10 +2351,10 @@ index e6218ae2c3fd5f348e6177347200f4c3e87e40fe..745f7066c8cc76e2045f05b15ffdc9c5
              .push(" OR tags @> ")
              .push_bind(serde_json::json!([["p", hex::encode(pubkey)]]))
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index 0b6c481a887e39944e8cdc8b21f627dc24855a75..a2df458c2bca9769d014cad89f6338820068426c 100644
+index f5d7f18cddbe2940222f3c50d99b717f0806f483..d922360a22676f2fdd8b40b044c30322aeefad6f 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
-@@ -1755,10 +1755,10 @@ async fn query_member_events(
+@@ -1756,10 +1756,10 @@ async fn query_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2367,7 +2367,7 @@ index 0b6c481a887e39944e8cdc8b21f627dc24855a75..a2df458c2bca9769d014cad89f633882
          ));
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
-@@ -2432,10 +2432,10 @@ async fn count_member_events(
+@@ -2436,10 +2436,10 @@ async fn count_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }

@@ -483,7 +483,7 @@ index c80ef617c469451c35a28f2bf02c86e51c7ddc92..737d3571488ea827f29170c06826a116
  /// Build a summary from fresh disk state (personas, teams, global config).
  /// For one-shot command paths only — the 5s list poll calls
 diff --git a/desktop/src-tauri/src/commands/mod.rs b/desktop/src-tauri/src/commands/mod.rs
-index c9933babc07d23a2772f8b394e511f724f8a33f1..825c0e22bc23da576392d9b9667fe16d22828d7f 100644
+index eb90f8476f693ddba12427f5b8583b3a14895c18..16db1a2b2ac97d9e06dc21187ee693a94f7dc4f4 100644
 --- a/desktop/src-tauri/src/commands/mod.rs
 +++ b/desktop/src-tauri/src/commands/mod.rs
 @@ -2,6 +2,7 @@ pub mod admin;
@@ -494,7 +494,7 @@ index c9933babc07d23a2772f8b394e511f724f8a33f1..825c0e22bc23da576392d9b9667fe16d
  mod agent_discovery;
  mod agent_logs;
  mod agent_metric_archive;
-@@ -81,6 +82,7 @@ pub use admin::*;
+@@ -82,6 +83,7 @@ pub use admin::*;
  pub use agent_access::*;
  pub use agent_auth::*;
  pub use agent_config::*;
@@ -517,10 +517,10 @@ index 77ac6479633bed23c5fa9fadda6fd6aafc73330f..b12ed20a0d162a7237558bd4b6e8748d
      // `helpers::send_admin_mutation` (injection tests in admin `direct_action_tests.rs`),
      // and every admin API request URL passes it before signing or sending:
 diff --git a/desktop/src-tauri/src/lib.rs b/desktop/src-tauri/src/lib.rs
-index 133cd2a9060469e21ecabf113a4fa647fa4888a0..416dbfa8dc2a66a1306b85e98929ed1bb98fe9d0 100644
+index 7e491e297dc6294a8773f298aaff56019099add3..08d04f4c52989cbff114196519247d26489c962b 100644
 --- a/desktop/src-tauri/src/lib.rs
 +++ b/desktop/src-tauri/src/lib.rs
-@@ -712,6 +712,8 @@ pub fn run() {
+@@ -714,6 +714,8 @@ pub fn run() {
              reconcile_managed_agent_runtimes,
              put_managed_agent_runtime_lifecycle,
              create_managed_agent,

@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 78a9fdf31e0055ec3d7373836f0652ae555fca7f..59a28e68a6edd8cb674b44a4012c95e23ce88827 100644
+index e55f19c6102acb15886595c841686ef40b093e56..08445cb76823f55a150baf37a0b612bd785e158a 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [

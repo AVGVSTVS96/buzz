@@ -1,5 +1,5 @@
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index 1ae0e651f048c9b0e70ffdc325a80171bf867a77..9f2aa53c9338d592dc25bf3c56e6dcba2b903ac6 100644
+index 2b5e2202bc2b4c4795b63e033c53b5447eb0cbaa..d07a7646b1c0360a4b191c84feb8efa56662b887 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -10,6 +10,7 @@ mod edit_routing;

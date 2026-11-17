@@ -924,7 +924,7 @@ index 0000000000000000000000000000000000000000..9f5588917cf5359f5d9f66e7b7f8f2c9
 +    }
 +}
 diff --git a/crates/buzz-acp/src/lib.rs b/crates/buzz-acp/src/lib.rs
-index 9f2aa53c9338d592dc25bf3c56e6dcba2b903ac6..6f6e17974bf8724a6b1dc63928cd8f709da4a66e 100644
+index d07a7646b1c0360a4b191c84feb8efa56662b887..3f5555f0e911eb46c8cf86024c8504b1645e3e97 100644
 --- a/crates/buzz-acp/src/lib.rs
 +++ b/crates/buzz-acp/src/lib.rs
 @@ -8,6 +8,7 @@ mod acp;
@@ -2351,10 +2351,10 @@ index 9f5551ab2e2457237289d80cdca62fd06081da4f..b4b757d4ed7ce12651364e75fcc4acd2
              .push(" OR tags @> ")
              .push_bind(serde_json::json!([["p", hex::encode(pubkey)]]))
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index 2986c35cfbd9ff44f4e5ab2228c47da6fcbf9e2a..6193ef6edbda11969a4f712b2fd4024b18d9468a 100644
+index 31cae9b12b86e991507c114e1ddbde4a0cc1562e..84b7f6ef2ba0435e67ff5f6fa0fc76da71026dc0 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
-@@ -1757,10 +1757,10 @@ async fn query_member_events(
+@@ -1773,10 +1773,10 @@ async fn query_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2367,7 +2367,7 @@ index 2986c35cfbd9ff44f4e5ab2228c47da6fcbf9e2a..6193ef6edbda11969a4f712b2fd4024b
          ));
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
-@@ -2435,10 +2435,10 @@ async fn count_member_events(
+@@ -2451,10 +2451,10 @@ async fn count_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2398,7 +2398,7 @@ index 3672ce6b3000dd73ed8b615e52c1eefa2e0d8f9a..493446a296184c3088c61c61bb1a9a10
          access.deny("engram_gated");
          return;
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index 46a1c81f28265e4ca5b6a7ba67fd8352f7cf3637..6fa812e118a41a29a5b5030c8950b0d960fb8483 100644
+index 99ac76628bb892b74aa3e51fc54d88655ea644b6..d9c85343bac6e83cf058f0655aa503a89360a3dd 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;
@@ -2602,7 +2602,7 @@ index 46a1c81f28265e4ca5b6a7ba67fd8352f7cf3637..6fa812e118a41a29a5b5030c8950b0d9
      if kind_u32 == KIND_AGENT_TURN_METRIC {
          validate_agent_turn_metric_envelope(&event)
              .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-@@ -4884,6 +4976,9 @@ mod postgres_tests {
+@@ -4898,6 +4990,9 @@ mod postgres_tests {
              KIND_EMOJI_LIST,
              KIND_EMOJI_ENTRY,
              KIND_AGENT_ENGRAM,
@@ -2612,7 +2612,7 @@ index 46a1c81f28265e4ca5b6a7ba67fd8352f7cf3637..6fa812e118a41a29a5b5030c8950b0d9
              KIND_AGENT_PROFILE,
              KIND_PERSONA,
              KIND_TEAM,
-@@ -4935,6 +5030,27 @@ mod postgres_tests {
+@@ -4949,6 +5044,27 @@ mod postgres_tests {
          );
      }
  
@@ -2640,7 +2640,7 @@ index 46a1c81f28265e4ca5b6a7ba67fd8352f7cf3637..6fa812e118a41a29a5b5030c8950b0d9
      #[test]
      fn nip51_and_nip65_lists_are_global_only() {
          for kind in [
-@@ -5402,6 +5518,118 @@ mod postgres_tests {
+@@ -5416,6 +5532,118 @@ mod postgres_tests {
          assert!(err.contains("base64"), "got: {err}");
      }
  

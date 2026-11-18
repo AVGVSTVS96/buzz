@@ -2225,7 +2225,7 @@ index f2f30c3b6e33e4d78ba03000106670a63b517091..d42ffe782140633eb8f921e1947902aa
  }
  
 diff --git a/crates/buzz-core/src/kind.rs b/crates/buzz-core/src/kind.rs
-index 26d85177a0ffae67a5e95def14459a52aaff5c22..c3cfdaa298f7a5a5111ed1dc1d7e5fe0dcd822a8 100644
+index 7428c75cfeec535ec097ca2330427985c840457b..076c9f52867f4bca308d01ee3eb988323b267f1e 100644
 --- a/crates/buzz-core/src/kind.rs
 +++ b/crates/buzz-core/src/kind.rs
 @@ -96,6 +96,40 @@ pub const KIND_AGENT_PROFILE: u32 = 10100;
@@ -2279,7 +2279,7 @@ index 26d85177a0ffae67a5e95def14459a52aaff5c22..c3cfdaa298f7a5a5111ed1dc1d7e5fe0
      KIND_EVENT_REMINDER,
      KIND_PERSONA,
      KIND_TEAM,
-@@ -957,6 +994,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 3017
+@@ -958,6 +995,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 3017
  const _: () = assert!(is_parameterized_replaceable(KIND_TEAM_CATALOG)); // 30178 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_PRIVATE_MANAGED_AGENT)); // 30179 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_EMOJI_ENTRY)); // 30180 ∈ 30000–39999
@@ -2287,7 +2287,7 @@ index 26d85177a0ffae67a5e95def14459a52aaff5c22..c3cfdaa298f7a5a5111ed1dc1d7e5fe0
  const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
  const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999
-@@ -984,6 +1022,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
+@@ -985,6 +1023,11 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(!is_replaceable(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(!is_parameterized_replaceable(KIND_AGENT_TURN_METRIC));
  const _: () = assert!(KIND_AGENT_TURN_METRIC <= u16::MAX as u32);
@@ -2351,7 +2351,7 @@ index 9f5551ab2e2457237289d80cdca62fd06081da4f..b4b757d4ed7ce12651364e75fcc4acd2
              .push(" OR tags @> ")
              .push_bind(serde_json::json!([["p", hex::encode(pubkey)]]))
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index 31cae9b12b86e991507c114e1ddbde4a0cc1562e..84b7f6ef2ba0435e67ff5f6fa0fc76da71026dc0 100644
+index 3357dbf32b8a25c7fd49722d7edcad318d8f42bf..e90d14d79b3ae92a72e81b29aa66f16a88b011ba 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
 @@ -1773,10 +1773,10 @@ async fn query_member_events(
@@ -2398,7 +2398,7 @@ index 3672ce6b3000dd73ed8b615e52c1eefa2e0d8f9a..493446a296184c3088c61c61bb1a9a10
          access.deny("engram_gated");
          return;
 diff --git a/crates/buzz-relay/src/handlers/ingest.rs b/crates/buzz-relay/src/handlers/ingest.rs
-index 99ac76628bb892b74aa3e51fc54d88655ea644b6..d9c85343bac6e83cf058f0655aa503a89360a3dd 100644
+index 2f2ce7257c9acaf4e7142d36eb6328da79055987..3c8b71ec975355b9101e4ee737dc8ef4effac10d 100644
 --- a/crates/buzz-relay/src/handlers/ingest.rs
 +++ b/crates/buzz-relay/src/handlers/ingest.rs
 @@ -12,9 +12,10 @@ use uuid::Uuid;

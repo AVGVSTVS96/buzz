@@ -7,6 +7,8 @@ import 'dart:math' show max;
 import '../../shared/widgets/ios_message_create_button.dart';
 import '../../shared/widgets/ios_glass_navigation_button.dart';
 import '../../shared/widgets/ios_scroll_to_top.dart';
+import '../../shared/widgets/ios_navigation_metrics.dart';
+import '../../shared/widgets/ios_navigation_bar.dart' show IosNavigationBar;
 import '../../shared/widgets/top_edge_fade.dart';
 
 import 'package:flutter/foundation.dart';
@@ -158,7 +160,8 @@ class ActivityPage extends HookConsumerWidget {
     bool isDone(InboxItem item) => isInboxItemDone(
       item,
       markerOf: markerOf,
-      localUnreadOverrides: localState.unreadIds,
+      rawMarkerOf: (contextId) => readState.contexts[contextId],
+      localUnreadOverrides: localState.unreadBaselines,
       localDoneSet: localState.doneIds,
     );
 
@@ -239,6 +242,7 @@ class ActivityPage extends HookConsumerWidget {
       final rootId = isDmRow ? null : item.threadRootId;
       bool inContext(FeedItem e) =>
           e.channelId == channelId &&
+          (isDmRow || !readsByOwnMark(e)) &&
           (rootId == null ||
               (isThreadReply(e.tags) &&
                   threadReferenceOf(e.tags).rootId == rootId));
@@ -258,28 +262,73 @@ class ActivityPage extends HookConsumerWidget {
         }
         cap = e.createdAt;
       }
-      if (cap != null) {
+      // With no shown event in context, the row holds only replies read by
+      // their own marks, and no watermark is due.
+      final watermark = shown.values.any(inContext) ? cap : null;
+      if (watermark != null) {
         notifier.markContextRead(
           rootId == null ? channelId : threadContextKey(rootId),
-          cap,
+          watermark,
+          explicit: true,
         );
       }
       for (final e in shown.values) {
-        if (inContext(e) && cap != null && e.createdAt <= cap) continue;
-        notifier.markContextRead(msgContextKey(e.id), e.createdAt);
+        if (inContext(e) && watermark != null && e.createdAt <= watermark) {
+          continue;
+        }
+        notifier.markContextRead(
+          msgContextKey(e.id),
+          e.createdAt,
+          explicit: true,
+        );
       }
+    }
+
+    // The catch-up scope covering a row: its thread, or its whole channel
+    // for a DM or top-level row.
+    String? scopeOf(InboxItem item) {
+      final threadRootId = item.conversationId.startsWith('dm:')
+          ? null
+          : item.threadRootId;
+      return threadRootId != null
+          ? threadContextKey(threadRootId)
+          : item.item.channelId;
     }
 
     void markItemRead(InboxItem item) {
       final notifier = ref.read(readStateProvider.notifier);
-      ref
-          .read(inboxLocalStateProvider.notifier)
-          .clearUnread(groupedInboxItemIds(item));
+      final inbox = ref.read(inboxLocalStateProvider.notifier);
+      // Only this row's own marks. A scope-wide clear belongs to catch-up
+      // and to an explicit channel or thread mark read.
+      inbox.clearUnread(groupedInboxItemIds(item));
       final isDmRow = item.conversationId.startsWith('dm:');
       final partialChannelId = rowsArePartial ? item.item.channelId : null;
       if (partialChannelId != null) {
         markPartialRowRead(item, partialChannelId, isDmRow: isDmRow);
         return;
+      }
+      // Replies also sent to the channel are read by their own marks; the
+      // remaining events take the thread or channel marker as before.
+      var latestRemaining = item.latestActivityAt;
+      if (!isDmRow) {
+        final events = {
+          for (final e in [item.item, ...item.groupItems]) e.id: e,
+        }.values;
+        int? latest;
+        for (final e in events) {
+          if (readsByOwnMark(e)) {
+            // A user's read, so it syncs like the partial row's marks.
+            notifier.markContextRead(
+              msgContextKey(e.id),
+              e.createdAt,
+              explicit: true,
+            );
+          } else if (latest == null || e.createdAt > latest) {
+            latest = e.createdAt;
+          }
+        }
+        if (latest == null) return;
+        latestRemaining = latest;
       }
       // A DM row can group replies under several thread roots; its channel
       // marker reads all of them.
@@ -287,7 +336,7 @@ class ActivityPage extends HookConsumerWidget {
       if (threadRootId != null) {
         notifier.markContextRead(
           threadContextKey(threadRootId),
-          item.latestActivityAt,
+          latestRemaining,
         );
         final channelRead = groupedChannelReadTimestamp(item);
         if (channelRead != null) {
@@ -300,19 +349,27 @@ class ActivityPage extends HookConsumerWidget {
       }
       final channelId = item.item.channelId;
       if (channelId != null) {
-        notifier.markContextRead(channelId, item.latestActivityAt);
+        notifier.markContextRead(channelId, latestRemaining);
         ref
             .read(channelsProvider.notifier)
-            .clearObservedUnreadCoveredByRead(channelId, item.latestActivityAt);
+            .clearObservedUnreadCoveredByRead(channelId, latestRemaining);
         return;
       }
       ref.read(inboxLocalStateProvider.notifier).markDone(item.id);
     }
 
     void markItemUnread(InboxItem item) {
+      final readState = ref.read(readStateProvider);
       ref
           .read(inboxLocalStateProvider.notifier)
-          .markUnread(groupedInboxItemIds(item));
+          .markUnread(
+            groupedInboxItemIds(item),
+            baseline: inboxItemReadAt(
+              item,
+              markerOf: (contextId) => readState.contexts[contextId],
+            ),
+            scope: scopeOf(item),
+          );
     }
 
     Future<void> openItem(InboxItem item) async {
@@ -380,7 +437,10 @@ class ActivityPage extends HookConsumerWidget {
         (event) => isInboxEventRead(event, markerOf: markerOf),
       );
       final thread = threadReferenceOf(target.tags);
-      final threadRootId = isBroadcastReply(target.tags)
+      // A reply also sent to the channel opens in its thread when the row is
+      // a thread row, so the row's ordinary replies stay in view.
+      final threadRootId =
+          isBroadcastReply(target.tags) && item.threadRootId == null
           ? null
           : thread.parentId;
 
@@ -531,6 +591,15 @@ class ActivityPage extends HookConsumerWidget {
       );
     }
 
+    final view = View.of(context);
+    final windowSize = view.physicalSize / view.devicePixelRatio;
+    final measurePortrait =
+        defaultTargetPlatform == TargetPlatform.iOS &&
+        windowSize.width >= 600 &&
+        windowSize.height > windowSize.width;
+    final portraitHeader = measurePortrait
+        ? IosNavigationMetrics.of(context).portraitHeaderFor(windowSize)
+        : null;
     final strip = DuoToolbarScope.maybeStripOf(context);
     final closeInRail =
         defaultTargetPlatform == TargetPlatform.iOS &&
@@ -545,12 +614,24 @@ class ActivityPage extends HookConsumerWidget {
       child: Scaffold(
         backgroundColor: context.colors.surface,
         body: SafeArea(
+          top: !measurePortrait,
           bottom: false,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Stack(
                 children: [
+                  if (measurePortrait)
+                    const Positioned.fill(
+                      child: IgnorePointer(
+                        child: ExcludeSemantics(
+                          child: IosNavigationBar(
+                            title: '',
+                            backdropOnly: true,
+                          ),
+                        ),
+                      ),
+                    ),
                   if (closeInRail)
                     FrostedAppBar(
                       nativeTitle: '',
@@ -562,45 +643,66 @@ class ActivityPage extends HookConsumerWidget {
                         onPressed: () => Navigator.of(context).pop(),
                       ),
                     ),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(
-                      minHeight: 44 + Grid.xxs * 2,
+                  Padding(
+                    padding: EdgeInsets.only(
+                      top:
+                          portraitHeader?.top ??
+                          (measurePortrait
+                              ? MediaQuery.paddingOf(context).top
+                              : 0),
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: Grid.gutter,
-                        vertical: Grid.xxs,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: portraitHeader?.height ?? 44 + Grid.xxs * 2,
                       ),
-                      child: Row(
-                        children: [
-                          if (!closeInRail)
-                            defaultTargetPlatform == TargetPlatform.iOS
-                                ? Padding(
-                                    padding: const EdgeInsets.only(
-                                      right: Grid.twelve,
-                                    ),
-                                    child: IosGlassNavigationButton(
-                                      icon: IosGlassNavigationIcon.close,
-                                      semanticLabel: 'Close activity',
-                                      width: 44,
-                                      height: 44,
-                                      controlSize: 44,
-                                      foregroundColor:
-                                          navigationPrimaryForeground(context),
+                      child: Padding(
+                        padding: EdgeInsets.only(
+                          left: Grid.gutter,
+                          right:
+                              Grid.gutter +
+                              (portraitHeader == null
+                                  ? 0
+                                  : max(
+                                      0.0,
+                                      MediaQuery.sizeOf(context).width -
+                                          portraitHeader.right,
+                                    )),
+                          top: portraitHeader == null ? Grid.xxs : 0,
+                          bottom: portraitHeader == null ? Grid.xxs : 0,
+                        ),
+                        child: Row(
+                          children: [
+                            if (!closeInRail)
+                              defaultTargetPlatform == TargetPlatform.iOS
+                                  ? Padding(
+                                      padding: const EdgeInsets.only(
+                                        right: Grid.twelve,
+                                      ),
+                                      child: IosGlassNavigationButton(
+                                        icon: IosGlassNavigationIcon.close,
+                                        semanticLabel: 'Close activity',
+                                        width: 44,
+                                        height: 44,
+                                        controlSize: 44,
+                                        foregroundColor:
+                                            navigationPrimaryForeground(
+                                              context,
+                                            ),
+                                        onPressed: () =>
+                                            Navigator.of(context).pop(),
+                                      ),
+                                    )
+                                  : IconButton(
+                                      tooltip: 'Close activity',
+                                      icon: const Icon(BuzzIcons.x),
                                       onPressed: () =>
                                           Navigator.of(context).pop(),
                                     ),
-                                  )
-                                : IconButton(
-                                    tooltip: 'Close activity',
-                                    icon: const Icon(BuzzIcons.x),
-                                    onPressed: () =>
-                                        Navigator.of(context).pop(),
-                                  ),
-                          Expanded(
-                            child: Text('Activity', style: headerTitleStyle),
-                          ),
-                        ],
+                            Expanded(
+                              child: Text('Activity', style: headerTitleStyle),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

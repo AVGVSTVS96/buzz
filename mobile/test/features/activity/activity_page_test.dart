@@ -1,8 +1,11 @@
+import 'package:buzz/shared/read_state/thread_follows_format.dart';
 import 'package:buzz/shared/widgets/ios_navigation_bar.dart';
 import 'package:buzz/shared/widgets/adaptive_conversation_pane.dart';
+
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
+
 import 'package:flutter/rendering.dart';
 import 'package:buzz/shared/widgets/ios_message_create_button.dart';
 import 'package:buzz/shared/widgets/ios_glass_navigation_button.dart';
@@ -189,6 +192,37 @@ void main() {
       ),
     );
   }
+
+  testWidgets(
+    'unfolded portrait aligns Activity and Close beside the status cluster',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(669, 951);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        IosNavigationMetricsHost(
+          child: await buildTestable(
+            mediaPadding: const EdgeInsets.only(top: 82),
+          ),
+        ),
+      );
+      IosNavigationMetrics.updatePortraitHeader(
+        tester.element(find.byType(ActivityPage)),
+        [669, 951, 0, 20, 535, 56],
+      );
+      await tester.pumpAndSettle();
+      expect(tester.getCenter(find.byTooltip('Close activity')).dy, 48);
+      expect(tester.getCenter(find.text('Activity')).dy, 48);
+      expect(
+        tester.getSize(find.byKey(const ValueKey('activity-filters'))).width,
+        669,
+      );
+      await tester.pumpWidget(const SizedBox());
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
 
   for (final hasRail in [true, false]) {
     testWidgets(
@@ -1270,6 +1304,37 @@ void main() {
     expect(find.byKey(const ValueKey('inbox-unread-dot-m1')), findsOneWidget);
   });
 
+  testWidgets('reading one row keeps another row\'s mark unread in the same '
+      'channel', (tester) async {
+    await tester.pumpWidget(
+      await buildTestable(
+        readContexts: {'ch1': now, 'ch2': now, 'thread:$threadIdRoot1': now},
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    Future<void> rowAction(String id, String action) async {
+      await tester.longPress(find.byKey(ValueKey('inbox-row-$id')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(
+          of: find.byType(BottomSheet),
+          matching: find.text(action),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    // Two top-level rows in ch1, both already read through the channel.
+    await rowAction('m1', 'Mark unread');
+    await rowAction('ag1', 'Mark unread');
+    expect(find.byKey(const ValueKey('inbox-unread-dot-ag1')), findsOneWidget);
+
+    await rowAction('m1', 'Mark as read');
+    expect(find.byKey(const ValueKey('inbox-unread-dot-m1')), findsNothing);
+    expect(find.byKey(const ValueKey('inbox-unread-dot-ag1')), findsOneWidget);
+  });
+
   testWidgets('long-press follows a thread and sets a reminder', (
     tester,
   ) async {
@@ -1576,6 +1641,129 @@ void main() {
     expect(find.text('npub15yw\u2026ccpw'), findsOneWidget);
     expect(find.text('Alice'), findsNothing);
   });
+
+  group('replies also sent to the channel', () {
+    const alice =
+        'a11ce00000000000000000000000000000000000000000000000000000000000';
+    final olderMention = FeedItem(
+      id: 'm-old',
+      kind: 9,
+      pubkey: alice,
+      content: 'older mention elsewhere',
+      createdAt: now - 500,
+      channelId: 'ch1',
+      channelName: 'general',
+      tags: const [],
+      category: 'mention',
+    );
+    FeedItem reply(String id, int age, {bool sentToChannel = false}) =>
+        FeedItem(
+          id: id,
+          kind: 9,
+          pubkey: 'bob_pk',
+          content: 'reply $id',
+          createdAt: now - age,
+          channelId: 'ch1',
+          channelName: 'general',
+          tags: [
+            const ['e', threadIdRoot1, '', 'root'],
+            const ['e', threadIdRoot1, '', 'reply'],
+            if (sentToChannel) const ['broadcast', '1'],
+          ],
+          category: 'activity',
+        );
+    final broadcast = reply('bc', 200, sentToChannel: true);
+    final ordinary = reply('r2', 100);
+    HomeFeedResponse feedOf(List<FeedItem> activity) => HomeFeedResponse(
+      mentions: [olderMention],
+      needsAction: const [],
+      activity: activity,
+      agentActivity: const [],
+    );
+
+    // Marking the row read reads each reply also sent to the channel by its
+    // own mark, never the channel marker, so the older mention stays unread.
+    for (final scenario in [
+      (
+        name: 'a row of only that reply',
+        activity: [broadcast],
+        row: 'bc',
+        people: false,
+        thread: false,
+      ),
+      (
+        name: 'a thread row with an ordinary reply',
+        activity: [broadcast, ordinary],
+        row: 'r2',
+        people: false,
+        thread: true,
+      ),
+      (
+        name: 'a sender-filtered row of only that reply',
+        activity: [broadcast],
+        row: 'bc',
+        people: true,
+        thread: false,
+      ),
+    ]) {
+      testWidgets('Mark read on ${scenario.name} keeps other unread', (
+        tester,
+      ) async {
+        await tester.pumpWidget(
+          await buildTestable(feed: feedOf(scenario.activity)),
+        );
+        await tester.pumpAndSettle();
+        if (scenario.people) {
+          await tester.tap(find.byKey(const ValueKey('activity-sender-menu')));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('People').last);
+          await tester.pumpAndSettle();
+        }
+
+        final row = find.byKey(ValueKey('inbox-row-${scenario.row}'));
+        await tester.drag(row, const Offset(-200, 0));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(ValueKey('inbox-swipe-read-${scenario.row}')),
+        );
+        await tester.pumpAndSettle();
+
+        final contexts = ProviderScope.containerOf(
+          tester.element(find.byType(ActivityPage)),
+        ).read(readStateProvider).contexts;
+        expect(contexts[msgContextKey('bc')], broadcast.createdAt);
+        expect(contexts.containsKey('ch1'), isFalse);
+        expect(
+          contexts[threadContextKey(threadIdRoot1)],
+          scenario.thread ? ordinary.createdAt : isNull,
+        );
+        expect(
+          find.byKey(const ValueKey('inbox-unread-dot-m-old')),
+          findsOneWidget,
+        );
+      });
+    }
+
+    testWidgets('a thread row led by that reply opens the thread', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        await buildTestable(feed: feedOf([broadcast, ordinary])),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('inbox-row-r2')));
+      await tester.pumpAndSettle();
+
+      final page = tester.widget<ChannelDetailPage>(
+        find.byType(ChannelDetailPage),
+      );
+      expect(page.initialMessageId, 'bc');
+      expect(page.initialThreadRootId, threadIdRoot1);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    });
+  });
 }
 
 class _FakeActivityNotifier extends ActivityNotifier {
@@ -1640,8 +1828,30 @@ class _FakeReadStateNotifier extends ReadStateNotifier {
     String contextId,
     int unixTimestamp, {
     bool clearForcedMessages = false,
+    bool explicit = false,
   }) {
     state = state.copyWithContext(contextId, unixTimestamp);
+  }
+
+  @override
+  Future<bool> setThreadFollow(
+    String channelId,
+    String rootId,
+    bool follow,
+  ) async {
+    state = ReadStateState(
+      isReady: state.isReady,
+      pubkey: state.pubkey,
+      contexts: state.contexts,
+      version: state.version + 1,
+      forcedUnreadContexts: state.forcedUnreadContexts,
+      threadFollows: {
+        ...state.threadFollows,
+        threadFollowKey(channelId, rootId): (follow: follow, at: 1),
+      },
+      threadFollowsIncomplete: false,
+    );
+    return true;
   }
 }
 

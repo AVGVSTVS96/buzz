@@ -94,7 +94,23 @@ double frostedAppBarHeight(
   double titleContentHeight = 0,
   bool nativeLargeTitle = false,
   bool useNativeNavigation = true,
+  bool alignWithStatusRegion = false,
 }) {
+  final portraitHeader =
+      alignWithStatusRegion && defaultTargetPlatform == TargetPlatform.iOS
+      ? IosNavigationMetrics.of(context).portraitHeaderFor(
+          View.of(context).physicalSize / View.of(context).devicePixelRatio,
+        )
+      : null;
+  if (portraitHeader != null && useNativeNavigation && !nativeLargeTitle) {
+    return max(MediaQuery.paddingOf(context).top, portraitHeader.bottom) +
+        bottomHeight;
+  }
+  if (portraitHeader != null) {
+    return portraitHeader.top +
+        _barContentHeight(context, titleStyle, titleContentHeight) +
+        bottomHeight;
+  }
   if (useNativeNavigation && defaultTargetPlatform == TargetPlatform.iOS) {
     return MediaQuery.paddingOf(context).top +
         _nativeCompactHeight(context, titleContentHeight) +
@@ -141,11 +157,6 @@ class FrostedAppBar extends StatelessWidget {
 
   /// Height reserved for [bottom].
   final double bottomHeight;
-
-  /// Extends [bottom] upward into the title row without moving the app bar's
-  /// outer bounds. This keeps overlapping controls inside the app bar's hit
-  /// test region as well as its paint region.
-  final double bottomOverlap;
 
   /// Widgets displayed on the trailing (right) side.
   final List<Widget> actions;
@@ -197,6 +208,9 @@ class FrostedAppBar extends StatelessWidget {
   /// use the native soft backdrop on iOS.
   final bool useNativeNavigation;
 
+  /// Places the header beside the unfolded portrait status cluster.
+  final bool alignWithStatusRegion;
+
   /// Duration for coordinated native header and overlapping control movement.
   final Duration nativeLayoutDuration;
 
@@ -229,6 +243,7 @@ class FrostedAppBar extends StatelessWidget {
     this.nativeLargeTitle = false,
     this.nativeTitleInsets = EdgeInsets.zero,
     this.useNativeNavigation = true,
+    this.alignWithStatusRegion = false,
     this.nativeLayoutDuration = Duration.zero,
     this.nativeLeading,
     this.nativeActions,
@@ -243,15 +258,12 @@ class FrostedAppBar extends StatelessWidget {
     this.titleContentHeight = 0,
     this.bottom,
     this.bottomHeight = 0,
-    this.bottomOverlap = 0,
     this.actions = const [],
     this.horizontalInset = Grid.xxs,
     this.iconColor,
     this.frosted = true,
     this.alwaysFrosted = false,
-  }) : assert(bottom == null || bottomHeight + bottomOverlap > 0),
-       assert(bottomOverlap >= 0),
-       assert(bottom != null || bottomOverlap == 0);
+  }) : assert(bottom == null || bottomHeight > 0);
 
   @override
   Widget build(BuildContext context) {
@@ -365,10 +377,17 @@ class FrostedAppBar extends StatelessWidget {
             ? (IosNavigationMetrics.of(context).largeTitleHeight - scrollOffset)
                   .clamp(0.0, IosNavigationMetrics.of(context).largeTitleHeight)
             : 0.0;
-        final barHeight =
-            MediaQuery.paddingOf(context).top +
-            _nativeCompactHeight(context, titleContentHeight) +
-            extra;
+        final portraitHeader = alignWithStatusRegion && !nativeLargeTitle
+            ? IosNavigationMetrics.of(context).portraitHeaderFor(
+                View.of(context).physicalSize /
+                    View.of(context).devicePixelRatio,
+              )
+            : null;
+        final barHeight = portraitHeader == null
+            ? MediaQuery.paddingOf(context).top +
+                  _nativeCompactHeight(context, titleContentHeight) +
+                  extra
+            : max(MediaQuery.paddingOf(context).top, portraitHeader.bottom);
         return AnimatedPositioned(
           duration: layoutDuration,
           curve: Curves.easeInOutCubic,
@@ -394,13 +413,13 @@ class FrostedAppBar extends StatelessWidget {
                   AnimatedPositioned(
                     duration: layoutDuration,
                     curve: Curves.easeInOutCubic,
-                    top: barHeight - bottomOverlap,
+                    top: barHeight,
                     left: 0,
                     right: 0,
-                    height: bottomHeight + bottomOverlap,
+                    height: bottomHeight,
                     child: Padding(
                       padding: railInsets,
-                      child: bottomOverlap > 0 || bottom is SizedBox
+                      child: bottom is SizedBox
                           ? bottom!
                           : ColoredBox(
                               color: context.colors.surface,
@@ -421,7 +440,13 @@ class FrostedAppBar extends StatelessWidget {
               builder: (context, value, child) => buildNative(value),
             );
     }
-    final topPadding = MediaQuery.paddingOf(context).top;
+    final portraitHeader =
+        alignWithStatusRegion && defaultTargetPlatform == TargetPlatform.iOS
+        ? IosNavigationMetrics.of(context).portraitHeaderFor(
+            View.of(context).physicalSize / View.of(context).devicePixelRatio,
+          )
+        : null;
+    final topPadding = portraitHeader?.top ?? MediaQuery.paddingOf(context).top;
     final scrollUnder = FrostedScrollUnderScope.maybeOf(context);
     final isScrolledUnder =
         alwaysFrosted || (scrollUnder?.isScrolledUnder ?? false);
@@ -468,7 +493,17 @@ class FrostedAppBar extends StatelessWidget {
     final titleRow = SizedBox(
       height: barContentHeight,
       child: Padding(
-        padding: EdgeInsets.symmetric(horizontal: horizontalInset),
+        padding: EdgeInsets.only(
+          left: horizontalInset,
+          right:
+              horizontalInset +
+              (portraitHeader == null
+                  ? 0
+                  : max(
+                      0.0,
+                      MediaQuery.sizeOf(context).width - portraitHeader.right,
+                    )),
+        ),
         child: IconTheme.merge(
           data: IconThemeData(color: effectiveIconColor),
           child: _CenteredNavigationLayout(
@@ -520,10 +555,10 @@ class FrostedAppBar extends StatelessWidget {
               children: [
                 Positioned(top: 0, left: 0, right: 0, child: titleRow),
                 Positioned(
-                  top: barContentHeight - bottomOverlap,
+                  top: barContentHeight,
                   left: 0,
                   right: 0,
-                  height: bottomHeight + bottomOverlap,
+                  height: bottomHeight,
                   child: bottom!,
                 ),
               ],
@@ -697,6 +732,9 @@ IosNavigationAction? _nativeAction(Widget? widget) {
   }
   if (widget is IosGlassNavigationButton) {
     final symbol = switch (widget.icon) {
+      IosGlassNavigationIcon.plus => 'plus',
+      IosGlassNavigationIcon.send => 'arrow.up',
+      IosGlassNavigationIcon.microphone => 'mic',
       IosGlassNavigationIcon.more => 'ellipsis',
       IosGlassNavigationIcon.bell => 'bell',
       IosGlassNavigationIcon.trash => 'trash',

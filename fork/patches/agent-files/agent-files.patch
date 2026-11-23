@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index b280ac24f5310ea417dd9f722cd8765d5ecd0316..34085a3c49df3d6d00fe6bdcd22b1db9d7d6aa30 100644
+index 45a79b7fba9730b06ec2a48199de6f670141f5d0..7f4ca6f24e78e75e827e1008fce39eb002852a17 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [
@@ -2351,10 +2351,10 @@ index 9f5551ab2e2457237289d80cdca62fd06081da4f..b4b757d4ed7ce12651364e75fcc4acd2
              .push(" OR tags @> ")
              .push_bind(serde_json::json!([["p", hex::encode(pubkey)]]))
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index 39a2ab9718139663331d3e9b3c5964a96e8ea908..7b2162a700a114f627baf43d55455ffe396ba926 100644
+index aff105b70f23447bb87019c07d6d2b8b83cde500..1140fa5c4d5261e6771964d66451d362984b2bf2 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
-@@ -1757,10 +1757,10 @@ async fn query_member_events(
+@@ -1792,10 +1792,10 @@ async fn query_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }
@@ -2367,7 +2367,7 @@ index 39a2ab9718139663331d3e9b3c5964a96e8ea908..7b2162a700a114f627baf43d55455ffe
          ));
      }
      if !crate::handlers::req::author_only_filters_authorized(&filters, &authed_pubkey_hex) {
-@@ -2443,10 +2443,10 @@ async fn count_member_events(
+@@ -2478,10 +2478,10 @@ async fn count_member_events(
              "restricted: p-gated kinds require #p tag matching your pubkey",
          ));
      }

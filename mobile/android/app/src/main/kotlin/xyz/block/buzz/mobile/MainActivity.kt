@@ -127,9 +127,12 @@ internal object AndroidImageProcessor {
 }
 
 class MainActivity : FlutterFragmentActivity() {
+    private var conversationPopup: ConversationPopup? = null
     private var mediaUploadChannel: MethodChannel? = null
     private var ageSignalChannel: MethodChannel? = null
     private val ageSignalRequest = AgeSignalRequest()
+    private var pushRegistrationPlugin: PushRegistrationPlugin? = null
+    private var pushKeystorePlugin: PushKeystorePlugin? = null
     private var deviceTranscriptionPlugin: DeviceTranscriptionPlugin? = null
     private var huddleMediaPlugin: HuddleMediaPlugin? = null
     private var hapticsPlugin: HapticsPlugin? = null
@@ -139,7 +142,10 @@ class MainActivity : FlutterFragmentActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        conversationPopup = ConversationPopup(this, flutterEngine.dartExecutor.binaryMessenger)
         deviceTranscriptionPlugin = DeviceTranscriptionPlugin(flutterEngine.dartExecutor.binaryMessenger)
+        pushRegistrationPlugin = PushRegistrationPlugin(this, flutterEngine.dartExecutor.binaryMessenger)
+        pushKeystorePlugin = PushKeystorePlugin(flutterEngine.dartExecutor.binaryMessenger)
         flutterEngine.platformViewsController.registry.registerViewFactory(
             "buzz/transparent-avatar",
             TransparentAvatarViewFactory(flutterEngine.dartExecutor.binaryMessenger),
@@ -238,6 +244,7 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     override fun onDestroy() {
+        conversationPopup?.dispose()
         deviceTranscriptionPlugin?.dispose()
         deviceTranscriptionPlugin = null
         browserAuthPlugin?.dispose()
@@ -248,6 +255,10 @@ class MainActivity : FlutterFragmentActivity() {
         hostedHpkePlugin = null
         hapticsPlugin?.dispose()
         hapticsPlugin = null
+        pushRegistrationPlugin?.dispose()
+        pushRegistrationPlugin = null
+        pushKeystorePlugin?.dispose()
+        pushKeystorePlugin = null
         ageSignalRequest.retire()
         huddleMediaPlugin?.dispose()
         huddleMediaPlugin = null

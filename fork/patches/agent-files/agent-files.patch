@@ -1,5 +1,5 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index 418d921e889abe1df85de9f2b8d655e90105b890..69d6fda5706bcab901cd30ce62421345b295e115 100644
+index cf294d287863101792d713c128e3ef79922aa157..99f44e03aa55f5ca8d0b64316c4eb3099e893279 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -944,6 +944,7 @@ dependencies = [
@@ -2351,7 +2351,7 @@ index 9f5551ab2e2457237289d80cdca62fd06081da4f..b4b757d4ed7ce12651364e75fcc4acd2
              .push(" OR tags @> ")
              .push_bind(serde_json::json!([["p", hex::encode(pubkey)]]))
 diff --git a/crates/buzz-relay/src/api/bridge.rs b/crates/buzz-relay/src/api/bridge.rs
-index aff105b70f23447bb87019c07d6d2b8b83cde500..1140fa5c4d5261e6771964d66451d362984b2bf2 100644
+index 05b2925e15ffe5d238dd9de3ac5ddec15654cf2b..a44854137f44481a768fb510b682502fb8efcf55 100644
 --- a/crates/buzz-relay/src/api/bridge.rs
 +++ b/crates/buzz-relay/src/api/bridge.rs
 @@ -1792,10 +1792,10 @@ async fn query_member_events(

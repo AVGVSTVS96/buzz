@@ -42,6 +42,9 @@ class SignedEventRelay {
     FutureOr<void> Function(NostrEvent event)? onSigned,
     Future<bool> Function()? mayPublish,
   }) async {
+    // Taken before the first await, while the caller is still on the stack: a
+    // caller that doesn't await this call is gone from it afterwards.
+    final callSite = StackTrace.current;
     final nsec = _nsec;
     if (nsec == null || nsec.isEmpty) {
       throw Exception('Cannot submit event: no signing key available');
@@ -64,14 +67,36 @@ class SignedEventRelay {
     // Durable callers must finish journaling the exact signed bytes before
     // the relay can accept an event whose acknowledgement might be lost.
     await onSigned?.call(nostrEvent);
-    return _session.publish(nostrEvent, mayPublish: mayPublish);
+    try {
+      return await _session.publish(nostrEvent, mayPublish: mayPublish);
+    } on RelayCallError catch (error) {
+      // The session's own call site starts after the wait for `onSigned`.
+      Error.throwWithStackTrace(error, trimCallSite(callSite));
+    }
   }
+}
+
+/// The EVENT went out on the socket but the relay's OK never came back, so the
+/// relay may or may not have stored it.
+class SignedEventUnacknowledged implements Exception {
+  const SignedEventUnacknowledged(this.cause);
+
+  /// Why no OK arrived: a timeout or a dropped connection.
+  final Object cause;
+
+  @override
+  String toString() => 'Relay did not acknowledge the event: $cause';
 }
 
 /// Publishes one signed event over a short-lived authenticated NIP-42 socket.
 ///
 /// This is used for community-removal tombstones because the community being
 /// removed is not necessarily the app's active relay session.
+///
+/// The attempt ends at [timeout] after the call, or at [deadline] when that
+/// comes first. At that point the socket closes, and an EVENT not yet sent
+/// never is. A failure after the EVENT went out, other than the relay's
+/// refusal, is a [SignedEventUnacknowledged].
 Future<NostrEvent> submitSignedEventOnce({
   required String wsUrl,
   required String nsec,
@@ -80,6 +105,7 @@ Future<NostrEvent> submitSignedEventOnce({
   required List<List<String>> tags,
   int? createdAt,
   Duration timeout = const Duration(seconds: 12),
+  DateTime? deadline,
   Map<String, String> headers = const {},
   DiagnosticReporter diagnostics = const NoopDiagnosticReporter(),
 }) async {
@@ -100,6 +126,16 @@ Future<NostrEvent> submitSignedEventOnce({
   // Errors completed later, from a socket callback or timer, carry the stack
   // of the caller, so an escaped error's report reaches app code.
   final callSite = StackTrace.current;
+  var sent = false;
+  var expired = false;
+  void fail(Object error) {
+    if (result.isCompleted) return;
+    result.completeErrorAt(
+      sent ? SignedEventUnacknowledged(error) : error,
+      callSite,
+    );
+  }
+
   late final RelaySocket socket;
   socket = RelaySocket(
     wsUrl: wsUrl,
@@ -111,7 +147,7 @@ Future<NostrEvent> submitSignedEventOnce({
         final bool accepted,
         final String detail,
         ...,
-      ] when eventId == event.id) {
+      ] when eventId == event.id && !result.isCompleted) {
         if (accepted) {
           result.complete(
             NostrEvent(
@@ -132,57 +168,55 @@ Future<NostrEvent> submitSignedEventOnce({
               operation: DiagnosticOperation.relayRejection,
             );
           }
-          result.completeError(_SignedEventRejection(detail), callSite);
+          result.completeErrorAt(_SignedEventRejection(detail), callSite);
         }
       }
     },
     onConnected: () {
-      if (!result.isCompleted) socket.send(['EVENT', event.toJson()]);
+      if (expired || result.isCompleted) return;
+      sent = true;
+      socket.send(['EVENT', event.toJson()]);
     },
     onDisconnected: (error) {
-      if (result.isCompleted) return;
       // The socket's own authentication deadline is shorter than [timeout],
       // so its plain timeout is typed here as this call's.
       if (error is TimeoutException && error is! RelayCallError) {
-        result.completeError(
+        fail(
           RelayTimeoutException(
             RelayCall.publish,
             error.message ?? 'Relay did not answer',
             error.duration,
           ),
-          callSite,
         );
         return;
       }
-      result.completeError(error ?? Exception('Relay disconnected'), callSite);
+      fail(error ?? Exception('Relay disconnected'));
     },
   );
   socket.headers = headers;
   socket.diagnostics = reporter;
-  // The deadline covers connecting and authenticating too. Once it passes the
-  // event is never sent, and its timeout goes to the caller, never to the
-  // zone as an uncaught error.
-  final deadline = Timer(timeout, () {
-    if (result.isCompleted) return;
-    result.completeError(
+  var limit = timeout;
+  if (deadline != null) {
+    final remaining = deadline.difference(DateTime.now());
+    if (remaining < limit) limit = remaining;
+  }
+  if (limit.isNegative) limit = Duration.zero;
+  final timer = Timer(limit, () {
+    expired = true;
+    fail(
       RelayTimeoutException(
         RelayCall.publish,
-        'Relay did not answer within $timeout',
-        timeout,
+        'Relay did not answer within $limit',
+        limit,
       ),
-      callSite,
     );
+    unawaited(socket.disconnect());
   });
   try {
-    // Whichever settles first: a failed connect, or the result (which the
-    // deadline settles if nothing else does). Future.any listens to both, so
-    // the other one's later error is not uncaught.
-    return await Future.any([
-      socket.connect().then((_) => result.future),
-      result.future,
-    ]);
+    unawaited(socket.connect().catchError(fail));
+    return await result.future;
   } finally {
-    deadline.cancel();
+    timer.cancel();
     await socket.disconnect();
   }
 }

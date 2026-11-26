@@ -1,8 +1,8 @@
 diff --git a/Cargo.lock b/Cargo.lock
-index cf294d287863101792d713c128e3ef79922aa157..99f44e03aa55f5ca8d0b64316c4eb3099e893279 100644
+index ea2ada04d67d7d82d3a831195a3f64ab58f12850..04d57a87b8818f91e3534d03bbeeac64ee7926d0 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -944,6 +944,7 @@ dependencies = [
+@@ -1316,6 +1316,7 @@ dependencies = [
   "git-sign-nostr",
   "hex",
   "httparse",
@@ -2314,10 +2314,10 @@ index f1330a6565516647af8b84df9a65709589778d23..587d3011dfebc6eaa46bbcef43d4e1f2
  pub mod agent_turn_metric;
  /// Channel and membership enums shared across crates.
 diff --git a/crates/buzz-db/src/store/media.rs b/crates/buzz-db/src/store/media.rs
-index 9f5551ab2e2457237289d80cdca62fd06081da4f..b4b757d4ed7ce12651364e75fcc4acd2b0be15c3 100644
+index 9c605b719c9de47f7761fdd0be8718f44649028f..0b98cdc92e59feea60fd87fefe4f8c9adbeb4a50 100644
 --- a/crates/buzz-db/src/store/media.rs
 +++ b/crates/buzz-db/src/store/media.rs
-@@ -236,7 +236,7 @@ impl Db {
+@@ -238,7 +238,7 @@ impl Db {
                      let kind = event.kind.as_u16() as u32;
                      let tagged = event.tags.iter().any(|tag| matches!(tag.as_slice(), [name, value, ..] if name == "p" && value == &hex::encode(pubkey)));
                      let private_ok = (!kind::P_GATED_KINDS.contains(&kind) || tagged)
@@ -2326,7 +2326,7 @@ index 9f5551ab2e2457237289d80cdca62fd06081da4f..b4b757d4ed7ce12651364e75fcc4acd2
                              || event.pubkey.as_bytes() == pubkey
                              || tagged);
                      if readable && private_ok && visible(event, pubkey) {
-@@ -439,6 +439,10 @@ pub(super) fn media_reference_query(
+@@ -441,6 +441,10 @@ pub(super) fn media_reference_query(
              .iter()
              .map(|kind| *kind as i32)
              .collect();
@@ -2337,7 +2337,7 @@ index 9f5551ab2e2457237289d80cdca62fd06081da4f..b4b757d4ed7ce12651364e75fcc4acd2
          let shared: Vec<i32> = kind::SHARED_GATED_KINDS
              .iter()
              .map(|kind| *kind as i32)
-@@ -456,9 +460,9 @@ pub(super) fn media_reference_query(
+@@ -458,9 +462,9 @@ pub(super) fn media_reference_query(
              .push_bind(pubkey)
              .push(")");
          query
